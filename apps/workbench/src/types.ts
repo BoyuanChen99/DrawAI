@@ -172,7 +172,10 @@ export interface AssetProcessingResponse {
   processed_assets: ProcessedAssetRecord[];
 }
 
+export type ImageGenerationProvider = "api" | "codex";
+
 export interface ImageGenerationRequest {
+  provider?: ImageGenerationProvider;
   model: string;
   prompt: string;
   size: string;
@@ -184,6 +187,17 @@ export interface ImageGenerationRequest {
   n: number;
   api_base_url?: string;
   api_key?: string;
+}
+
+export interface ImageEditRequest {
+  provider: "codex";
+  source_image_path: string;
+  prompt: string;
+  model?: string;
+  size?: string;
+  quality?: string;
+  background?: string;
+  output_format?: string;
 }
 
 export type ImageGenerationResponse = Record<string, unknown>;

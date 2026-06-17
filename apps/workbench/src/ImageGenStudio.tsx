@@ -1,13 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createUploadBatch, generateImages } from "./api";
-import type { BatchDetail, ImageGenerationRequest, ImageGenerationResponse } from "./types";
+import type { BatchDetail, ImageGenerationProvider, ImageGenerationRequest, ImageGenerationResponse } from "./types";
 
 /**
- * Generation studio for the OpenAI Images API.
+ * Generation studio for OpenAI-compatible Images API and Codex built-in image generation.
  *
- * Request shape (POST /v1/images/generations):
+ * API provider request shape (POST /v1/images/generations):
  *   model, prompt, size, quality, background, moderation,
  *   output_format, n
+ *
+ * Codex provider request shape (POST /api/imagegen/generations):
+ *   provider, model, prompt, size, quality, background, output_format, n
  */
 
 const DEFAULT_MODEL = "gpt-image-2";
@@ -115,6 +118,11 @@ const BACKGROUNDS: Array<{ value: Background; label: string }> = [
   { value: "transparent", label: "透明" }
 ];
 
+const PROVIDERS: Array<{ value: ImageGenerationProvider; label: string; sub: string }> = [
+  { value: "api", label: "API", sub: "参数直连" },
+  { value: "codex", label: "Codex", sub: "内置工具" }
+];
+
 interface GeneratedImage {
   id: string;
   url: string;
@@ -123,10 +131,12 @@ interface GeneratedImage {
   quality: Quality;
   format: OutputFormat;
   transparent: boolean;
+  provider: ImageGenerationProvider;
   prompt: string;
 }
 
 export interface ImageGenConnectionSettings {
+  provider: ImageGenerationProvider;
   baseUrl: string;
   apiKey: string;
   model: string;
@@ -134,13 +144,16 @@ export interface ImageGenConnectionSettings {
 
 export default function ImageGenStudio({
   connection,
+  onConnectionChange,
   onCreated,
   onError
 }: {
   connection: ImageGenConnectionSettings;
+  onConnectionChange?: (connection: ImageGenConnectionSettings) => void;
   onCreated: (detail: BatchDetail) => void | Promise<void>;
   onError: (message: string) => void;
 }) {
+  const [provider, setProvider] = useState<ImageGenerationProvider>(connection.provider || "api");
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState<string>("4:3");
   const [resolution, setResolution] = useState<Resolution>("1k");
@@ -162,9 +175,14 @@ export default function ImageGenStudio({
 
   const effectiveSize = openAiSizeFromPreset(size, resolution);
 
+  useEffect(() => {
+    setProvider(connection.provider || "api");
+  }, [connection.provider]);
+
   const request = useMemo<ImageGenerationRequest>(() => {
-    const model = connection.model.trim() || DEFAULT_MODEL;
+    const model = imageModelForProvider(provider, connection.model);
     const body: ImageGenerationRequest = {
+      provider,
       model,
       prompt,
       size: effectiveSize,
@@ -180,6 +198,7 @@ export default function ImageGenStudio({
     if (apiKey) body.api_key = apiKey;
     return body;
   }, [
+    provider,
     prompt,
     effectiveSize,
     quality,
@@ -189,6 +208,11 @@ export default function ImageGenStudio({
     connection.baseUrl,
     connection.model
   ]);
+
+  const changeProvider = useCallback((nextProvider: ImageGenerationProvider) => {
+    setProvider(nextProvider);
+    onConnectionChange?.({ ...connection, provider: nextProvider });
+  }, [connection, onConnectionChange]);
 
   // Keep the selected thumbnail centered in the filmstrip. Clamping to the
   // scroll bounds means the first image rests at the left edge and the last at
@@ -305,6 +329,14 @@ export default function ImageGenStudio({
             />
           </div>
 
+          <Field label="生成方式" hint={provider === "codex" ? "Codex SDK" : "Images API"}>
+            <Segmented
+              options={PROVIDERS}
+              value={provider}
+              onChange={(v) => changeProvider(v as ImageGenerationProvider)}
+            />
+          </Field>
+
           <Field label="尺寸 / 比例" hint={effectiveSize}>
             <div className="gen-ratio-grid">
               {SIZE_PRESETS.map((preset) => {
@@ -384,6 +416,7 @@ export default function ImageGenStudio({
                   <span className="gen-meta-chip">{current.size}</span>
                   <span className="gen-meta-chip">{current.resolution.toUpperCase()}</span>
                   <span className="gen-meta-chip">{current.format.toUpperCase()}</span>
+                  <span className="gen-meta-chip">{current.provider === "codex" ? "Codex" : "API"}</span>
                   <span className="gen-meta-chip">质量 {optionLabel(QUALITIES, current.quality)}</span>
                   <span className="gen-meta-index">
                     {selected + 1} / {images.length}
@@ -598,6 +631,12 @@ function openAiSizeFromPreset(ratio: string, resolution: Resolution): string {
   return OPENAI_SIZE_BY_RATIO[resolution]?.[ratio] || "1024x1024";
 }
 
+function imageModelForProvider(provider: ImageGenerationProvider, configuredModel: string): string {
+  const model = configuredModel.trim();
+  if (provider === "codex" && model === DEFAULT_MODEL) return "";
+  return model || DEFAULT_MODEL;
+}
+
 function generatedBatchTitle(images: GeneratedImage[]): string {
   const prompt = images[0]?.prompt.trim().replace(/\s+/g, " ") || "";
   const prefix = prompt ? `生成图 - ${prompt.slice(0, 24)}` : "生成图";
@@ -627,6 +666,7 @@ function imagesFromResponse(
   resolution: Resolution
 ): GeneratedImage[] {
   const candidates = imageCandidates(payload);
+  const responseProvider = imageGenerationProviderFromResponse(payload, request.provider);
   return candidates.flatMap((item, index) => {
     const urls = imageUrlsFromCandidate(item, request.output_format);
     if (!urls.length) return [];
@@ -639,9 +679,18 @@ function imagesFromResponse(
       quality: request.quality as Quality,
       format: request.output_format as OutputFormat,
       transparent: request.background === "transparent",
+      provider: imageGenerationProviderFromResponse(item, responseProvider),
       prompt: request.prompt
     }));
   });
+}
+
+function imageGenerationProviderFromResponse(
+  value: unknown,
+  fallback: ImageGenerationProvider | undefined
+): ImageGenerationProvider {
+  const provider = objectRecord(value).provider;
+  return provider === "codex" ? "codex" : fallback === "codex" ? "codex" : "api";
 }
 
 function imageCandidates(payload: unknown): unknown[] {

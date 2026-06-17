@@ -84,6 +84,7 @@ const IMAGEGEN_SETTINGS_STORAGE_KEY = "drawai.imagegen.connection";
 const PPTX_EXPORT_POLL_INTERVAL_MS = 1000;
 const PPTX_EXPORT_TIMEOUT_MS = 180_000;
 const DEFAULT_IMAGEGEN_CONNECTION: ImageGenConnectionSettings = {
+  provider: "api",
   baseUrl: "",
   apiKey: "",
   model: "gpt-image-2"
@@ -666,6 +667,10 @@ export default function App() {
           <main className="board-workspace board-generate-workspace">
             <ImageGenStudio
               connection={imageGenConnection}
+              onConnectionChange={(nextConnection) => {
+                setImageGenConnection(nextConnection);
+                saveImageGenConnectionSettings(nextConnection);
+              }}
               onCreated={activateCreatedBatch}
               onError={setError}
             />
@@ -897,6 +902,7 @@ function ImageGenSettingsDialog({
   const [draft, setDraft] = useState<ImageGenConnectionSettings>(connection);
   const save = () => {
     onSave({
+      provider: draft.provider || DEFAULT_IMAGEGEN_CONNECTION.provider,
       baseUrl: draft.baseUrl.trim(),
       apiKey: draft.apiKey.trim(),
       model: draft.model.trim() || DEFAULT_IMAGEGEN_CONNECTION.model
@@ -3689,6 +3695,7 @@ function loadImageGenConnectionSettings(): ImageGenConnectionSettings {
   try {
     const parsed = JSON.parse(raw) as Partial<ImageGenConnectionSettings>;
     return {
+      provider: parsed.provider === "codex" ? "codex" : "api",
       baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : "",
       apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : "",
       model: typeof parsed.model === "string" && parsed.model.trim() ? parsed.model : DEFAULT_IMAGEGEN_CONNECTION.model
