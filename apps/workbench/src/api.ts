@@ -7,6 +7,7 @@ import type {
   CaseDetail,
   CaseProgress,
   HealthResponse,
+  ImageEditRequest,
   ImageGenerationRequest,
   ImageGenerationResponse,
   SvgSourceResponse
@@ -202,6 +203,13 @@ export function approveAssets(caseId: string, runSvg: boolean): Promise<{ asset_
 
 export function generateImages(payload: ImageGenerationRequest): Promise<ImageGenerationResponse> {
   return requestJson<ImageGenerationResponse>("/api/imagegen/generations", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
+export function editImage(payload: ImageEditRequest): Promise<ImageGenerationResponse> {
+  return requestJson<ImageGenerationResponse>("/api/imagegen/edits", {
     method: "POST",
     body: JSON.stringify(payload)
   });

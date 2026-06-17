@@ -81,13 +81,17 @@ class CodexImageGenResult:
     trace_path: Path | None
     archive_dir: Path
     images: tuple[CodexGeneratedImage, ...]
+    operation: str = "generate"
+    source_image_path: Path | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "schema": self.schema,
             "runner": self.runner,
             "task_name": self.task_name,
+            "operation": self.operation,
             "prompt": self.prompt,
+            "source_image_path": str(self.source_image_path) if self.source_image_path is not None else None,
             "final_response": self.final_response,
             "output_dir": str(self.output_dir),
             "trace_path": str(self.trace_path) if self.trace_path is not None else None,
@@ -106,6 +110,60 @@ def invoke_codex_python_sdk_imagegen(
     trace_path: str | Path | None = None,
     isolated_cwd: str | Path | None = None,
     config_overrides: Sequence[str] | None = None,
+) -> CodexImageGenResult:
+    return _invoke_codex_python_sdk_image_tool(
+        operation="generate",
+        prompt=prompt,
+        source_image_path=None,
+        output_dir=output_dir,
+        task_name=task_name,
+        output_stem=output_stem,
+        runtime_config=runtime_config,
+        trace_path=trace_path,
+        isolated_cwd=isolated_cwd,
+        config_overrides=config_overrides,
+    )
+
+
+def invoke_codex_python_sdk_image_edit(
+    *,
+    source_image_path: str | Path,
+    prompt: str,
+    output_dir: str | Path,
+    task_name: str = "drawai.codex_imagegen.edit.v1",
+    output_stem: str = "codex-image-edit",
+    runtime_config: Mapping[str, Any] | None = None,
+    trace_path: str | Path | None = None,
+    isolated_cwd: str | Path | None = None,
+    config_overrides: Sequence[str] | None = None,
+) -> CodexImageGenResult:
+    source_path = _normalize_source_image_path(source_image_path)
+    return _invoke_codex_python_sdk_image_tool(
+        operation="edit",
+        prompt=prompt,
+        source_image_path=source_path,
+        output_dir=output_dir,
+        task_name=task_name,
+        output_stem=output_stem,
+        runtime_config=runtime_config,
+        trace_path=trace_path,
+        isolated_cwd=isolated_cwd,
+        config_overrides=config_overrides,
+    )
+
+
+def _invoke_codex_python_sdk_image_tool(
+    *,
+    operation: str,
+    prompt: str,
+    source_image_path: Path | None,
+    output_dir: str | Path,
+    task_name: str,
+    output_stem: str,
+    runtime_config: Mapping[str, Any] | None,
+    trace_path: str | Path | None,
+    isolated_cwd: str | Path | None,
+    config_overrides: Sequence[str] | None,
 ) -> CodexImageGenResult:
     normalized_prompt = _normalize_prompt(prompt)
     output_root = Path(output_dir).expanduser().resolve(strict=False)
@@ -143,7 +201,7 @@ def invoke_codex_python_sdk_imagegen(
                     approval_mode=sdk.ApprovalMode.deny_all,
                     config={"model_reasoning_effort": reasoning_effort},
                     cwd=str(run_cwd),
-                    developer_instructions=_imagegen_developer_instructions(),
+                    developer_instructions=_imagegen_developer_instructions(operation),
                     ephemeral=True,
                     model=model_name,
                     sandbox=sdk.Sandbox.full_access,
@@ -159,8 +217,10 @@ def invoke_codex_python_sdk_imagegen(
                         "model_name": model_name or "codex-default",
                         "reasoning_effort": reasoning_effort,
                         "timeout_seconds": timeout_seconds,
+                        "operation": operation,
                         "prompt_chars": len(normalized_prompt),
                         "prompt_sha256": hashlib.sha256(normalized_prompt.encode("utf-8")).hexdigest(),
+                        "source_image_path": str(source_image_path) if source_image_path is not None else None,
                         "output_dir": str(output_root),
                         "isolated_cwd": str(run_cwd),
                         "codex_home": prepared_codex_home.to_trace(),
@@ -174,7 +234,12 @@ def invoke_codex_python_sdk_imagegen(
                 try:
                     result = _run_thread_with_timeout(
                         thread,
-                        [sdk.TextInput(_imagegen_user_prompt(normalized_prompt))],
+                        _imagegen_turn_input(
+                            sdk,
+                            operation=operation,
+                            prompt=normalized_prompt,
+                            source_image_path=source_image_path,
+                        ),
                         timeout_seconds=timeout_seconds,
                         approval_mode=sdk.ApprovalMode.deny_all,
                         cwd=str(run_cwd),
@@ -188,7 +253,7 @@ def invoke_codex_python_sdk_imagegen(
                 except Exception as exc:
                     _append_imagegen_error_trace(trace, task_name=task_name, started_at=started_at, exc=exc)
                     raise CodexPythonSdkImageGenError(
-                        f"Codex Python SDK image generation failed: {_safe_error_text(str(exc))}"
+                        f"Codex Python SDK image {operation} failed: {_safe_error_text(str(exc))}"
                     ) from exc
 
                 image_items = _image_generation_items(getattr(result, "items", []) or [])
@@ -225,6 +290,8 @@ def invoke_codex_python_sdk_imagegen(
                     trace_path=trace,
                     archive_dir=archive_dir,
                     images=images,
+                    operation=operation,
+                    source_image_path=source_image_path,
                 )
                 summary_path = output_root / "codex_imagegen_result.json"
                 summary_path.write_text(
@@ -238,6 +305,7 @@ def invoke_codex_python_sdk_imagegen(
                         "runner": CODEX_PYTHON_SDK_IMAGEGEN_RUNNER,
                         "task_name": task_name,
                         "thread_id": thread_id or None,
+                        "operation": operation,
                         "duration_ms": int((time.monotonic() - started_at) * 1000),
                         "final_response_excerpt": final_response[:2000],
                         "image_count": len(images),
@@ -303,6 +371,13 @@ def _normalize_prompt(prompt: str) -> str:
     return text
 
 
+def _normalize_source_image_path(path: str | Path) -> Path:
+    source_path = Path(path).expanduser().resolve(strict=False)
+    if not source_path.is_file():
+        raise CodexPythonSdkImageGenError(f"source_image_path does not exist or is not a file: {source_path}")
+    return source_path
+
+
 def _read_model_provider_capabilities(codex: Any) -> dict[str, Any]:
     sdk = _load_openai_codex_sdk()
     response_model = sdk.generated.v2_all.ModelProviderCapabilitiesReadResponse
@@ -322,7 +397,16 @@ def _capability_enabled(capabilities: Mapping[str, Any], python_name: str) -> bo
     return capabilities.get(python_name) is True or capabilities.get(camel_name) is True
 
 
-def _imagegen_developer_instructions() -> str:
+def _imagegen_developer_instructions(operation: str) -> str:
+    if operation == "edit":
+        return (
+            "Internal DrawAI image editing runner.\n"
+            "When the user provides an image input and edit prompt, use the built-in image generation tool exactly once "
+            "to edit the supplied image. Do not treat filesystem paths written in text as image inputs. "
+            "Do not call OpenAI Images API manually, do not use shell commands, do not use web search, "
+            "and do not use MCP tools or multi-agent delegation. The imageGeneration thread item is the source of truth. "
+            "After the tool finishes, reply with compact JSON only."
+        )
     return (
         "Internal DrawAI text-to-image runner.\n"
         "When the user provides an image prompt, use the built-in image generation tool exactly once. "
@@ -332,11 +416,36 @@ def _imagegen_developer_instructions() -> str:
     )
 
 
+def _imagegen_turn_input(
+    sdk: Any,
+    *,
+    operation: str,
+    prompt: str,
+    source_image_path: Path | None,
+) -> list[Any]:
+    if operation == "edit":
+        if source_image_path is None:
+            raise CodexPythonSdkImageGenError("source_image_path is required for image edit")
+        return [
+            sdk.LocalImageInput(str(source_image_path)),
+            sdk.TextInput(_image_edit_user_prompt(prompt)),
+        ]
+    return [sdk.TextInput(_imagegen_user_prompt(prompt))]
+
+
 def _imagegen_user_prompt(prompt: str) -> str:
     return (
         "Generate one image from this prompt using the built-in image generation tool.\n\n"
         f"Image prompt:\n{prompt}\n\n"
         'Final response contract: reply only {"generated": true}.'
+    )
+
+
+def _image_edit_user_prompt(prompt: str) -> str:
+    return (
+        "Edit the supplied image using the built-in image generation tool.\n\n"
+        f"Edit prompt:\n{prompt}\n\n"
+        'Final response contract: reply only {"edited": true}.'
     )
 
 

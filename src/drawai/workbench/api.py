@@ -22,6 +22,12 @@ from fastapi.responses import FileResponse
 from lxml import etree
 
 from .assets import process_asset_plan_elements, read_asset_draft, validate_asset_plan, write_asset_draft
+from ..codex_python_sdk_imagegen import (
+    CodexPythonSdkImageGenError,
+    CodexImageGenResult,
+    invoke_codex_python_sdk_image_edit,
+    invoke_codex_python_sdk_imagegen,
+)
 from ..config import load_drawai_config
 from ..http_utils import urlopen_direct_for_loopback
 from ..rmbg_client import RemoteRmbgClient
@@ -107,10 +113,22 @@ def create_app(
         payload = await request.json()
         if not isinstance(payload, dict):
             raise HTTPException(status_code=400, detail="image generation payload must be an object")
+        normalized = _normalize_image_generation_payload(payload)
+        if _image_generation_provider(payload) == "codex":
+            return _call_codex_image_generation(normalized, store=resolved_store)
         api_url = _image_generation_api_url(payload.get("api_base_url") or payload.get("base_url"))
         api_key = str(payload.get("api_key") or "").strip() or None
-        normalized = _normalize_image_generation_payload(payload)
         return _call_image_generation_upstream(normalized, api_url=api_url, api_key=api_key)
+
+    @app.post("/api/imagegen/edits")
+    async def edit_image(request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="image edit payload must be an object")
+        if _image_generation_provider(payload) != "codex":
+            raise HTTPException(status_code=400, detail="image edits currently require provider=codex")
+        normalized = _normalize_image_edit_payload(payload)
+        return _call_codex_image_edit(normalized, store=resolved_store)
 
     @app.post("/api/batches")
     async def create_batch(request: Request) -> dict[str, Any]:
@@ -1106,6 +1124,202 @@ def _normalize_image_generation_payload(payload: Mapping[str, Any]) -> dict[str,
     if "stream" in normalized:
         normalized["stream"] = bool(normalized["stream"])
     return normalized
+
+
+def _normalize_image_edit_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    prompt = str(payload.get("prompt") or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt is required")
+    source_image_path = str(payload.get("source_image_path") or payload.get("image_path") or "").strip()
+    if not source_image_path:
+        raise HTTPException(status_code=400, detail="source_image_path is required")
+    return {
+        "prompt": prompt,
+        "source_image_path": source_image_path,
+        "model": str(payload.get("model") or "").strip(),
+        "size": str(payload.get("size") or "").strip(),
+        "quality": str(payload.get("quality") or "").strip(),
+        "background": str(payload.get("background") or "").strip(),
+        "output_format": str(payload.get("output_format") or "png").strip() or "png",
+    }
+
+
+def _image_generation_provider(payload: Mapping[str, Any]) -> str:
+    provider = str(payload.get("provider") or payload.get("image_provider") or "api").strip().lower()
+    if provider in {"openai", "images", "image-api"}:
+        return "api"
+    if provider == "codex":
+        return "codex"
+    if provider and provider != "api":
+        raise HTTPException(status_code=400, detail="provider must be api or codex")
+    return "api"
+
+
+def _call_codex_image_generation(payload: Mapping[str, Any], *, store: WorkbenchStore) -> dict[str, Any]:
+    n = int(payload.get("n") or 1)
+    output_root = _codex_imagegen_output_dir(store.workspace, "generations")
+    runtime_config = _codex_imagegen_runtime_config(payload)
+    results: list[CodexImageGenResult] = []
+    try:
+        for index in range(1, n + 1):
+            prompt = _codex_generation_prompt(payload, variant_index=index, variant_count=n)
+            output_dir = output_root / f"variant-{index:03d}"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            results.append(
+                invoke_codex_python_sdk_imagegen(
+                    prompt=prompt,
+                    output_dir=output_dir,
+                    task_name="drawai.workbench.imagegen.codex.generate.v1",
+                    output_stem=f"codex-generated-{index:03d}",
+                    runtime_config=runtime_config,
+                    isolated_cwd=store.workspace,
+                )
+            )
+    except CodexPythonSdkImageGenError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return _codex_imagegen_response(
+        results,
+        provider="codex",
+        prompt=_codex_generation_prompt(payload, variant_index=1, variant_count=n),
+    )
+
+
+def _call_codex_image_edit(payload: Mapping[str, Any], *, store: WorkbenchStore) -> dict[str, Any]:
+    output_dir = _codex_imagegen_output_dir(store.workspace, "edits")
+    runtime_config = _codex_imagegen_runtime_config(payload)
+    prompt = _codex_edit_prompt(payload)
+    try:
+        result = invoke_codex_python_sdk_image_edit(
+            source_image_path=str(payload["source_image_path"]),
+            prompt=prompt,
+            output_dir=output_dir,
+            task_name="drawai.workbench.imagegen.codex.edit.v1",
+            output_stem="codex-edited",
+            runtime_config=runtime_config,
+            isolated_cwd=store.workspace,
+        )
+    except CodexPythonSdkImageGenError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return _codex_imagegen_response([result], provider="codex", prompt=prompt)
+
+
+def _codex_imagegen_runtime_config(payload: Mapping[str, Any]) -> dict[str, Any]:
+    timeout = (
+        _optional_positive_float_env("DRAWAI_CODEX_IMAGEGEN_TIMEOUT_SECONDS")
+        or _optional_positive_float_env("DRAWAI_IMAGEGEN_TIMEOUT_SECONDS")
+        or 300.0
+    )
+    runtime_config: dict[str, Any] = {"timeout_seconds": timeout}
+    reasoning_effort = str(os.environ.get("DRAWAI_CODEX_IMAGEGEN_REASONING_EFFORT") or "").strip()
+    if reasoning_effort:
+        runtime_config["reasoning_effort"] = reasoning_effort
+    model_name = _codex_imagegen_model_name(payload)
+    if model_name:
+        runtime_config["model_name"] = model_name
+    return runtime_config
+
+
+def _codex_imagegen_model_name(payload: Mapping[str, Any]) -> str:
+    model_name = str(payload.get("codex_model") or payload.get("model") or "").strip()
+    if model_name.startswith("gpt-image-"):
+        return ""
+    return model_name
+
+
+def _codex_generation_prompt(payload: Mapping[str, Any], *, variant_index: int, variant_count: int) -> str:
+    lines = [
+        "DrawAI image generation request.",
+        f"Primary request: {str(payload.get('prompt') or '').strip()}",
+        "",
+        "Generation settings selected in the DrawAI UI:",
+        f"- Requested size/aspect: {payload.get('size')}",
+        f"- Quality preference: {payload.get('quality')}",
+        f"- Background preference: {payload.get('background')}",
+        f"- Output format preference: {payload.get('output_format')}",
+        f"- Requested image count: {variant_count}",
+    ]
+    if variant_count > 1:
+        lines.append(f"- This tool call should produce image {variant_index} of {variant_count}; create a distinct useful variant without making a collage.")
+    if str(payload.get("background") or "").lower() == "transparent":
+        lines.append(
+            "- Transparent background was requested. If true alpha is unavailable, keep the subject isolated on a clean removable background; do not draw a checkerboard pattern."
+        )
+    lines.extend([
+        "",
+        "Use the built-in Codex image generation tool for exactly one output image.",
+        "Do not render these settings as visible text unless the primary request explicitly asks for text.",
+    ])
+    return "\n".join(lines)
+
+
+def _codex_edit_prompt(payload: Mapping[str, Any]) -> str:
+    lines = [
+        "DrawAI image editing request.",
+        f"Primary edit request: {str(payload.get('prompt') or '').strip()}",
+        "",
+        "Editing settings selected in the DrawAI UI or API:",
+    ]
+    if payload.get("size"):
+        lines.append(f"- Requested size/aspect: {payload.get('size')}")
+    if payload.get("quality"):
+        lines.append(f"- Quality preference: {payload.get('quality')}")
+    if payload.get("background"):
+        lines.append(f"- Background preference: {payload.get('background')}")
+    lines.extend([
+        "",
+        "Edit only the supplied image input. Preserve unrelated content, layout, and identity as much as possible.",
+        "Do not render these settings as visible text unless the primary edit request explicitly asks for text.",
+    ])
+    return "\n".join(lines)
+
+
+def _codex_imagegen_response(
+    results: list[CodexImageGenResult],
+    *,
+    provider: str,
+    prompt: str,
+) -> dict[str, Any]:
+    data: list[dict[str, Any]] = []
+    for result in results:
+        for image in result.images:
+            image_bytes = image.path.read_bytes()
+            data.append({
+                "id": image.image_id,
+                "provider": provider,
+                "b64_json": base64.b64encode(image_bytes).decode("ascii"),
+                "size": f"{image.width}x{image.height}",
+                "width": image.width,
+                "height": image.height,
+                "mime_type": image.mime_type,
+                "path": str(image.path),
+                "revised_prompt": image.revised_prompt,
+                "operation": result.operation,
+            })
+    return {
+        "created": int(time.time()),
+        "provider": provider,
+        "prompt": prompt,
+        "data": data,
+        "codex": {
+            "result_count": len(results),
+            "image_count": len(data),
+            "output_dirs": [str(result.output_dir) for result in results],
+            "archives": [str(result.archive_dir) for result in results],
+        },
+    }
+
+
+def _codex_imagegen_output_dir(workspace: Path, operation: str) -> Path:
+    root = workspace / "imagegen" / "codex" / operation
+    root.mkdir(parents=True, exist_ok=True)
+    stamp = int(time.time() * 1000)
+    for index in range(1, 10_000):
+        suffix = "" if index == 1 else f"-{index}"
+        candidate = root / f"{stamp}{suffix}"
+        if not candidate.exists():
+            candidate.mkdir(parents=True)
+            return candidate
+    raise HTTPException(status_code=500, detail="could not allocate Codex image output directory")
 
 
 def _image_generation_api_url(base_url: Any = None) -> str:

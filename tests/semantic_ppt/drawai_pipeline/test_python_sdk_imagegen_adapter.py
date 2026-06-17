@@ -10,6 +10,7 @@ from PIL import Image
 from drawai.codex_python_sdk_imagegen import (
     CodexPythonSdkImageGenError,
     check_codex_python_sdk_imagegen_capability,
+    invoke_codex_python_sdk_image_edit,
     invoke_codex_python_sdk_imagegen,
 )
 
@@ -201,6 +202,94 @@ def test_codex_python_sdk_imagegen_rejects_missing_image_item(monkeypatch, tmp_p
             runtime_config={"timeout_seconds": 1},
             isolated_cwd=tmp_path / "cwd",
         )
+
+
+def test_codex_python_sdk_image_edit_uses_local_image_input(monkeypatch, tmp_path):
+    source_image = tmp_path / "source.png"
+    Image.new("RGB", (9, 7), (180, 30, 220)).save(source_image)
+    seen = {}
+
+    class FakeClient:
+        def request(self, *_args, **_kwargs):
+            return SimpleNamespace(model_dump=lambda **_kwargs: {"imageGeneration": True})
+
+    class FakeResult:
+        id = "turn-edit"
+        status = SimpleNamespace(value="completed")
+        final_response = '{"edited": true}'
+        usage = None
+        started_at = None
+        completed_at = None
+        duration_ms = None
+
+        def __init__(self, edited_path: Path):
+            self.items = [
+                SimpleNamespace(
+                    root=SimpleNamespace(
+                        type="imageGeneration",
+                        id="ig_edit",
+                        result="",
+                        revised_prompt="change the center circle to cyan",
+                        saved_path=FakeAbsolutePathBuf(edited_path),
+                        status="completed",
+                    )
+                )
+            ]
+
+    class FakeThread:
+        id = "thread-edit"
+
+        def run(self, run_input, **kwargs):
+            seen["run_input"] = run_input
+            seen["run_kwargs"] = kwargs
+            edited_path = tmp_path / "edited.png"
+            Image.new("RGB", (11, 13), (0, 255, 255)).save(edited_path)
+            return FakeResult(edited_path)
+
+    class FakeCodex:
+        def __init__(self, config):
+            seen["config"] = config
+            self._client = FakeClient()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def thread_start(self, **kwargs):
+            seen["thread_start_kwargs"] = kwargs
+            return FakeThread()
+
+    fake_openai_codex = SimpleNamespace(
+        ApprovalMode=SimpleNamespace(deny_all="deny_all"),
+        Sandbox=SimpleNamespace(full_access="full_access"),
+        Codex=FakeCodex,
+        CodexConfig=lambda **kwargs: kwargs,
+        TextInput=lambda text: ("text", text),
+        LocalImageInput=lambda path: ("local_image", path),
+        generated=SimpleNamespace(
+            v2_all=SimpleNamespace(ModelProviderCapabilitiesReadResponse=object)
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "openai_codex", fake_openai_codex)
+
+    result = invoke_codex_python_sdk_image_edit(
+        source_image_path=source_image,
+        prompt="change the center circle to cyan",
+        output_dir=tmp_path / "out",
+        output_stem="edited",
+        runtime_config={"timeout_seconds": 1},
+        isolated_cwd=tmp_path / "cwd",
+    )
+
+    assert result.operation == "edit"
+    assert result.source_image_path == source_image.resolve()
+    assert result.images[0].path.name == "edited.png"
+    assert result.images[0].width == 11
+    assert seen["run_input"][0] == ("local_image", str(source_image.resolve()))
+    assert "Edit the supplied image" in seen["run_input"][1][1]
+    assert "image editing runner" in seen["thread_start_kwargs"]["developer_instructions"]
 
 
 def test_codex_python_sdk_imagegen_capability_probe_reports_runtime(monkeypatch, tmp_path):

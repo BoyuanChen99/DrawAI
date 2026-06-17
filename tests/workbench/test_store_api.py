@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from pptx import Presentation
 
+from drawai.codex_python_sdk_imagegen import CodexGeneratedImage, CodexImageGenResult
 from drawai.http_utils import is_loopback_url
 from drawai.rmbg_client import RmbgResult
 import drawai.workbench.api as workbench_api
@@ -1441,6 +1442,153 @@ def test_image_generation_endpoint_polls_async_task_result(tmp_path: Path, monke
     assert post_payload["background"] == "transparent"
     assert post_payload["stream"] is True
     assert post_payload["partial_images"] == 1
+
+
+def test_image_generation_endpoint_can_use_codex_provider(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DRAWAI_IMAGEGEN_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    base_config = _base_config(tmp_path)
+    store = WorkbenchStore(tmp_path / "workspace")
+    settings = _settings(tmp_path, base_config)
+    captured: list[dict[str, object]] = []
+
+    def fake_invoke_codex_python_sdk_imagegen(**kwargs):
+        captured.append(kwargs)
+        output_dir = Path(kwargs["output_dir"])
+        output_stem = str(kwargs["output_stem"])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        image_path = output_dir / f"{output_stem}.png"
+        Image.new("RGB", (12, 8), (20, 180, 90)).save(image_path)
+        image_bytes = image_path.read_bytes()
+        image = CodexGeneratedImage(
+            image_id=output_stem,
+            status="completed",
+            path=image_path,
+            source_path=str(image_path),
+            revised_prompt="codex revised prompt",
+            mime_type="image/png",
+            width=12,
+            height=8,
+            bytes=len(image_bytes),
+            sha256="test-sha",
+        )
+        return CodexImageGenResult(
+            schema="drawai.codex_python_sdk_imagegen_result.v1",
+            runner="codex_python_sdk_imagegen",
+            task_name=str(kwargs["task_name"]),
+            prompt=str(kwargs["prompt"]),
+            final_response='{"generated": true}',
+            output_dir=output_dir,
+            trace_path=None,
+            archive_dir=output_dir / "codex_session_log",
+            images=(image,),
+            operation="generate",
+        )
+
+    monkeypatch.setattr(workbench_api, "invoke_codex_python_sdk_imagegen", fake_invoke_codex_python_sdk_imagegen)
+    app = create_app(settings, store=store, runner=WorkbenchRunner(store, settings))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/imagegen/generations",
+        json={
+            "provider": "codex",
+            "model": "gpt-image-2",
+            "prompt": "draw a clean green logo",
+            "size": "2048x1152",
+            "quality": "high",
+            "background": "transparent",
+            "moderation": "auto",
+            "output_format": "png",
+            "n": 2,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider"] == "codex"
+    assert len(payload["data"]) == 2
+    assert payload["data"][0]["b64_json"]
+    assert payload["data"][0]["size"] == "12x8"
+    assert len(captured) == 2
+    assert all(call["runtime_config"]["timeout_seconds"] == 300.0 for call in captured)
+    assert all("model_name" not in call["runtime_config"] for call in captured)
+    first_prompt = str(captured[0]["prompt"])
+    assert "Primary request: draw a clean green logo" in first_prompt
+    assert "Requested size/aspect: 2048x1152" in first_prompt
+    assert "Quality preference: high" in first_prompt
+    assert "Background preference: transparent" in first_prompt
+    assert "Requested image count: 2" in first_prompt
+    assert "image 1 of 2" in first_prompt
+    assert "image 2 of 2" in str(captured[1]["prompt"])
+
+
+def test_image_edit_endpoint_uses_codex_local_source(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    base_config = _base_config(tmp_path)
+    store = WorkbenchStore(tmp_path / "workspace")
+    settings = _settings(tmp_path, base_config)
+    source_image = tmp_path / "source.png"
+    Image.new("RGB", (10, 10), (120, 40, 200)).save(source_image)
+    captured: dict[str, object] = {}
+
+    def fake_invoke_codex_python_sdk_image_edit(**kwargs):
+        captured.update(kwargs)
+        output_dir = Path(kwargs["output_dir"])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        image_path = output_dir / "codex-edited.png"
+        Image.new("RGB", (10, 10), (0, 255, 255)).save(image_path)
+        image_bytes = image_path.read_bytes()
+        image = CodexGeneratedImage(
+            image_id="ig_edit",
+            status="completed",
+            path=image_path,
+            source_path=str(image_path),
+            revised_prompt="edit revised prompt",
+            mime_type="image/png",
+            width=10,
+            height=10,
+            bytes=len(image_bytes),
+            sha256="test-sha",
+        )
+        return CodexImageGenResult(
+            schema="drawai.codex_python_sdk_imagegen_result.v1",
+            runner="codex_python_sdk_imagegen",
+            task_name=str(kwargs["task_name"]),
+            prompt=str(kwargs["prompt"]),
+            final_response='{"edited": true}',
+            output_dir=output_dir,
+            trace_path=None,
+            archive_dir=output_dir / "codex_session_log",
+            images=(image,),
+            operation="edit",
+            source_image_path=Path(kwargs["source_image_path"]).resolve(),
+        )
+
+    monkeypatch.setattr(workbench_api, "invoke_codex_python_sdk_image_edit", fake_invoke_codex_python_sdk_image_edit)
+    app = create_app(settings, store=store, runner=WorkbenchRunner(store, settings))
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/imagegen/edits",
+        json={
+            "provider": "codex",
+            "source_image_path": str(source_image),
+            "prompt": "change the circle to cyan",
+            "quality": "high",
+            "background": "auto",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider"] == "codex"
+    assert payload["data"][0]["operation"] == "edit"
+    assert payload["data"][0]["b64_json"]
+    assert Path(captured["source_image_path"]) == source_image
+    edit_prompt = str(captured["prompt"])
+    assert "Primary edit request: change the circle to cyan" in edit_prompt
+    assert "Quality preference: high" in edit_prompt
+    assert "Edit only the supplied image input" in edit_prompt
 
 
 def test_api_accepts_single_local_image_path(tmp_path: Path) -> None:

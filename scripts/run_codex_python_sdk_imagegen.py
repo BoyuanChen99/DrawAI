@@ -19,6 +19,7 @@ if str(SRC_ROOT) not in sys.path:
 from drawai.codex_python_sdk_imagegen import (  # noqa: E402
     CODEX_PYTHON_SDK_IMAGEGEN_RUNNER,
     check_codex_python_sdk_imagegen_capability,
+    invoke_codex_python_sdk_image_edit,
     invoke_codex_python_sdk_imagegen,
 )
 
@@ -42,7 +43,9 @@ def main() -> int:
         "schema": "drawai.codex_python_sdk_imagegen_smoke.v1",
         "runner": CODEX_PYTHON_SDK_IMAGEGEN_RUNNER,
         "status": "running",
+        "operation": "edit" if args.source_image else "generate",
         "prompt": prompt,
+        "source_image": str(args.source_image.resolve()) if args.source_image else None,
         "output_dir": str(output_dir),
         "trace_path": str(trace_path),
         "model_name": args.model,
@@ -59,16 +62,29 @@ def main() -> int:
         )
         summary.update({"status": "ok", "capabilities": capabilities})
     else:
-        result = invoke_codex_python_sdk_imagegen(
-            prompt=prompt,
-            output_dir=output_dir,
-            task_name=args.task_name,
-            output_stem=args.output_stem,
-            runtime_config=runtime_config,
-            trace_path=trace_path,
-            isolated_cwd=args.cwd,
-            config_overrides=args.config_override,
-        )
+        if args.source_image:
+            result = invoke_codex_python_sdk_image_edit(
+                source_image_path=args.source_image,
+                prompt=prompt,
+                output_dir=output_dir,
+                task_name=args.task_name,
+                output_stem=args.output_stem,
+                runtime_config=runtime_config,
+                trace_path=trace_path,
+                isolated_cwd=args.cwd,
+                config_overrides=args.config_override,
+            )
+        else:
+            result = invoke_codex_python_sdk_imagegen(
+                prompt=prompt,
+                output_dir=output_dir,
+                task_name=args.task_name,
+                output_stem=args.output_stem,
+                runtime_config=runtime_config,
+                trace_path=trace_path,
+                isolated_cwd=args.cwd,
+                config_overrides=args.config_override,
+            )
         summary.update({"status": "ok", "result": result.to_dict()})
 
     summary.update(
@@ -97,6 +113,11 @@ def parse_args() -> argparse.Namespace:
         help="Directory for generated image, trace, and sanitized SDK archive.",
     )
     parser.add_argument("--output-stem", default="codex-sdk-imagegen", help="Output image filename stem.")
+    parser.add_argument(
+        "--source-image",
+        type=Path,
+        help="Optional local source image. When set, run built-in image edit instead of text-to-image.",
+    )
     parser.add_argument("--trace", type=Path, help="Trace JSONL path. Defaults under --output-dir.")
     parser.add_argument("--cwd", type=Path, help="Codex SDK run cwd. Defaults to a temporary directory.")
     parser.add_argument("--model", default="", help="Optional Codex model override.")
