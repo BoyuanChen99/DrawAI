@@ -2,7 +2,7 @@ export type SourceStrategy = "svg_self_draw" | "crop" | "crop_nobg";
 export type AssetGeometry =
   | { kind: "bbox"; bbox: [number, number, number, number]; coordinate_system?: string }
   | { kind: "polygon"; points: Array<[number, number]>; bbox?: [number, number, number, number]; coordinate_system?: string }
-  | { kind: "mask"; mask_path: string; bbox: [number, number, number, number]; coordinate_system?: string };
+  | { kind: "mask"; mask_path?: string; bbox: [number, number, number, number]; coordinate_system?: string };
 
 export type BatchStatus = "queued" | "running" | "waiting_review" | "completed" | "failed" | "canceled";
 export type CaseStatus =
@@ -131,6 +131,10 @@ export interface AssetElement {
   reason: string;
   evidence: string[];
   geometry?: AssetGeometry;
+  geometry_kind?: string;
+  geometry_locked?: boolean;
+  geometry_preview_relative_path?: string;
+  mask_preview?: string;
   current_pipeline_method?: string;
   recommended_asset_source?: string;
   processed_asset_relative_path?: string;

@@ -3286,6 +3286,31 @@ select:focus {
   transform: none;
 }
 
+.asset-crop-preview.has-geometry-preview {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.asset-crop-preview.checker,
+.asset-result-cell.checker .asset-result-preview,
+.asset-zoom-frame.checker {
+  background-color: #ffffff;
+  background-image:
+    linear-gradient(45deg, rgba(15, 23, 42, 0.12) 25%, transparent 25%),
+    linear-gradient(-45deg, rgba(15, 23, 42, 0.12) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, rgba(15, 23, 42, 0.12) 75%),
+    linear-gradient(-45deg, transparent 75%, rgba(15, 23, 42, 0.12) 75%);
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  background-size: 16px 16px;
+}
+
+.asset-crop-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
 .asset-result-preview.has-image {
   display: grid;
   place-items: center;
@@ -3319,17 +3344,6 @@ select:focus {
 .asset-result-cell {
   display: grid;
   gap: 5px;
-}
-
-.asset-result-cell.checker .asset-result-preview {
-  background-color: #ffffff;
-  background-image:
-    linear-gradient(45deg, rgba(15, 23, 42, 0.12) 25%, transparent 25%),
-    linear-gradient(-45deg, rgba(15, 23, 42, 0.12) 25%, transparent 25%),
-    linear-gradient(45deg, transparent 75%, rgba(15, 23, 42, 0.12) 75%),
-    linear-gradient(-45deg, transparent 75%, rgba(15, 23, 42, 0.12) 75%);
-  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
-  background-size: 16px 16px;
 }
 
 .asset-result-cell.checker .asset-result-preview[style] {
@@ -3368,6 +3382,12 @@ select:focus {
   height: 100%;
   background-repeat: no-repeat;
   background-color: #ffffff;
+}
+
+.asset-zoom-image.direct-image {
+  display: block;
+  object-fit: contain;
+  background: transparent;
 }
 
 .asset-zoom-toolbar {
@@ -3671,6 +3691,53 @@ select:focus {
 .asset-box:hover .asset-badge,
 .asset-box.selected .asset-badge {
   display: block;
+}
+
+.asset-box.geometry-mask {
+  border-style: solid;
+  background: color-mix(in srgb, currentColor 9%, transparent);
+}
+
+.asset-box.geometry-mask:hover {
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+
+.asset-box.geometry-polygon {
+  border-style: dashed;
+}
+
+.asset-mask-preview {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+  opacity: 0.46;
+  pointer-events: none;
+  mix-blend-mode: multiply;
+}
+
+.asset-box.geometry-mask::after,
+.asset-box.geometry-polygon::after {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  border-radius: 4px;
+  background: rgba(15, 23, 42, 0.82);
+  color: #ffffff;
+  padding: 2px 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+}
+
+.asset-box.geometry-mask::after {
+  content: "MASK";
+}
+
+.asset-box.geometry-polygon::after {
+  content: "POLY";
 }
 
 .strategy-svg {

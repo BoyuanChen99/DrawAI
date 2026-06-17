@@ -5,6 +5,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -13,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -34,6 +35,7 @@ from drawai.codex_python_sdk_svg import (  # noqa: E402
     controlled_codex_config_overrides,
 )
 from drawai.codex_cli import resolve_codex_executable  # noqa: E402
+from drawai.asset_geometry import geometry_crop, normalize_asset_geometry  # noqa: E402
 
 
 SCHEMA_REQUEST = "drawai.codex_element_analysis_request.v1"
@@ -122,7 +124,7 @@ def run_case(case_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     if output_path.exists():
         output_path.unlink()
-    request = build_request(case_dir)
+    request = build_request(case_dir, output_dir)
     request_path = output_dir / "element_analysis_request.json"
     candidate_table_path = output_dir / "candidate_table.tsv"
     prompt_path = output_dir / "prompt.txt"
@@ -172,7 +174,8 @@ def run_case(case_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
             timeout_seconds=args.timeout_seconds,
             config_overrides=args.config_override,
         )
-    analysis = read_json(output_path)
+    analysis = enrich_analysis_with_source_geometry(case_dir, read_json(output_path))
+    write_json(output_path, analysis)
     validation = validate_analysis(analysis, request)
     write_json(output_dir / "validation.json", validation)
     elapsed_seconds = round(time.monotonic() - started_at, 3)
@@ -200,10 +203,11 @@ def run_case(case_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def build_request(case_dir: Path) -> dict[str, Any]:
+def build_request(case_dir: Path, output_dir: Path) -> dict[str, Any]:
     figure_path = case_dir / "inputs" / "figure.png"
     with Image.open(figure_path) as image:
         width, height = image.size
+        source_image = image.convert("RGBA")
 
     box_ir = read_json(case_dir / "box_ir" / "box_ir.json")
     raw_box_ir = read_json(case_dir / "box_ir" / "box_ir.raw.json", default={})
@@ -231,6 +235,9 @@ def build_request(case_dir: Path) -> dict[str, Any]:
     manifest_by_asset = records_by_key(asset_manifest.get("assets"), "asset_id")
     ocr_boxes = [dict(item) for item in ocr.get("ocr_text_boxes", []) if isinstance(item, Mapping)]
     candidates = []
+    mask_previews: list[dict[str, Any]] = []
+    mask_preview_dir = output_dir / "mask_previews"
+    reset_directory(mask_preview_dir)
     for index, box in enumerate(box_ir.get("boxes", []) or [], start=1):
         if not isinstance(box, Mapping):
             continue
@@ -246,26 +253,45 @@ def build_request(case_dir: Path) -> dict[str, Any]:
         policy = policy_by_asset.get(asset_id, {})
         manifest = manifest_by_asset.get(asset_id, {})
         current_method = current_pipeline_method(decision, initial, policy, manifest)
-        candidates.append(
-            {
-                "box_id": box_id,
-                "type": box.get("type", "unknown"),
-                "bbox": box.get("bbox"),
-                "parent_ids": box.get("parent_ids", []),
-                "child_ids": box.get("child_ids", []),
-                "source_box_ids": box.get("source_box_ids", []),
-                "source_prompt": box.get("source_prompt", ""),
-                "score": box.get("score", None),
-                "current_pipeline_method": current_method,
-                "asset_id": asset_id,
-                "asset_decision": compact_mapping(decision),
-                "initial_asset_decision": compact_mapping(initial),
-                "asset_policy": compact_mapping(policy),
-                "asset_manifest": compact_mapping(manifest),
-                "asset_hrefs": asset_hrefs(manifest),
-                "overlapping_ocr": overlapping_ocr(box.get("bbox"), ocr_boxes),
-            }
+        candidate = {
+            "box_id": box_id,
+            "type": box.get("type", "unknown"),
+            "bbox": box.get("bbox"),
+            "parent_ids": box.get("parent_ids", []),
+            "child_ids": box.get("child_ids", []),
+            "source_box_ids": box.get("source_box_ids", []),
+            "source_prompt": box.get("source_prompt", ""),
+            "score": box.get("score", None),
+            "current_pipeline_method": current_method,
+            "asset_id": asset_id,
+            "asset_decision": compact_mapping(decision),
+            "initial_asset_decision": compact_mapping(initial),
+            "asset_policy": compact_mapping(policy),
+            "asset_manifest": compact_mapping(manifest),
+            "asset_hrefs": asset_hrefs(manifest),
+            "overlapping_ocr": overlapping_ocr(box.get("bbox"), ocr_boxes),
+        }
+        geometry_context = candidate_geometry_context(
+            box,
+            box_id,
+            source_image,
+            case_dir=case_dir,
+            output_dir=output_dir,
+            mask_preview_dir=mask_preview_dir,
         )
+        if geometry_context:
+            candidate.update(geometry_context)
+            if geometry_context.get("geometry_kind") == "mask":
+                mask_previews.append(
+                    {
+                        "box_id": box_id,
+                        "bbox": box.get("bbox"),
+                        "preview_path": geometry_context.get("geometry_preview"),
+                    }
+                )
+        candidates.append(candidate)
+
+    mask_preview_sheet = write_mask_preview_sheet(case_dir, output_dir, mask_previews)
 
     return {
         "schema": SCHEMA_REQUEST,
@@ -273,6 +299,7 @@ def build_request(case_dir: Path) -> dict[str, Any]:
         "canvas": {"width": width, "height": height},
         "source_image": "inputs/figure.png",
         "asset_plan_overlay": "reports/assemble_debug/assets/08_asset_plan.png",
+        "mask_preview_sheet": mask_preview_sheet,
         "files": {
             "final_box_ir": "box_ir/box_ir.json",
             "raw_box_ir": "box_ir/box_ir.raw.json",
@@ -285,6 +312,7 @@ def build_request(case_dir: Path) -> dict[str, Any]:
         "raw_sam_box_count": len(raw_box_ir.get("boxes", []) or []),
         "ocr_box_count": len(ocr_boxes),
         "candidate_count": len(candidates),
+        "mask_candidate_count": len(mask_previews),
         "candidates": candidates,
         "classification_contract": {
             "categories": list(CATEGORIES),
@@ -297,11 +325,227 @@ def build_request(case_dir: Path) -> dict[str, Any]:
     }
 
 
+def candidate_geometry_context(
+    box: Mapping[str, Any],
+    box_id: str,
+    source_image: Image.Image,
+    *,
+    case_dir: Path,
+    output_dir: Path,
+    mask_preview_dir: Path,
+) -> dict[str, Any]:
+    geometry = normalize_asset_geometry(box.get("geometry"), fallback_bbox=box.get("bbox"), image_size=source_image.size)
+    if geometry is None:
+        return {}
+    kind = str(geometry.get("kind") or "")
+    public_geometry = {
+        key: value
+        for key, value in geometry.items()
+        if key not in {"mask_path", "alpha_mask_path", "path"}
+    }
+    context: dict[str, Any] = {
+        "geometry_kind": kind,
+        "geometry": public_geometry,
+    }
+    if kind == "mask":
+        bbox = int_bbox(geometry.get("bbox") or box.get("bbox"), source_image.size)
+        if bbox is None:
+            return context
+        preview = geometry_crop(source_image, bbox, geometry, base_dir=case_dir)
+        preview_path = mask_preview_dir / f"{safe_token(box_id)}_mask_preview.png"
+        preview.save(preview_path)
+        preview_rel = preview_path.relative_to(case_dir).as_posix()
+        context.update(
+            {
+                "geometry_preview": preview_rel,
+                "mask_preview": preview_rel,
+                "geometry_locked": True,
+                "geometry_rule": "This is a SAM mask region. Use the mask_preview PNG as visual evidence. Do not adjust its bbox or geometry; only merge/remove it when it is clearly duplicate or noise.",
+            }
+        )
+        public_geometry["preview_path"] = preview_rel
+    elif kind == "polygon":
+        context["geometry_rule"] = "This is a polygon region. Keep the polygon points when preserving this asset; resize/move only when the polygon was user-adjusted."
+    return context
+
+
+def enrich_analysis_with_source_geometry(case_dir: Path, analysis: Mapping[str, Any]) -> dict[str, Any]:
+    """Restore source-only geometry that Codex should not need to read directly."""
+    enriched = dict(analysis)
+    raw_elements = enriched.get("elements")
+    if not isinstance(raw_elements, list):
+        return enriched
+
+    box_ir = read_json(case_dir / "box_ir" / "box_ir.json", default={"boxes": []})
+    request = read_json(
+        case_dir / "reports" / "element_analysis_codex" / "element_analysis_request.json",
+        default={"candidates": []},
+    )
+    source_boxes = {
+        str(box.get("id")): box
+        for box in box_ir.get("boxes", []) or []
+        if isinstance(box, Mapping) and box.get("id")
+    }
+    request_candidates = {
+        str(candidate.get("box_id")): candidate
+        for candidate in request.get("candidates", []) or []
+        if isinstance(candidate, Mapping) and candidate.get("box_id")
+    }
+
+    elements: list[dict[str, Any]] = []
+    for raw_element in raw_elements:
+        if not isinstance(raw_element, Mapping):
+            continue
+        element = dict(raw_element)
+        source_ids = normalized_element_source_ids(element, source_boxes)
+        mask_sources: list[tuple[str, Mapping[str, Any], dict[str, Any]]] = []
+        polygon_sources: list[tuple[str, Mapping[str, Any], dict[str, Any]]] = []
+        for source_id in source_ids:
+            source = source_boxes.get(source_id)
+            if not isinstance(source, Mapping):
+                continue
+            geometry = normalize_asset_geometry(source.get("geometry"), fallback_bbox=source.get("bbox"))
+            if not geometry:
+                continue
+            if geometry.get("kind") == "mask":
+                mask_sources.append((source_id, source, geometry))
+            elif geometry.get("kind") == "polygon":
+                polygon_sources.append((source_id, source, geometry))
+
+        if len(mask_sources) == 1:
+            source_id, _source, geometry = mask_sources[0]
+            element["geometry"] = geometry
+            element["geometry_kind"] = "mask"
+            element["geometry_locked"] = True
+            element["bbox"] = geometry["bbox"]
+            preview = request_candidates.get(source_id, {}).get("geometry_preview")
+            if isinstance(preview, str) and preview:
+                element["geometry_preview_relative_path"] = preview
+                element["mask_preview"] = preview
+            element["reason"] = append_unique_sentence(
+                str(element.get("reason") or ""),
+                "Mask geometry is preserved from the source SAM region.",
+            )
+        elif len(polygon_sources) == 1 and not isinstance(element.get("geometry"), Mapping):
+            source_id, _source, geometry = polygon_sources[0]
+            element["geometry"] = geometry
+            element["geometry_kind"] = "polygon"
+            preview = request_candidates.get(source_id, {}).get("geometry_preview")
+            if isinstance(preview, str) and preview:
+                element["geometry_preview_relative_path"] = preview
+
+        elements.append(element)
+
+    enriched["elements"] = elements
+    return enriched
+
+
+def normalized_element_source_ids(
+    element: Mapping[str, Any],
+    source_boxes: Mapping[str, Mapping[str, Any]],
+) -> list[str]:
+    raw_source_ids = element.get("source_candidate_ids")
+    if isinstance(raw_source_ids, list):
+        source_ids = [str(item) for item in raw_source_ids if str(item)]
+    else:
+        source_ids = []
+    box_id = str(element.get("box_id") or "")
+    if not source_ids and box_id in source_boxes:
+        source_ids = [box_id]
+    return source_ids
+
+
+def append_unique_sentence(text: str, sentence: str) -> str:
+    text = text.strip()
+    if sentence in text:
+        return text
+    return f"{text} {sentence}".strip()
+
+
+def write_mask_preview_sheet(case_dir: Path, output_dir: Path, mask_previews: Sequence[Mapping[str, Any]]) -> str:
+    previews = [preview for preview in mask_previews if isinstance(preview.get("preview_path"), str)]
+    if not previews:
+        return ""
+    cell_width = 220
+    cell_height = 190
+    columns = min(4, max(1, len(previews)))
+    rows = (len(previews) + columns - 1) // columns
+    sheet = Image.new("RGB", (columns * cell_width, rows * cell_height), "#f8faf9")
+    draw = ImageDraw.Draw(sheet)
+    font = ImageFont.load_default()
+    for index, preview in enumerate(previews):
+        x = (index % columns) * cell_width
+        y = (index // columns) * cell_height
+        label = str(preview.get("box_id") or f"mask_{index + 1}")
+        rel_path = Path(str(preview["preview_path"]))
+        with Image.open(case_dir / rel_path) as image:
+            crop = image.convert("RGBA")
+        background = checkerboard(crop.size)
+        background.alpha_composite(crop)
+        background.thumbnail((cell_width - 24, cell_height - 44), Image.Resampling.LANCZOS)
+        px = x + (cell_width - background.width) // 2
+        py = y + 28 + (cell_height - 44 - background.height) // 2
+        sheet.paste(background.convert("RGB"), (px, py))
+        draw.rectangle([x + 8, y + 8, x + cell_width - 8, y + cell_height - 8], outline="#08784f", width=2)
+        draw.text((x + 14, y + 12), label, fill="#0f172a", font=font)
+        if preview.get("bbox"):
+            draw.text((x + 14, y + cell_height - 24), bbox_text(preview.get("bbox")), fill="#475569", font=font)
+    sheet_path = output_dir / "mask_previews" / "mask_preview_sheet.png"
+    sheet_path.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(sheet_path)
+    return sheet_path.relative_to(case_dir).as_posix()
+
+
+def checkerboard(size: tuple[int, int], block: int = 12) -> Image.Image:
+    image = Image.new("RGBA", size, "#ffffff")
+    draw = ImageDraw.Draw(image)
+    for y in range(0, size[1], block):
+        for x in range(0, size[0], block):
+            if (x // block + y // block) % 2 == 0:
+                draw.rectangle([x, y, x + block - 1, y + block - 1], fill="#e7ece8")
+    return image
+
+
+def reset_directory(path: Path) -> None:
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def int_bbox(raw_bbox: Any, image_size: tuple[int, int]) -> tuple[int, int, int, int] | None:
+    bbox = normalize_bbox(raw_bbox)
+    if bbox is None:
+        return None
+    width, height = image_size
+    left = max(0, min(width, int(bbox[0])))
+    top = max(0, min(height, int(bbox[1])))
+    right = max(0, min(width, int(bbox[2] + 0.999999)))
+    bottom = max(0, min(height, int(bbox[3] + 0.999999)))
+    if right <= left or bottom <= top:
+        return None
+    return left, top, right, bottom
+
+
+def safe_token(value: str) -> str:
+    token = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in value).strip("._-")
+    return token or "asset"
+
+
+def bbox_text(raw_bbox: Any) -> str:
+    bbox = normalize_bbox(raw_bbox)
+    if bbox is None:
+        return ""
+    return ",".join(str(round(value)) for value in bbox)
+
+
 def write_candidate_table(path: Path, request: Mapping[str, Any]) -> None:
     columns = (
         "box_id",
         "type",
         "bbox",
+        "geometry_kind",
+        "geometry_locked",
+        "geometry_preview",
         "current_pipeline_method",
         "asset_id",
         "render_policy",
@@ -326,6 +570,9 @@ def write_candidate_table(path: Path, request: Mapping[str, Any]) -> None:
             candidate.get("box_id", ""),
             candidate.get("type", ""),
             ",".join(str(item) for item in candidate.get("bbox", [])),
+            candidate.get("geometry_kind", ""),
+            candidate.get("geometry_locked", ""),
+            candidate.get("geometry_preview", ""),
             candidate.get("current_pipeline_method", ""),
             candidate.get("asset_id", ""),
             policy.get("render_policy", ""),
@@ -356,9 +603,10 @@ Workspace/case root:
 Inputs:
 - Original image: inputs/figure.png
 - Current DrawAI asset-plan overlay: reports/assemble_debug/assets/08_asset_plan.png
+- Mask preview sheet, when mask candidates exist: reports/element_analysis_codex/mask_previews/mask_preview_sheet.png
 - Compact candidate table: {candidate_table_path.relative_to(case_dir)}
 - Machine-readable request: {request_path.relative_to(case_dir)}
-- The request lists final layout candidates, overlapping OCR text, current crop/native decisions, asset policy metrics, and any optional pre-existing asset hrefs. The final asset manifest is generated after this analysis, so do not assume local crop hrefs already exist.
+- The request lists final layout candidates, overlapping OCR text, current crop/native decisions, asset policy metrics, geometry_kind, geometry_preview paths, and any optional pre-existing asset hrefs. The final asset manifest is generated after this analysis, so do not assume local crop hrefs already exist.
 
 You may read files under the case root, but this is a bounded analysis pass. Do not render SVG/PPT, do not spend time searching unrelated files, and do not print the full request JSON to the terminal. Start from the compact candidate table; use the full request JSON only for exact bbox/details when needed. Use the attached original image, the attached asset-plan overlay, and the request JSON as the factual sources. Do not use MCP tools, apps, web search, memories, skills, hooks, or multi-agent delegation.
 
@@ -370,6 +618,8 @@ Each output element should be the smallest independent visual part, such as one 
 - Preserve traceability. For an unchanged or adjusted element, set source_candidate_ids to the original candidate ID. For a split element, use a new stable ID such as B012_S01 and set source_candidate_ids to ["B012"]. For a newly added element, use a stable ID such as N001 and set source_candidate_ids to [].
 - Bboxes must be visual extents in image pixels. For a straight line or divider, give at least 1 pixel of thickness so the bbox has positive width and height.
 - Pay close attention to whether coordinates are correct and whether each bbox tightly contains the corresponding asset.
+- Some candidates have geometry_kind="mask". For those candidates, use their mask_preview PNG and the mask preview sheet as visual evidence. Do not adjust or resize the mask region; preserve its bbox/geometry when keeping it. You may remove or merge a mask candidate only when it is clearly duplicate or noise, and the original candidate ID must still be represented through source_candidate_ids.
+- Do not read or rely on raw mask files. Mask regions are intentionally exposed to you as cropped PNG previews, not as mask data.
 
 Task 2: repeat the following refinement loop until you believe the asset parsing quality is perfect, all elements are reasonable assets, and all bbox coordinates are accurate. Run at most 3 visualization/refinement iterations.
 1. Write the current refined assets JSON for the iteration to:
@@ -426,7 +676,10 @@ The JSON file must have this shape:
       "bbox": [0, 0, 10, 10],
       "type": "content_box",
       "current_pipeline_method": "svg_self_draw",
-      "recommended_asset_source": "svg"
+      "recommended_asset_source": "svg",
+      "geometry_kind": "mask",
+      "geometry_locked": true,
+      "geometry_preview_relative_path": "reports/element_analysis_codex/mask_previews/B001_mask_preview.png"
     }}
   ],
   "notes": []
@@ -676,7 +929,11 @@ def analysis_images(case_dir: Path) -> list[Path]:
     candidates = [
         case_dir / "inputs" / "figure.png",
         case_dir / "reports" / "assemble_debug" / "assets" / "08_asset_plan.png",
+        case_dir / "reports" / "element_analysis_codex" / "mask_previews" / "mask_preview_sheet.png",
     ]
+    preview_dir = case_dir / "reports" / "element_analysis_codex" / "mask_previews"
+    if preview_dir.is_dir():
+        candidates.extend(sorted(preview_dir.glob("*_mask_preview.png"))[:24])
     return [path for path in candidates if path.exists()]
 
 

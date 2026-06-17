@@ -238,6 +238,7 @@ def validate_asset_plan(plan: Mapping[str, Any]) -> dict[str, Any]:
         geometry = normalize_asset_geometry(raw.get("geometry"), fallback_bbox=bbox)
         if geometry is not None:
             element["geometry"] = geometry
+        _copy_geometry_metadata(raw, element)
         _copy_processing_fields(raw, element)
         elements.append(element)
     return {
@@ -296,6 +297,7 @@ def _draft_element(raw: Any, index: int) -> dict[str, Any]:
     geometry = normalize_asset_geometry(raw.get("geometry"), fallback_bbox=bbox)
     if geometry is not None:
         element["geometry"] = geometry
+    _copy_geometry_metadata(raw, element)
     return element
 
 
@@ -360,6 +362,16 @@ def _copy_processing_fields(raw: Mapping[str, Any], target: dict[str, Any]) -> N
     artifacts = raw.get("rmbg_artifacts")
     if isinstance(artifacts, Mapping):
         target["rmbg_artifacts"] = dict(artifacts)
+
+
+def _copy_geometry_metadata(raw: Mapping[str, Any], target: dict[str, Any]) -> None:
+    for key in ("geometry_kind", "geometry_preview_relative_path", "mask_preview"):
+        value = raw.get(key)
+        if isinstance(value, str) and value:
+            target[key] = value
+    locked = raw.get("geometry_locked")
+    if isinstance(locked, bool):
+        target["geometry_locked"] = locked
 
 
 def _clamped_int_bbox(bbox: Sequence[float], size: tuple[int, int], element_id: str) -> tuple[int, int, int, int]:

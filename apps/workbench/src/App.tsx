@@ -2670,7 +2670,10 @@ function AssetProcessingPanel({
               const checked = checkedSet.has(element.box_id);
               const processing = processingIds.includes(element.box_id);
               const processedUrl = assetProcessedUrl(element, assetPlan.case_id);
+              const geometryPreviewUrl = assetGeometryPreviewUrl(element, assetPlan.case_id);
+              const sourcePreviewUrl = geometryPreviewUrl || "";
               const hasProcessedPreview = Boolean(processedUrl);
+              const alphaPreview = isAlphaGeometry(element);
               return (
                 <tr key={element.box_id} className={selected ? "selected" : ""} onClick={() => onSelect(element.box_id)}>
                   <td>
@@ -2686,15 +2689,17 @@ function AssetProcessingPanel({
                     <div className="asset-processing-asset">
                       <button
                         type="button"
-                        className="asset-crop-preview"
-                        style={assetCropPreviewStyle(element, figureUrl, naturalSize)}
+                        className={`asset-crop-preview ${sourcePreviewUrl ? "has-geometry-preview checker" : ""}`}
+                        style={sourcePreviewUrl ? undefined : assetCropPreviewStyle(element, figureUrl, naturalSize)}
                         title="点击放大"
                         aria-label={`放大 ${element.box_id}`}
                         onClick={(event) => {
                           event.stopPropagation();
                           setZoomElement(element);
                         }}
-                      />
+                      >
+                        {sourcePreviewUrl && <img src={sourcePreviewUrl} alt="" />}
+                      </button>
                       <div>
                         <strong>{element.box_id}</strong>
                         <span>{bboxText(element.bbox)}</span>
@@ -2727,7 +2732,7 @@ function AssetProcessingPanel({
                     </div>
                   </td>
                   <td>
-                    <div className={`asset-result-cell ${hasProcessedPreview && element.source_strategy === "crop_nobg" ? "checker" : ""}`}>
+                    <div className={`asset-result-cell ${hasProcessedPreview && (element.source_strategy === "crop_nobg" || alphaPreview) ? "checker" : ""}`}>
                       <div
                         className={hasProcessedPreview ? "asset-result-preview has-image" : "asset-result-preview"}
                         style={hasProcessedPreview ? undefined : assetCropPreviewStyle(element, figureUrl, naturalSize)}
@@ -2769,6 +2774,7 @@ function AssetProcessingPanel({
       {zoomElement && figureUrl && (
         <AssetZoomOverlay
           element={zoomElement}
+          caseId={assetPlan.case_id}
           figureUrl={figureUrl}
           naturalSize={naturalSize}
           onClose={() => setZoomElement(null)}
@@ -2780,16 +2786,19 @@ function AssetProcessingPanel({
 
 function AssetZoomOverlay({
   element,
+  caseId,
   figureUrl,
   naturalSize,
   onClose
 }: {
   element: AssetElement;
+  caseId: string;
   figureUrl: string;
   naturalSize: { width: number; height: number };
   onClose: () => void;
 }) {
   const [scale, setScale] = useState(1);
+  const previewUrl = assetGeometryPreviewUrl(element, caseId);
   const cropStyle = assetCropPreviewStyle(element, figureUrl, naturalSize);
   const [x1, y1, x2, y2] = normalizeBBox(element.bbox);
   const ratio = clamp(Math.max(1, x2 - x1) / Math.max(1, y2 - y1), 0.25, 4);
@@ -2813,8 +2822,8 @@ function AssetZoomOverlay({
       onWheel={(event) => changeScale(event.deltaY < 0 ? 0.2 : -0.2)}
     >
       <div className="asset-zoom-stage" onClick={(event) => event.stopPropagation()}>
-        <div className="asset-zoom-frame" style={{ aspectRatio: String(ratio), transform: `scale(${scale})` }}>
-          <div className="asset-zoom-image" style={cropStyle} />
+        <div className={`asset-zoom-frame ${previewUrl ? "checker" : ""}`} style={{ aspectRatio: String(ratio), transform: `scale(${scale})` }}>
+          {previewUrl ? <img className="asset-zoom-image direct-image" src={previewUrl} alt="" /> : <div className="asset-zoom-image" style={cropStyle} />}
         </div>
       </div>
       <div className="asset-zoom-toolbar" onClick={(event) => event.stopPropagation()}>
@@ -3041,6 +3050,7 @@ function CanvasEditor({
             {visibleElements.map(({ element }, layerIndex) => (
               <AssetBox
                 key={element.box_id}
+                caseId={assetPlan.case_id}
                 element={element}
                 naturalSize={naturalSize}
                 selected={element.box_id === selected?.box_id}
@@ -3149,6 +3159,7 @@ function CanvasEditor({
 }
 
 function AssetBox({
+  caseId,
   element,
   naturalSize,
   selected,
@@ -3160,6 +3171,7 @@ function AssetBox({
   onResizeStart,
   onDelete
 }: {
+  caseId: string;
   element: AssetElement;
   naturalSize: { width: number; height: number };
   selected: boolean;
@@ -3172,9 +3184,11 @@ function AssetBox({
   onDelete: () => void;
 }) {
   const style = { ...bboxStyle(element.bbox, naturalSize), zIndex };
+  const geometryLabelText = geometryLabel(element);
+  const geometryPreviewUrl = assetGeometryPreviewUrl(element, caseId);
   return (
     <div
-      className={`asset-box ${strategyClass[element.source_strategy]} ${selected ? "selected" : ""}`}
+      className={`asset-box ${strategyClass[element.source_strategy]} ${geometryClass(element)} ${selected ? "selected" : ""}`}
       data-asset-id={element.box_id}
       style={style}
       onPointerDown={onMoveStart}
@@ -3189,7 +3203,11 @@ function AssetBox({
         onDelete();
       }}
     >
-      <span className="asset-badge">{element.box_id} · {strategyLabels[element.source_strategy]}</span>
+      {geometryPreviewUrl && <img className="asset-mask-preview" src={geometryPreviewUrl} alt="" draggable={false} />}
+      <span className="asset-badge">
+        {element.box_id} · {strategyLabels[element.source_strategy]}
+        {geometryLabelText ? ` · ${geometryLabelText}` : ""}
+      </span>
       {selected &&
         ["nw", "ne", "sw", "se"].map((handle) => (
           <button key={handle} className={`resize-handle ${handle}`} onPointerDown={(event) => onResizeStart(event, handle)} aria-label={`resize ${handle}`} />
@@ -3199,11 +3217,12 @@ function AssetBox({
 }
 
 function AssetTooltip({ element, naturalSize }: { element: AssetElement; naturalSize: { width: number; height: number } }) {
+  const label = geometryLabel(element);
   return (
     <div className={`canvas-tooltip ${strategyClass[element.source_strategy]}`} style={tooltipStyle(element.bbox, naturalSize)}>
       <strong>{element.box_id}</strong>
       <em>{element.visual_role || element.type}</em>
-      <small>{strategyLabels[element.source_strategy]} · {element.confidence}</small>
+      <small>{strategyLabels[element.source_strategy]} · {element.confidence}{label ? ` · ${label}` : ""}</small>
       <p>{element.reason || "暂无说明"}</p>
     </div>
   );
@@ -4434,6 +4453,7 @@ function clearWorkbenchProcessingReasons(
 
 function assetProcessingResultText(element: AssetElement): string {
   const label = isEditorSourceStrategy(element.source_strategy) ? strategyLabels[element.source_strategy] : "未处理";
+  const geometry = geometryLabel(element);
   const matchesCurrentMode = element.processed_asset_source_strategy === element.source_strategy;
   const processed = element.processing_status === "processed" && matchesCurrentMode && Boolean(element.processed_asset_relative_path);
   const legacyProcessed = element.reason.includes(WORKBENCH_PROCESSING_APPLIED_REASON);
@@ -4441,16 +4461,49 @@ function assetProcessingResultText(element: AssetElement): string {
     const elapsed = element.source_strategy === "crop_nobg" && typeof element.rmbg_elapsed_ms === "number"
       ? ` · ${Math.round(element.rmbg_elapsed_ms)}ms`
       : "";
-    return `已处理 · ${label}${elapsed}`;
+    return `已处理 · ${label}${geometry ? ` · ${geometry}` : ""}${elapsed}`;
   }
-  return `待处理 · ${label}`;
+  return `待处理 · ${label}${geometry ? ` · ${geometry}` : ""}`;
 }
 
 function assetProcessedUrl(element: AssetElement, caseId: string): string {
   if (!caseId || !element.processed_asset_relative_path || element.processed_asset_source_strategy !== element.source_strategy) return "";
-  const encoded = element.processed_asset_relative_path.split("/").map(encodeURIComponent).join("/");
-  const cacheKey = element.processed_asset_updated_at ? `?t=${encodeURIComponent(element.processed_asset_updated_at)}` : "";
-  return `/api/cases/${caseId}/files/${encoded}${cacheKey}`;
+  return caseFileUrl(caseId, element.processed_asset_relative_path, element.processed_asset_updated_at);
+}
+
+function assetGeometryPreviewUrl(element: AssetElement, caseId: string): string {
+  const relativePath = element.geometry_preview_relative_path || element.mask_preview || "";
+  if (!caseId || !relativePath) return "";
+  return caseFileUrl(caseId, relativePath);
+}
+
+function caseFileUrl(caseId: string, relativePath: string, cacheKey = ""): string {
+  if (!caseId || !relativePath) return "";
+  const encoded = relativePath.split("/").map(encodeURIComponent).join("/");
+  const suffix = cacheKey ? `?t=${encodeURIComponent(cacheKey)}` : "";
+  return `/api/cases/${caseId}/files/${encoded}${suffix}`;
+}
+
+function geometryKind(element: AssetElement): string {
+  return String(element.geometry?.kind || element.geometry_kind || "").toLowerCase();
+}
+
+function geometryLabel(element: AssetElement): string {
+  const kind = geometryKind(element);
+  if (kind === "mask") return "MASK";
+  if (kind === "polygon") return "POLY";
+  return "";
+}
+
+function geometryClass(element: AssetElement): string {
+  const kind = geometryKind(element);
+  if (kind === "mask") return "geometry-mask";
+  if (kind === "polygon") return "geometry-polygon";
+  return "";
+}
+
+function isAlphaGeometry(element: AssetElement): boolean {
+  return ["mask", "polygon"].includes(geometryKind(element));
 }
 
 async function buildUploadConfirmation(files: SelectedUploadFile[]): Promise<UploadConfirmation> {
