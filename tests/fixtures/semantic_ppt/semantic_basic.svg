@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 450" data-workflow="drawai-svg-first-v1">
+  <rect id="background" data-role="background" data-render="raster" x="0" y="0" width="800" height="450" fill="#ffffff"/>
+  <g id="module_planner" data-role="module" data-render="native" data-editable="true">
+    <rect id="module_planner_box" x="90" y="150" width="170" height="82" rx="14" fill="#d8e7ff" stroke="#2d5db3" stroke-width="3"/>
+    <text id="module_planner_label" data-role="text" data-render="native" x="175" y="198" text-anchor="middle" font-size="24" fill="#10203a">Planner</text>
+  </g>
+  <g id="module_visualizer" data-role="module" data-render="native" data-editable="true">
+    <rect id="module_visualizer_box" x="540" y="150" width="170" height="82" rx="14" fill="#e6f4d7" stroke="#4f8d2f" stroke-width="3"/>
+    <text id="module_visualizer_label" data-role="text" data-render="native" x="625" y="198" text-anchor="middle" font-size="24" fill="#10203a">Visualizer</text>
+  </g>
+  <line id="connector_main" data-role="connector" data-render="native" x1="270" y1="191" x2="530" y2="191" stroke="#1f2937" stroke-width="4"/>
+  <g id="icon_dense" data-role="dense_icon" data-render="hybrid_overlay" data-asset-id="asset_icon_dense" transform="translate(360 265)">
+    <path d="M0,0 C20,-30 60,-30 80,0 C95,22 76,55 40,62 C4,55 -15,22 0,0 Z" fill="#f5c542" stroke="#a36c00"/>
+    <path d="M20,20 L60,20 L60,42 L20,42 Z" fill="#ffffff" opacity="0.7"/>
+    <circle cx="31" cy="31" r="4" fill="#a36c00"/>
+    <circle cx="49" cy="31" r="4" fill="#a36c00"/>
+  </g>
+</svg>
