@@ -435,7 +435,7 @@ def run_drawai_pipeline(
                 output_dir=paths.svg_dir,
                 max_attempts=cfg.svg.max_attempts,
                 invoker=active_svg_invoker,
-                runtime_config=cfg.model_runtime.to_runtime_dict() if svg_invoker is None else None,
+                runtime_config=_svg_runtime_config(cfg) if svg_invoker is None else None,
                 staged_generation=cfg.svg.staged_generation,
                 visual_review_rounds=cfg.svg.visual_review_rounds,
                 template_ir=svg_template_ir,
@@ -896,7 +896,7 @@ def _run_file_backed_stage(
                 output_dir=paths.svg_dir,
                 max_attempts=cfg.svg.max_attempts,
                 invoker=active_svg_invoker,
-                runtime_config=cfg.model_runtime.to_runtime_dict() if svg_invoker is None else None,
+                runtime_config=_svg_runtime_config(cfg) if svg_invoker is None else None,
                 staged_generation=cfg.svg.staged_generation,
                 visual_review_rounds=cfg.svg.visual_review_rounds,
                 template_ir=svg_template_ir,
@@ -1541,6 +1541,10 @@ def _default_svg_invoker(
     return _DefaultSvgInvoker(cfg, paths)
 
 
+def _svg_runtime_config(cfg: DrawAiPipelineConfig) -> dict[str, Any]:
+    return cfg.model_runtime.to_runtime_dict()
+
+
 class _DefaultSvgInvoker:
     def __init__(
         self,
@@ -1569,10 +1573,13 @@ class _DefaultSvgInvoker:
     def __call__(self, **kwargs: Any) -> str:
         phase = str(kwargs.get("phase") or "single")
         prompt_kwargs = dict(kwargs)
-        if self.cfg.svg.generation_backend == "codex_python_sdk_controlled":
+        if self.cfg.svg.generation_backend in {"codex_python_sdk_controlled", "agent_cli"}:
             prompt_kwargs["file_context_mode"] = True
-            prompt_kwargs["codex_thread_turn_mode"] = True
             prompt_kwargs["workspace_dir"] = self.paths.root
+            if self.cfg.svg.generation_backend == "agent_cli":
+                prompt_kwargs["agent_label"] = _agent_cli_label(self.cfg.model_runtime.cli.agent)
+            else:
+                prompt_kwargs["codex_thread_turn_mode"] = True
         prompt = _svg_generation_prompt(prompt_kwargs)
         prompt_path = kwargs.get("prompt_path")
         if prompt_path is not None:
@@ -1581,6 +1588,8 @@ class _DefaultSvgInvoker:
             prompt_output.write_text(prompt, encoding="utf-8")
         if self.cfg.svg.generation_backend == "codex_python_sdk_controlled":
             return self._invoke_codex_thread(phase=phase, prompt=prompt, kwargs=kwargs)
+        if self.cfg.svg.generation_backend == "agent_cli":
+            return self._invoke_agent_cli(phase=phase, prompt=prompt, kwargs=kwargs)
         if self.cfg.svg.generation_backend == "sdk_tool_loop":
             from .codex_svg_tool_loop import invoke_codex_svg_text
 
@@ -1659,6 +1668,28 @@ class _DefaultSvgInvoker:
         session.__enter__()
         self._codex_session = session
         return session
+
+    def _invoke_agent_cli(
+        self,
+        *,
+        phase: str,
+        prompt: str,
+        kwargs: Mapping[str, Any],
+    ) -> str:
+        from .agent_cli_svg import AgentCliSvgSession
+
+        session = AgentCliSvgSession(
+            runtime_config=self.runtime_config,
+            trace_path=self.trace_path,
+            isolated_cwd=self.paths.root,
+        )
+        return session.invoke(
+            image_paths=[Path(kwargs["figure_path"]), Path(kwargs["reference_image_path"])],
+            prompt=prompt,
+            task_name=f"box_ir_semantic_svg.{phase}.v1",
+            output_svg_path=Path(kwargs["output_svg_path"]),
+            output_response_path=Path(kwargs["output_response_path"]),
+        )
 
 
 def _recover_latest_valid_codex_partial_svg(
@@ -1764,6 +1795,7 @@ def _svg_generation_prompt(kwargs: Mapping[str, Any]) -> str:
     phase = str(kwargs.get("phase") or "single")
     text_rendering = _normalize_svg_text_rendering(kwargs.get("text_rendering"))
     file_context_mode = bool(kwargs.get("file_context_mode"))
+    agent_label = str(kwargs.get("agent_label") or "Codex").strip() or "Codex"
     box_ir = kwargs.get("box_ir") if isinstance(kwargs.get("box_ir"), Mapping) else {}
     asset_manifest = kwargs.get("asset_manifest") if isinstance(kwargs.get("asset_manifest"), Mapping) else {}
     template_ir = kwargs.get("template_ir")
@@ -1815,7 +1847,7 @@ def _svg_generation_prompt(kwargs: Mapping[str, Any]) -> str:
         if file_context_mode:
             return (
                 "ROLE\n"
-                "You are Codex operating inside the DrawAI run workspace. Your job is to edit files, not to return SVG in chat.\n\n"
+                f"You are {agent_label} operating inside the DrawAI run workspace. Your job is to edit files, not to return SVG in chat.\n\n"
                 "STAGE GOAL\n"
                 "Run 1 / template: Build the first editable vector template for the whole figure. "
                 "Produce a complete first-pass SVG that keeps run0 svg_self_draw structure editable and inserts allowed manifest-backed crop/crop_nobg image assets at their refined bboxes.\n\n"
@@ -1835,12 +1867,14 @@ def _svg_generation_prompt(kwargs: Mapping[str, Any]) -> str:
                 f"- {_template_text_rendering_instruction(text_rendering)}\n"
                 "- Use OCR text evidence only as a hint; correct it when the image disagrees.\n"
                 "ALLOWED ACTIONS\n"
-                "- Draw run0 svg_self_draw structure using rect, line, polyline, path, polygon, circle/ellipse, text/tspan, g, markers, and supported gradients.\n"
+                "- Draw run0 svg_self_draw structure using rect, line, polyline, path, polygon, circle/ellipse, text/tspan, g, explicit polygon arrowheads, and supported gradients.\n"
                 "- Insert allowed local raster images listed in the asset manifest for run0 crop/crop_nobg elements.\n"
                 "- Use simple neutral underlays around gray boxes when surrounding editable structure needs continuity.\n\n"
                 "FORBIDDEN ACTIONS\n"
                 "RETIRED PLACEHOLDER CONTRACT:\n"
                 "- Do not output AF01/AF02 identifiers, data-placeholder-kind, data-asset-id, data-asset-placeholder, or placeholder groups.\n"
+                "- Do not write any AFxx token as visible text, ids, comments, descriptions, metadata, or annotations.\n"
+                "- Do not use <marker>, marker-start, marker-mid, or marker-end; draw arrowheads as explicit editable polygons.\n"
                 "- Do not output CSS <style> blocks, filters, masks, clipPath, foreignObject, textPath, pattern fills, base64 images, external URLs, absolute paths, <symbol>, or <use>.\n"
                 "- Do not add arrows, panels, or placeholder-like objects solely because the IR contains a noisy proposal.\n\n"
                 "VALIDATION CHECKLIST\n"
@@ -1909,7 +1943,7 @@ def _svg_generation_prompt(kwargs: Mapping[str, Any]) -> str:
         if file_context_mode:
             return (
                 "ROLE\n"
-                "You are Codex operating inside the DrawAI run workspace. Your job is to inspect the current template files and edit the SVG output file.\n\n"
+                f"You are {agent_label} operating inside the DrawAI run workspace. Your job is to inspect the current template files and edit the SVG output file.\n\n"
                 "STAGE GOAL\n"
                 f"Run 2 / {phase}: Visual-review round {visual_round} of {visual_total_rounds}. "
                 f"This is visual review loop round {visual_round} of {visual_total_rounds}. "
@@ -1941,6 +1975,8 @@ def _svg_generation_prompt(kwargs: Mapping[str, Any]) -> str:
                 "- Do not invent raster assets, hrefs, or bboxes outside the asset manifest/native_backfill_request.\n"
                 "- Do not redraw complex crop/crop_nobg content when an allowed href exists.\n"
                 "- Do not use AF01/AF02 identifiers, data-placeholder-kind, data-asset-id, data-asset-placeholder, or placeholder groups.\n"
+                "- Do not write any AFxx token as visible text, ids, comments, descriptions, metadata, or annotations.\n"
+                "- Do not use <marker>, marker-start, marker-mid, or marker-end; draw arrowheads as explicit editable polygons.\n"
                 "- Do not optimize one category by breaking another.\n\n"
                 "VALIDATION CHECKLIST\n"
                 "- Every remaining arrow or connector corresponds to visible original structure in Image 1.\n"
@@ -1998,7 +2034,7 @@ def _svg_generation_prompt(kwargs: Mapping[str, Any]) -> str:
         if file_context_mode:
             return (
                 "ROLE\n"
-                "You are Codex operating inside the DrawAI run workspace. Your job is to produce the final editable semantic SVG file.\n\n"
+                f"You are {agent_label} operating inside the DrawAI run workspace. Your job is to produce the final editable semantic SVG file.\n\n"
                 "STAGE GOAL\n"
                 "Run 3 / ir_refine: Start from the validated visual template, use the compact IR only for final content-box and arrow geometry corrections, "
                 "and produce the final SVG that local post-processing can convert to editable PowerPoint.\n\n"
@@ -2027,7 +2063,9 @@ def _svg_generation_prompt(kwargs: Mapping[str, Any]) -> str:
                 "- Do not use parent crop/source_svg_href when insertable_components are provided.\n"
                 "- Do not invent hrefs, absolute paths, or raster assets outside the manifest.\n"
                 "- Do not redraw detailed content inside raster asset bboxes.\n"
-                "- Do not output AF01/AF02 identifiers, data-placeholder-kind, data-asset-id, data-asset-placeholder, or placeholder groups.\n\n"
+                "- Do not output AF01/AF02 identifiers, data-placeholder-kind, data-asset-id, data-asset-placeholder, or placeholder groups.\n"
+                "- Do not write any AFxx token as visible text, ids, comments, descriptions, metadata, or annotations.\n"
+                "- Do not use <marker>, marker-start, marker-mid, or marker-end; draw arrowheads as explicit editable polygons.\n\n"
                 "VALIDATION CHECKLIST\n"
                 "- Final SVG dimensions and viewBox match exactly.\n"
                 "- Manifest raster assets, if used, reference only allowed hrefs and preserve their bboxes.\n"
@@ -2099,12 +2137,19 @@ def _svg_generation_prompt(kwargs: Mapping[str, Any]) -> str:
     )
 
 
+def _format_prompt_number(value: float) -> str:
+    if abs(value - round(value)) < 1e-6:
+        return str(int(round(value)))
+    return f"{value:.3f}".rstrip("0").rstrip(".")
+
+
 def _svg_generation_thread_shared_prompt(kwargs: Mapping[str, Any]) -> str:
     box_ir = kwargs.get("box_ir") if isinstance(kwargs.get("box_ir"), Mapping) else {}
     asset_manifest = kwargs.get("asset_manifest") if isinstance(kwargs.get("asset_manifest"), Mapping) else {}
     template_ir = kwargs.get("template_ir")
     if not isinstance(template_ir, Mapping):
         template_ir = build_svg_template_ir(box_ir)
+    agent_label = str(kwargs.get("agent_label") or "Codex").strip() or "Codex"
     width, height = _canvas_size_for_prompt(template_ir)
     dimension_rules = (
         f"- The original image has dimensions: {width} x {height} pixels.\n"
@@ -2112,9 +2157,9 @@ def _svg_generation_thread_shared_prompt(kwargs: Mapping[str, Any]) -> str:
         "- Do not scale or resize the SVG canvas.\n"
     )
     return (
-        "DRAWAI CODEX THREAD SHARED CONTEXT\n"
+        f"DRAWAI {agent_label.upper()} THREAD SHARED CONTEXT\n"
         "ROLE\n"
-        "You are Codex operating inside one reusable DrawAI SVG-generation thread. "
+        f"You are {agent_label} operating inside one reusable DrawAI SVG-generation thread. "
         "Python starts the thread and supplies each new turn, but you are responsible for reading files, editing SVG files, and writing the requested output files yourself.\n\n"
         "THREAD STRUCTURE\n"
         "- Run 1 / template creates the first editable visual template.\n"
@@ -2444,6 +2489,8 @@ def _native_backfill_shared_prompt(kwargs: Mapping[str, Any]) -> str:
         f"- Writable backfill assets directory: {_path_for_prompt(kwargs.get('native_backfill_assets_dir'))}\n"
         "- This mode exists only for candidate regions where native SVG visibly fails after rendering or where visual evidence indicates the region should be restored from an exact/no-background crop instead of redrawn.\n"
         "- Prefer editable SVG whenever it is visually acceptable. Backfill only candidate regions with visible failures or content that is unsuitable for faithful native-SVG reconstruction, such as lost photos, dense icons, screenshots, or texture-like patches.\n"
+        "- SVG image href values must come only from the run0 asset manifest or from candidate.preserve_href/candidate.nobg_href in native_backfill_request.json.\n"
+        "- Treat source_image, source_region_preview, native_backfill_previews, and svg_to_ppt/assets/crops files as read-only visual evidence; never paste those paths into an SVG href.\n"
         "- Never backfill panels, arrows, text, formulas, tables, grids, borders, or whole-slide structure.\n\n"
     )
 
@@ -2483,8 +2530,9 @@ def _native_backfill_mode_prompt(kwargs: Mapping[str, Any], phase: str) -> str:
         "- Optional lightweight background removal command:\n"
         f"  python {tools_dir}/remove_background.py --request {_path_for_prompt(request_path)} --asset-id <asset_id>\n"
         "- Use background removal only for an isolated foreground subject on a removable plain/light/neutral background, or when policy.background_policy says transparent_subject. Preserve the crop for landscape/photo/texture/heatmap-like regions.\n"
-        "- Use href=\"<candidate.preserve_href>\" for preserved crop or href=\"<candidate.nobg_href>\" for no-background crop. Do not invent hrefs.\n"
-        "- The validator allows these backfill hrefs, but Python will not automatically insert them; the SVG must explicitly reference the selected href.\n\n"
+        "- Use href=\"<candidate.preserve_href>\" for preserved crop or href=\"<candidate.nobg_href>\" for no-background crop. If you run a helper tool, copy the JSON result's href value exactly.\n"
+        "- Do not use source_image, source_region_preview, native_backfill_previews, ../svg_to_ppt/assets/crops/*.png, absolute paths, file:// URLs, external URLs, or guessed crop paths as SVG href values.\n"
+        "- The validator allows only manifest hrefs and the native backfill hrefs listed in native_backfill_request.json; any other local image path is invalid.\n\n"
     )
 
 
@@ -3082,6 +3130,17 @@ def _svg_to_ppt_requested_export_mode(compiler_report: Any) -> str | None:
     return None
 
 
+def _agent_cli_label(agent: str) -> str:
+    agent_name = str(agent or "").strip().lower()
+    if agent_name == "kimi":
+        return "Kimi CLI"
+    if agent_name == "claude":
+        return "Claude CLI"
+    if agent_name == "codex":
+        return "Codex CLI"
+    return "Agent CLI"
+
+
 def _svg_to_ppt_effective_export_mode(compiler_report: Any) -> str | None:
     if not isinstance(compiler_report, Mapping):
         return None
@@ -3198,6 +3257,11 @@ def _run_codex_run0_asset_analysis(cfg: DrawAiPipelineConfig, paths: DrawAiArtif
         repo_root=repo_root,
         label="assemble debug report",
     )
+    element_analysis_invoker = (
+        "agent_cli"
+        if cfg.svg.generation_backend == "agent_cli" or cfg.model_runtime.provider == "agent-cli"
+        else "cli"
+    )
     command = [
         sys.executable,
         str(element_analysis_script),
@@ -3205,7 +3269,7 @@ def _run_codex_run0_asset_analysis(cfg: DrawAiPipelineConfig, paths: DrawAiArtif
         "--max-workers",
         "1",
         "--invoker",
-        "cli",
+        element_analysis_invoker,
         "--reasoning-effort",
         "medium",
         "--timeout-seconds",
@@ -3214,6 +3278,11 @@ def _run_codex_run0_asset_analysis(cfg: DrawAiPipelineConfig, paths: DrawAiArtif
     model_name = str(cfg.model_runtime.model_name or "").strip()
     if model_name:
         command.extend(["--model", model_name])
+    if element_analysis_invoker == "agent_cli":
+        command.extend(["--agent-cli-agent", cfg.model_runtime.cli.agent])
+        if cfg.model_runtime.cli.command:
+            command.append("--agent-cli-command")
+            command.extend(cfg.model_runtime.cli.command)
     _run_repo_script(command, repo_root=repo_root, label="Codex run0 asset analysis")
 
 

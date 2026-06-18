@@ -8,10 +8,12 @@ import pytest
 from PIL import Image
 
 from drawai.artifacts import prepare_artifact_paths
-from drawai.config import DrawAiInputConfig, DrawAiPipelineConfig
+from drawai.config import DrawAiInputConfig, DrawAiPipelineConfig, load_drawai_config
 from drawai.pipeline import (
     _DefaultSvgInvoker,
     _box_merge_diagnostics,
+    _default_svg_invoker,
+    _run_codex_run0_asset_analysis,
     _svg_to_ppt_validation_asset_manifest,
     run_drawai_pipeline,
     run_drawai_pipeline_from_stage,
@@ -1692,6 +1694,133 @@ def test_default_svg_invoker_recovers_valid_partial_codex_svg_after_timeout(monk
     assert invoker._codex_session is None
     trace_text = paths.trace_dir.joinpath("svg_generation_model.jsonl").read_text(encoding="utf-8")
     assert "codex_python_sdk_partial_svg_recovered" in trace_text
+
+
+def test_codex_run0_asset_analysis_uses_agent_cli_invoker_from_config(monkeypatch, tmp_path: Path):
+    image = tmp_path / "input.png"
+    Image.new("RGB", (100, 50), "white").save(image)
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"""
+input:
+  image: {image.name}
+  output_dir: out
+svg:
+  generation_backend: agent_cli
+model_runtime:
+  provider: agent-cli
+  connection_id: kimi
+  model_name: kimi-code/kimi-for-coding
+  cli:
+    agent: kimi
+    command:
+      - kimi
+  timeout_seconds: 120
+""",
+        encoding="utf-8",
+    )
+    cfg = load_drawai_config(config)
+    paths = prepare_artifact_paths(cfg.input.output_dir)
+    calls = []
+
+    def record_run_repo_script(command, *, repo_root, label):
+        calls.append({"command": list(command), "repo_root": repo_root, "label": label})
+
+    monkeypatch.setattr("drawai.pipeline._run_repo_script", record_run_repo_script)
+
+    _run_codex_run0_asset_analysis(cfg, paths)
+
+    assert [call["label"] for call in calls] == ["assemble debug report", "Codex run0 asset analysis"]
+    command = calls[1]["command"]
+    assert command[command.index("--invoker") + 1] == "agent_cli"
+    assert command[command.index("--model") + 1] == "kimi-code/kimi-for-coding"
+    assert command[command.index("--agent-cli-agent") + 1] == "kimi"
+    cli_index = command.index("--agent-cli-command")
+    assert command[cli_index + 1 : cli_index + 2] == ["kimi"]
+
+
+def test_default_svg_invoker_uses_agent_cli_file_session_for_quality_mode(monkeypatch, tmp_path: Path):
+    image = tmp_path / "input.png"
+    Image.new("RGB", (100, 50), "white").save(image)
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"""
+input:
+  image: {image.name}
+  output_dir: out
+svg:
+  generation_backend: agent_cli
+model_runtime:
+  provider: agent-cli
+  connection_id: claude
+  cli:
+    agent: claude
+    command:
+      - claude
+  timeout_seconds: 120
+""",
+        encoding="utf-8",
+    )
+    cfg = load_drawai_config(config)
+    paths = prepare_artifact_paths(cfg.input.output_dir)
+    figure = paths.inputs_dir / "figure.png"
+    reference = paths.svg_dir / "template_reference.png"
+    Image.new("RGB", (100, 50), "white").save(figure)
+    Image.new("RGB", (100, 50), "white").save(reference)
+    output_svg = paths.svg_dir / "template_iterations" / "01_template" / "001" / "semantic.svg"
+    output_response = output_svg.with_name("model_response.txt")
+    prompt_path = output_svg.with_name("prompt.txt")
+    sessions = []
+    calls = []
+
+    class FakeAgentCliSvgSession:
+        def __init__(self, *, runtime_config, trace_path, isolated_cwd=None):
+            self.runtime_config = runtime_config
+            self.trace_path = str(trace_path)
+            self.isolated_cwd = str(isolated_cwd) if isolated_cwd is not None else None
+            sessions.append(self)
+
+        def invoke(self, *, image_paths, prompt, task_name, output_svg_path=None, output_response_path=None):
+            calls.append(
+                {
+                    "method": "invoke",
+                    "image_paths": [str(path) for path in image_paths],
+                    "prompt": prompt,
+                    "task_name": task_name,
+                    "output_svg_path": str(output_svg_path),
+                    "output_response_path": str(output_response_path),
+                }
+            )
+            return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50" width="100" height="50"></svg>'
+
+    monkeypatch.setattr("drawai.agent_cli_svg.AgentCliSvgSession", FakeAgentCliSvgSession)
+
+    with _default_svg_invoker(cfg, paths) as invoker:
+        svg = invoker(
+            phase="template",
+            figure_path=figure,
+            reference_image_path=reference,
+            box_ir={"canvas": {"width": 100, "height": 50}, "boxes": []},
+            asset_manifest={"assets": []},
+            template_ir={"canvas": {"width": 100, "height": 50}, "elements": []},
+            prompt_path=prompt_path,
+            output_svg_path=output_svg,
+            output_response_path=output_response,
+            text_rendering="model_text",
+        )
+
+    assert svg.startswith("<svg")
+    assert len(sessions) == 1
+    assert sessions[0].runtime_config["provider"] == "agent-cli"
+    assert sessions[0].runtime_config["cli"] == {"agent": "claude", "command": ["claude"]}
+    assert sessions[0].isolated_cwd.endswith("/out")
+    assert calls[0]["method"] == "invoke"
+    assert calls[0]["task_name"] == "box_ir_semantic_svg.template.v1"
+    assert calls[0]["image_paths"] == [str(figure), str(reference)]
+    assert calls[0]["output_svg_path"].endswith("/svg/template_iterations/01_template/001/semantic.svg")
+    assert calls[0]["output_response_path"].endswith("/svg/template_iterations/01_template/001/model_response.txt")
+    assert "Run 1 / template" in calls[0]["prompt"]
+    assert "Claude CLI" in calls[0]["prompt"]
 
 
 def test_failed_rerun_clears_stale_later_stage_status_and_artifacts(tmp_path: Path):

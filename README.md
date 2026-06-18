@@ -99,7 +99,7 @@ uv run drawai run /path/to/your/image.png --local --device mps
 - Python 3.12+
 - [`uv`](https://docs.astral.sh/uv/)
 - Node.js 20.19+ 或 22.12+，仅 Workbench 前端需要
-- 可用的 Codex/OpenAI 认证，用于 SVG 生成阶段
+- 可用的 Codex/OpenAI 认证，或已登录的 Kimi CLI（`kimi`），用于 run0 资产分析和 SVG 生成阶段
 - >8GB 磁盘空间以保存模型和安装环境
 
 模型和运行时默认放在：
@@ -109,6 +109,24 @@ uv run drawai run /path/to/your/image.png --local --device mps
 ```
 
 它不会被提交到 git。模型下载默认走 ModelScope；如果你希望用 Hugging Face、手动模型目录、不同 Torch 后端或自定义端口，请看[运行参数文档](docs/zh-CN/runtime-options.md)。
+
+### 选择 Codex SDK 或 Agent CLI
+
+默认配置继续使用 Codex Python SDK。要改用直接 CLI，把配置中的 SVG backend 和 runtime provider 切到 `agent_cli`，再在 `model_runtime.cli` 里选择 `kimi`、`claude`、`codex` 或自定义命令：
+
+```yaml
+svg:
+  generation_backend: agent_cli
+model_runtime:
+  provider: agent-cli
+  connection_id: kimi
+  cli:
+    agent: kimi
+    command:
+      - kimi
+```
+
+Agent CLI 路径会同时用于 run0 资产分析和 SVG 生成；继续使用 Codex SDK 时无需改动默认配置。Claude/Codex CLI 只需要把 `agent` 和 `command` 换成对应命令，例如 `claude` 或 `codex exec`。
 
 <a id="outputs"></a>
 ## 📦 输出结果在哪里

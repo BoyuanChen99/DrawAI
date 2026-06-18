@@ -530,6 +530,73 @@ def test_codex_sdk_staged_generation_merges_three_runs_into_one_self_iterating_t
     assert "data-asset-id" not in final_svg
 
 
+def test_agent_cli_staged_generation_uses_quality_stage_turns_by_default(tmp_path: Path):
+    figure, reference, box_ir, asset_manifest = _make_staged_inputs(tmp_path)
+    output_dir = tmp_path / "out" / "svg"
+    calls = []
+
+    def fake_invoker(
+        *,
+        phase,
+        attempt,
+        output_svg_path,
+        **kwargs,
+    ):
+        prompt_kwargs = dict(kwargs)
+        prompt_kwargs.update(
+            {
+                "phase": phase,
+                "attempt": attempt,
+                "output_svg_path": output_svg_path,
+                "file_context_mode": True,
+                "codex_thread_turn_mode": False,
+            }
+        )
+        Path(kwargs["prompt_path"]).write_text(
+            _svg_generation_prompt(prompt_kwargs),
+            encoding="utf-8",
+        )
+        calls.append(
+            {
+                "phase": phase,
+                "output_svg_path": Path(output_svg_path),
+                "prompt": Path(kwargs["prompt_path"]).read_text(encoding="utf-8"),
+            }
+        )
+        return VALID_BLUE_SVG
+
+    result = run_svg_generation_loop(
+        box_ir=box_ir,
+        figure_path=figure,
+        reference_image_path=reference,
+        asset_manifest=asset_manifest,
+        output_dir=output_dir,
+        max_attempts=3,
+        invoker=fake_invoker,
+        runtime_config={
+            "provider": "agent-cli",
+            "connection_id": "kimi",
+            "cli": {"agent": "kimi", "command": ["kimi"]},
+        },
+        staged_generation=True,
+        text_rendering="model_text",
+        visual_review_rounds=("text_style",),
+    )
+
+    assert result["status"] == "ok"
+    assert [call["phase"] for call in calls] == [
+        "template",
+        "visual_review_text_style",
+        "ir_refine",
+    ]
+    assert calls[0]["output_svg_path"] == output_dir / "template_iterations" / "01_template" / "001" / "semantic.svg"
+    assert calls[-1]["output_svg_path"] == output_dir / "attempts" / "ir_refine" / "001" / "semantic.svg"
+    assert "Run 1 / template" in calls[0]["prompt"]
+    assert "Run 2 / visual_review_text_style" in calls[1]["prompt"]
+    assert "Run 3 / ir_refine" in calls[2]["prompt"]
+    assert "RUN1 / COMPLETE FIRST PASS" not in calls[0]["prompt"]
+
+
 def test_codex_merged_thread_prompt_instructs_self_rendered_iteration():
     box_ir = {"canvas": {"width": 200, "height": 120}, "boxes": [], "ocr_text_boxes": []}
     prompt = _svg_generation_prompt(
@@ -1604,6 +1671,62 @@ def test_svg_generation_loop_accepts_canonical_svg_href_from_attempt_dir(tmp_pat
 
     assert result["status"] == "ok"
     assert (output_dir / "semantic.svg").read_text(encoding="utf-8").find("../assets/crops/AF01.png") != -1
+
+
+def test_svg_generation_loop_rewrites_native_backfill_source_crop_href(tmp_path: Path):
+    figure, reference, box_ir = _make_inputs(tmp_path)
+    box_ir["boxes"] = [
+        {"id": "B031", "type": "icon", "bbox": [10, 12, 28, 30]},
+    ]
+    output_dir = tmp_path / "out" / "svg"
+    crops_dir = tmp_path / "out" / "svg_to_ppt" / "assets" / "crops"
+    crops_dir.mkdir(parents=True)
+    Image.new("RGBA", (18, 18), (0, 128, 255, 255)).save(crops_dir / "AF31.png")
+    decisions_path = tmp_path / "out" / "svg_to_ppt" / "assets" / "asset_decisions.json"
+    decisions_path.write_text(
+        json.dumps(
+            {
+                "decisions": [
+                    {
+                        "box_id": "B031",
+                        "decision": "native_svg",
+                        "asset_id": "AF31",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_invoker(**kwargs):
+        return (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80" width="100" height="80">'
+            '<rect width="100" height="80" fill="white"/>'
+            '<image href="../svg_to_ppt/assets/crops/AF31.png" x="10" y="12" width="18" height="18"/>'
+            "</svg>"
+        )
+
+    result = run_svg_generation_loop(
+        box_ir=box_ir,
+        figure_path=figure,
+        reference_image_path=reference,
+        asset_manifest={"assets": []},
+        output_dir=output_dir,
+        max_attempts=1,
+        invoker=fake_invoker,
+    )
+
+    final_svg = (output_dir / "semantic.svg").read_text(encoding="utf-8")
+    attempt_report = json.loads(
+        (output_dir / "attempts" / "001" / "validation_report.json").read_text(encoding="utf-8")
+    )
+    repaired_href = "native_backfill_assets/single_001/AF31.png"
+    assert result["status"] == "ok"
+    assert repaired_href in final_svg
+    assert "../svg_to_ppt/assets/crops/AF31.png" not in final_svg
+    assert (output_dir / repaired_href).is_file()
+    assert attempt_report["native_backfill_href_repair"]["rewritten_count"] == 1
+    assert attempt_report["native_backfill_href_repair"]["materialized_count"] == 1
 
 
 def test_svg_generation_loop_missing_svg_retries_with_feedback(tmp_path: Path):

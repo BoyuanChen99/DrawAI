@@ -264,7 +264,6 @@ def _run_staged_generation_loop(
             template_ir=template_ir,
             text_rendering=text_rendering,
         )
-
     template_result = _run_visual_template_phase(
         box_ir=box_ir,
         figure_path=figure_path,
@@ -362,7 +361,9 @@ def _uses_codex_python_sdk_runtime(runtime_config: Any | None) -> bool:
         return False
     provider = str(runtime_config.get("provider") or "").strip().lower()
     connection_id = str(runtime_config.get("connection_id") or "").strip().lower()
-    return provider == "codex-python-sdk" or connection_id == "codex-python-sdk-controlled"
+    return provider in {"codex-python-sdk"} or connection_id in {
+        "codex-python-sdk-controlled",
+    }
 
 
 def _run_codex_merged_staged_generation_loop(
@@ -1030,6 +1031,7 @@ def _write_attempt_request_context(
         "native_backfill_assets_dir": str(native_backfill_context.get("assets_dir") or ""),
         "native_backfill_asset_href_prefix": str(native_backfill_context.get("asset_href_prefix") or ""),
         "native_backfill_candidate_count": int(native_backfill_context.get("candidate_count") or 0),
+        "native_backfill_allowed_image_hrefs": list(native_backfill_context.get("allowed_image_hrefs") or []),
         "validator_script": str(validator_script_path),
         "validator_context": str(validator_context_path),
         "validator_command": validator_command,
@@ -1068,6 +1070,9 @@ def _prepare_native_backfill_context(
         previews_dir=previews_dir,
         href_prefix=href_prefix,
     )
+    native_validation_manifest = _native_backfill_validation_manifest(candidates)
+    base_allowed_hrefs = _manifest_allowed_hrefs(base_asset_manifest)
+    native_allowed_hrefs = _manifest_allowed_hrefs(native_validation_manifest)
     request_path = attempt_dir / _NATIVE_BACKFILL_REQUEST
     request = {
         "schema": "drawai.native_backfill_request.v1",
@@ -1078,6 +1083,19 @@ def _prepare_native_backfill_context(
         "asset_href_prefix": href_prefix,
         "candidate_count": len(candidates),
         "candidates": candidates,
+        "allowed_href_policy": {
+            "base_manifest_hrefs": base_allowed_hrefs,
+            "native_backfill_hrefs": native_allowed_hrefs,
+            "svg_image_href_rule": (
+                "SVG <image> href values must be copied exactly from base_manifest_hrefs "
+                "or native_backfill_hrefs. Do not use source images, previews, guessed crop paths, "
+                "absolute paths, file:// URLs, external URLs, or base64 images as SVG href values."
+            ),
+            "native_backfill_source_fields_are_read_only": [
+                "source_image",
+                "source_region_preview",
+            ],
+        },
         "rules": {
             "keep_native_svg": "Use native SVG when the rendered region is structurally close enough and remains editable.",
             "backfill_crop_preserve": "Use an exact crop when native SVG loses detailed visual content that should remain raster.",
@@ -1092,7 +1110,8 @@ def _prepare_native_backfill_context(
         "assets_dir": assets_dir,
         "asset_href_prefix": href_prefix,
         "candidate_count": len(candidates),
-        "validation_asset_manifest": _native_backfill_validation_manifest(candidates),
+        "allowed_image_hrefs": [*base_allowed_hrefs, *native_allowed_hrefs],
+        "validation_asset_manifest": native_validation_manifest,
     }
 
 
@@ -1235,6 +1254,19 @@ def _validation_asset_manifest(
         else "drawai.validation_asset_manifest.v1"
     )
     return {"schema": schema, "assets": [*base_assets, *native_assets]}
+
+
+def _manifest_allowed_hrefs(asset_manifest: Mapping[str, Any] | None) -> list[str]:
+    if not isinstance(asset_manifest, Mapping):
+        return []
+    hrefs: list[str] = []
+    seen: set[str] = set()
+    for asset in iter_manifest_image_items(asset_manifest):
+        href = str(asset.get("svg_href") or "").strip()
+        if href and href not in seen:
+            hrefs.append(href)
+            seen.add(href)
+    return hrefs
 
 
 def _write_native_backfill_tools(tools_dir: Path) -> None:
@@ -1646,6 +1678,19 @@ def _run_attempt(
         )
 
     svg_path.write_text(svg_text, encoding="utf-8")
+    native_backfill_href_repair = _repair_native_backfill_image_hrefs(
+        svg_path,
+        native_backfill_context,
+        reference_dir=reference_dir,
+    )
+    if native_backfill_href_repair and native_backfill_href_repair.get("unresolved_count"):
+        pre_validation_issues.append(
+            _issue(
+                "native_backfill_asset_missing",
+                "A native backfill image href was selected but the raster asset could not be materialized.",
+                native_backfill_href_repair.get("unresolved", []),
+            )
+        )
     manifest_asset_injection = _inject_manifest_asset_images(svg_path, asset_manifest, phase=phase)
     intermediate_manifest_asset_injections = _inject_manifest_asset_images_for_stage_intermediates(
         attempt_dir,
@@ -1681,6 +1726,8 @@ def _run_attempt(
     report = _merge_validation_issues(report, pre_validation_issues)
     if manifest_asset_injection is not None:
         report["manifest_asset_injection"] = manifest_asset_injection
+    if native_backfill_href_repair is not None:
+        report["native_backfill_href_repair"] = native_backfill_href_repair
     if intermediate_manifest_asset_injections:
         report["intermediate_manifest_asset_injections"] = intermediate_manifest_asset_injections
     if text_format_normalization is not None:
@@ -1763,6 +1810,223 @@ def _coerce_response_text(raw_response: Any) -> str:
     if raw_response is None:
         return ""
     return str(raw_response)
+
+
+def _repair_native_backfill_image_hrefs(
+    svg_path: Path,
+    native_backfill_context: Mapping[str, Any],
+    *,
+    reference_dir: Path,
+) -> dict[str, Any] | None:
+    request_path = native_backfill_context.get("request_path")
+    if request_path is None:
+        return None
+    request = _read_json_if_file(Path(request_path))
+    candidates = request.get("candidates") if isinstance(request, Mapping) else None
+    if not isinstance(candidates, list) or not candidates:
+        return None
+
+    try:
+        root = etree.fromstring(
+            svg_path.read_bytes(),
+            parser=etree.XMLParser(resolve_entities=False, load_dtd=False, no_network=True),
+        )
+    except Exception as exc:
+        return {"status": "skipped", "reason": f"xml_parse_failed: {type(exc).__name__}: {exc}"}
+
+    allowed_hrefs = set(str(href) for href in native_backfill_context.get("allowed_image_hrefs") or [] if str(href).strip())
+    native_hrefs = {
+        str(asset.get("svg_href") or "").strip()
+        for asset in (native_backfill_context.get("validation_asset_manifest") or {}).get("assets", [])
+        if str(asset.get("svg_href") or "").strip()
+    }
+    candidates_by_key: dict[str, Mapping[str, Any]] = {}
+    native_target_by_href: dict[str, tuple[Mapping[str, Any], str]] = {}
+    for candidate in candidates:
+        if not isinstance(candidate, Mapping):
+            continue
+        asset_id = str(candidate.get("asset_id") or "").strip()
+        recovered_asset_id = str(candidate.get("recovered_asset_id") or "").strip()
+        preserve_href = str(candidate.get("preserve_href") or "").strip()
+        nobg_href = str(candidate.get("nobg_href") or "").strip()
+        for key in (asset_id, recovered_asset_id, _href_asset_key(preserve_href), _href_asset_key(nobg_href)):
+            if key:
+                candidates_by_key.setdefault(key, candidate)
+        if preserve_href:
+            native_target_by_href[preserve_href] = (candidate, "preserve_href")
+        if nobg_href:
+            native_target_by_href[nobg_href] = (candidate, "nobg_href")
+
+    rewritten: list[dict[str, Any]] = []
+    materialized: list[dict[str, Any]] = []
+    unresolved: list[dict[str, Any]] = []
+    changed = False
+    for element in root.iter():
+        if _local_name(element.tag) != "image":
+            continue
+        original_href = _image_element_href(element)
+        if not original_href:
+            continue
+        target: tuple[Mapping[str, Any], str, str] | None = None
+        if original_href in native_target_by_href:
+            candidate, href_key = native_target_by_href[original_href]
+            target = (candidate, href_key, original_href)
+        elif original_href in allowed_hrefs:
+            continue
+        else:
+            candidate = candidates_by_key.get(_href_asset_key(original_href))
+            if candidate is None:
+                continue
+            href_key = "nobg_href" if _href_requests_nobg(original_href) else "preserve_href"
+            target_href = str(candidate.get(href_key) or "").strip()
+            if not target_href and href_key == "nobg_href":
+                href_key = "preserve_href"
+                target_href = str(candidate.get(href_key) or "").strip()
+            if not target_href:
+                continue
+            target = (candidate, href_key, target_href)
+            _set_image_element_href(element, target_href)
+            rewritten.append(
+                {
+                    "from": original_href,
+                    "to": target_href,
+                    "asset_id": str(candidate.get("asset_id") or ""),
+                }
+            )
+            changed = True
+
+        if target is None:
+            continue
+        candidate, href_key, target_href = target
+        materialization = _materialize_native_backfill_href(
+            candidate,
+            request=request,
+            original_href=original_href,
+            target_href=target_href,
+            href_key=href_key,
+            svg_path=svg_path,
+            reference_dir=reference_dir,
+        )
+        if materialization["status"] == "ok":
+            if materialization.get("created"):
+                materialized.append(materialization)
+        else:
+            unresolved.append(materialization)
+
+    if changed:
+        svg_path.write_bytes(etree.tostring(root, encoding="utf-8", xml_declaration=False))
+    if not rewritten and not materialized and not unresolved:
+        return None
+    return {
+        "status": "failed" if unresolved else "ok",
+        "rewritten_count": len(rewritten),
+        "materialized_count": len(materialized),
+        "unresolved_count": len(unresolved),
+        "native_allowed_href_count": len(native_hrefs),
+        "rewritten": rewritten[:20],
+        "materialized": materialized[:20],
+        "unresolved": unresolved[:20],
+    }
+
+
+def _image_element_href(element: etree._Element) -> str:
+    return str(element.get("href") or element.get("{http://www.w3.org/1999/xlink}href") or "").strip()
+
+
+def _set_image_element_href(element: etree._Element, href: str) -> None:
+    element.set("href", href)
+    if element.get("{http://www.w3.org/1999/xlink}href") is not None:
+        element.set("{http://www.w3.org/1999/xlink}href", href)
+
+
+def _href_asset_key(href: str) -> str:
+    filename = Path(str(href).split("?", 1)[0].split("#", 1)[0]).name
+    if not filename:
+        return ""
+    stem = filename.rsplit(".", 1)[0]
+    if stem.endswith("_nobg"):
+        stem = stem[:-5]
+    return stem.strip().lower()
+
+
+def _href_requests_nobg(href: str) -> bool:
+    return Path(str(href).split("?", 1)[0].split("#", 1)[0]).stem.endswith("_nobg")
+
+
+def _materialize_native_backfill_href(
+    candidate: Mapping[str, Any],
+    *,
+    request: Mapping[str, Any],
+    original_href: str,
+    target_href: str,
+    href_key: str,
+    svg_path: Path,
+    reference_dir: Path,
+) -> dict[str, Any]:
+    target_path = reference_dir / target_href
+    if target_path.is_file():
+        return {
+            "status": "ok",
+            "created": False,
+            "href": target_href,
+            "asset_id": str(candidate.get("asset_id") or ""),
+        }
+
+    source_path = _resolve_existing_svg_href(original_href, svg_path=svg_path, reference_dir=reference_dir)
+    if source_path is not None:
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_path, target_path)
+        return {
+            "status": "ok",
+            "created": True,
+            "method": "copy_existing_href_source",
+            "source": str(source_path),
+            "output": str(target_path),
+            "href": target_href,
+            "href_key": href_key,
+            "asset_id": str(candidate.get("asset_id") or ""),
+        }
+
+    bbox = _prompt_bbox(candidate.get("bbox"))
+    source_image = Path(str(request.get("source_image") or ""))
+    if bbox is not None and source_image.is_file():
+        _crop_exact_for_backfill(source_image, bbox, target_path)
+        return {
+            "status": "ok",
+            "created": True,
+            "method": "crop_request_source_image",
+            "source": str(source_image),
+            "output": str(target_path),
+            "href": target_href,
+            "href_key": href_key,
+            "asset_id": str(candidate.get("asset_id") or ""),
+        }
+
+    return {
+        "status": "failed",
+        "reason": "source_image_missing_or_invalid_bbox",
+        "from": original_href,
+        "href": target_href,
+        "href_key": href_key,
+        "asset_id": str(candidate.get("asset_id") or ""),
+        "source_image": str(source_image),
+        "bbox": candidate.get("bbox"),
+    }
+
+
+def _resolve_existing_svg_href(href: str, *, svg_path: Path, reference_dir: Path) -> Path | None:
+    raw = str(href).strip()
+    lowered = raw.lower()
+    if not raw or lowered.startswith(("data:", "http://", "https://", "file:")):
+        return None
+    candidate_path = Path(raw)
+    if candidate_path.is_absolute():
+        return candidate_path if candidate_path.is_file() else None
+    for base in (svg_path.parent, reference_dir):
+        resolved = (base / raw).resolve()
+        if resolved.is_file():
+            return resolved
+    return None
 
 
 def _merge_validation_issues(

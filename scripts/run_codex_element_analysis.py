@@ -36,6 +36,7 @@ from drawai.codex_python_sdk_svg import (  # noqa: E402
 )
 from drawai.codex_cli import resolve_codex_executable  # noqa: E402
 from drawai.asset_geometry import geometry_crop, normalize_asset_geometry  # noqa: E402
+from drawai.agent_cli_svg import invoke_agent_cli_text  # noqa: E402
 
 
 SCHEMA_REQUEST = "drawai.codex_element_analysis_request.v1"
@@ -83,12 +84,24 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         choices=("none", "minimal", "low", "medium", "high", "xhigh"),
         help="Codex reasoning effort for this analysis pass.",
     )
-    parser.add_argument("--timeout-seconds", type=float, default=600.0)
+    parser.add_argument("--timeout-seconds", type=float, default=900.0)
     parser.add_argument(
         "--invoker",
-        choices=("cli", "sdk"),
+        choices=("cli", "sdk", "agent_cli"),
         default="cli",
-        help="Use codex exec CLI by default; sdk is retained for parity with SVG generation experiments.",
+        help="Use codex exec CLI by default; sdk/agent_cli are retained for parity with SVG generation experiments.",
+    )
+    parser.add_argument(
+        "--agent-cli-agent",
+        choices=("kimi", "claude", "codex", "custom"),
+        default="kimi",
+        help="Agent CLI preset used when --invoker agent_cli is selected.",
+    )
+    parser.add_argument(
+        "--agent-cli-command",
+        nargs="+",
+        default=[],
+        help="Base agent CLI command used when --invoker agent_cli is selected.",
     )
     parser.add_argument(
         "--skip-existing",
@@ -131,8 +144,9 @@ def run_case(case_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
     trace_path = output_dir / "codex_element_analysis_trace.jsonl"
     write_json(request_path, request)
     write_candidate_table(candidate_table_path, request)
+    prompt_builder = build_agent_cli_review_prompt if args.invoker == "agent_cli" else build_prompt
     prompt_path.write_text(
-        build_prompt(case_dir, request_path, candidate_table_path, output_path),
+        prompt_builder(case_dir, request_path, candidate_table_path, output_path),
         encoding="utf-8",
     )
 
@@ -161,6 +175,18 @@ def run_case(case_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
             reasoning_effort=args.reasoning_effort,
             timeout_seconds=args.timeout_seconds,
             config_overrides=args.config_override,
+        )
+    elif args.invoker == "agent_cli":
+        codex_result = invoke_agent_cli_element_analysis(
+            case_dir=case_dir,
+            prompt=prompt_path.read_text(encoding="utf-8"),
+            image_paths=analysis_images(case_dir),
+            output_dir=output_dir,
+            trace_path=trace_path,
+            model_name=args.model,
+            timeout_seconds=args.timeout_seconds,
+            agent=args.agent_cli_agent,
+            command=args.agent_cli_command,
         )
     else:
         codex_result = invoke_codex_element_analysis_cli(
@@ -958,6 +984,171 @@ def invoke_codex_element_analysis_sdk(
         "session_log_archive_path": str(session_log_archive_dir),
         "usage": trace["result"]["usage"],
     }
+
+
+def invoke_agent_cli_element_analysis(
+    *,
+    case_dir: Path,
+    prompt: str,
+    image_paths: Sequence[Path],
+    output_dir: Path,
+    trace_path: Path,
+    model_name: str,
+    timeout_seconds: float,
+    agent: str,
+    command: Sequence[str],
+) -> dict[str, Any]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / "element_analysis.json"
+    request_path = output_dir / "element_analysis_request.json"
+    preseeded = False
+    if request_path.exists():
+        request = read_json(request_path)
+        if isinstance(request.get("candidates"), list):
+            write_json(output_path, build_baseline_analysis(case_dir, request, source="agent_cli_baseline_review"))
+            preseeded = True
+    started_at = time.monotonic()
+    runtime_config = {
+        "provider": "agent-cli",
+        "connection_id": f"drawai-{agent}-cli-element-analysis",
+        "model_name": model_name,
+        "timeout_seconds": timeout_seconds,
+        "cli": {
+            "agent": agent,
+            "command": list(command),
+        },
+    }
+    final_message = invoke_agent_cli_text(
+        image_paths=image_paths,
+        prompt=prompt,
+        task_name=f"drawai.element_analysis.agent_cli.{agent}.v1",
+        runtime_config=runtime_config,
+        trace_path=trace_path,
+        isolated_cwd=case_dir,
+    )
+    if not output_path.exists():
+        raise RuntimeError(f"Agent CLI element analysis did not write required output: {output_path}")
+    review_path = output_dir / "agent_cli_review.json"
+    if preseeded and review_path.exists():
+        analysis = read_json(output_path)
+        review = read_json(review_path)
+        analysis["agent_cli_review"] = review
+        if isinstance(review, Mapping) and review.get("strategy_summary"):
+            analysis["strategy_summary"] = str(review["strategy_summary"])
+        write_json(output_path, analysis)
+    duration_ms = int((time.monotonic() - started_at) * 1000)
+    trace = {
+        "schema": "drawai.agent_cli_element_analysis_trace.v1",
+        "invoker": "agent_cli",
+        "agent": agent,
+        "case_dir": str(case_dir),
+        "model_name": model_name or f"{agent}-cli-default",
+        "timeout_seconds": timeout_seconds,
+        "image_paths": [str(path) for path in image_paths],
+        "duration_ms": duration_ms,
+        "output_path": str(output_path),
+        "preseeded_baseline": preseeded,
+        "review_path": str(review_path) if review_path.exists() else None,
+        "final_message_excerpt": final_message[:2000],
+    }
+    with trace_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(trace, ensure_ascii=False, sort_keys=True) + "\n")
+    return {
+        "invoker": "agent_cli",
+        "agent": agent,
+        "model_name": model_name or f"{agent}-cli-default",
+        "duration_ms": duration_ms,
+        "output_path": str(output_path),
+    }
+
+
+def build_agent_cli_review_prompt(case_dir: Path, request_path: Path, candidate_table_path: Path, output_path: Path) -> str:
+    review_path = output_path.with_name("agent_cli_review.json")
+    return f"""DrawAI agent CLI lightweight run0 asset review.
+
+Workspace/case root:
+{case_dir}
+
+Python has already generated a complete baseline element analysis at:
+{output_path.relative_to(case_dir)}
+
+Your job is to inspect the attached original image and asset-plan overlay, then write only a concise review JSON. Do not regenerate the full element list, do not run visualization scripts, and do not print large JSON files.
+
+Read these compact files only if needed:
+- Candidate table: {candidate_table_path.relative_to(case_dir)}
+- Baseline element analysis: {output_path.relative_to(case_dir)}
+- Machine-readable request, only for exact bbox checks: {request_path.relative_to(case_dir)}
+
+Write UTF-8 JSON to:
+{review_path.relative_to(case_dir)}
+
+The review JSON must have this shape:
+{{
+  "schema": "drawai.agent_cli_element_analysis_review.v1",
+  "status": "ok",
+  "strategy_summary": "short summary of whether the baseline asset source decisions are reasonable",
+  "notable_adjustments": [
+    {{"box_id": "B001", "suggestion": "optional short suggestion"}}
+  ],
+  "notes": []
+}}
+
+Keep the final chat response to one short sentence. The preseeded element_analysis.json remains the source of truth for this run.
+"""
+
+
+def build_baseline_analysis(case_dir: Path, request: Mapping[str, Any], *, source: str) -> dict[str, Any]:
+    elements: list[dict[str, Any]] = []
+    categories = {"svg_self_draw": 0, "crop": 0, "crop_nobg": 0}
+    for index, candidate in enumerate(request.get("candidates", []) or [], start=1):
+        if not isinstance(candidate, Mapping):
+            continue
+        box_id = str(candidate.get("box_id") or f"B{index:03d}")
+        category = _baseline_category(candidate.get("current_pipeline_method"))
+        categories[category] += 1
+        bbox = candidate.get("bbox")
+        elements.append(
+            {
+                "box_id": box_id,
+                "source_candidate_ids": [box_id],
+                "refinement_action": "unchanged",
+                "category": category,
+                "confidence": "medium",
+                "visual_role": str(candidate.get("type") or "element"),
+                "reason": "Baseline source decision reused for Kimi CLI lightweight run0.",
+                "evidence": ["candidate_table", "deterministic_asset_plan"],
+                "bbox": bbox,
+                "type": str(candidate.get("type") or "unknown"),
+                "current_pipeline_method": category,
+                "recommended_asset_source": "svg" if category == "svg_self_draw" else category,
+            }
+        )
+    return {
+        "schema": SCHEMA_OUTPUT,
+        "case_dir": str(case_dir),
+        "source": source,
+        "strategy_summary": "Baseline element analysis generated from deterministic DrawAI asset decisions for Kimi CLI lightweight review.",
+        "refinement_summary": "No model-driven split/merge refinement was required before Kimi CLI review.",
+        "refinement_iterations": [],
+        "categories": categories,
+        "refinement_actions": {
+            "unchanged": len(elements),
+            "adjusted": 0,
+            "split": 0,
+            "added": 0,
+        },
+        "elements": elements,
+        "notes": [],
+    }
+
+
+def _baseline_category(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in {"crop_nobg", "crop_no_bg", "transparent_subject", "remove_background", "rmbg"}:
+        return "crop_nobg"
+    if normalized in {"crop", "crop_asset", "preserve_crop", "direct_crop"}:
+        return "crop"
+    return "svg_self_draw"
 
 
 def analysis_images(case_dir: Path) -> list[Path]:

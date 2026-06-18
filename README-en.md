@@ -99,7 +99,7 @@ uv run drawai run /path/to/your/image.png --local --device mps
 - Python 3.12+
 - [`uv`](https://docs.astral.sh/uv/)
 - Node.js 20.19+ or 22.12+ for the Workbench frontend
-- Working Codex/OpenAI authentication for SVG generation
+- Working Codex/OpenAI authentication, or a logged-in agent CLI such as Kimi (`kimi`), Claude (`claude`), or Codex (`codex exec`), for run0 asset analysis and SVG generation
 - >8 GB disk space for model weights and the installed runtime environment
 
 The default local runtime directory is:
@@ -109,6 +109,24 @@ The default local runtime directory is:
 ```
 
 It is not tracked by git. Model downloads use ModelScope by default. See [runtime options](docs/zh-CN/runtime-options.md) for Hugging Face downloads, manual model paths, Torch backend selection, custom ports, and other advanced settings.
+
+### Choose Codex SDK Or Agent CLI
+
+The default config continues to use the Codex Python SDK. To use a direct CLI instead, switch the SVG backend and runtime provider to `agent_cli`, then choose `kimi`, `claude`, `codex`, or a custom command under `model_runtime.cli`:
+
+```yaml
+svg:
+  generation_backend: agent_cli
+model_runtime:
+  provider: agent-cli
+  connection_id: kimi
+  cli:
+    agent: kimi
+    command:
+      - kimi
+```
+
+The Agent CLI path is used for both run0 asset analysis and SVG generation. No config change is needed when staying on the Codex SDK. For Claude or Codex CLI, change `agent` and `command` to the corresponding command, for example `claude` or `codex exec`.
 
 <a id="outputs"></a>
 ## 📦 Output Locations

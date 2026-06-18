@@ -287,6 +287,105 @@ svg:
         load_drawai_config(config_path)
 
 
+def test_config_accepts_agent_cli_svg_backend_and_command(tmp_path: Path):
+    image = tmp_path / "input.png"
+    image.write_bytes(b"not-used-by-config")
+    config_path = tmp_path / "agent_cli.yaml"
+    config_path.write_text(
+        """
+input:
+  image: input.png
+  output_dir: out
+svg:
+  generation_backend: agent_cli
+model_runtime:
+  provider: agent-cli
+  connection_id: kimi
+  model_name: kimi-code/kimi-for-coding
+  cli:
+    agent: kimi
+    command:
+      - kimi
+  timeout_seconds: 120
+""",
+        encoding="utf-8",
+    )
+
+    cfg = load_drawai_config(config_path)
+
+    assert cfg.svg.generation_backend == "agent_cli"
+    assert cfg.model_runtime.provider == "agent-cli"
+    assert cfg.model_runtime.connection_id == "kimi"
+    assert cfg.model_runtime.model_name == "kimi-code/kimi-for-coding"
+    assert cfg.model_runtime.cli.agent == "kimi"
+    assert cfg.model_runtime.cli.command == ("kimi",)
+    assert cfg.model_runtime.to_runtime_dict()["cli"] == {
+        "agent": "kimi",
+        "command": ["kimi"],
+    }
+
+
+def test_config_rejects_removed_kimi_command(tmp_path: Path):
+    image = tmp_path / "input.png"
+    image.write_bytes(b"not-used-by-config")
+    config_path = tmp_path / "bad_kimi_command.yaml"
+    config_path.write_text(
+        """
+input:
+  image: input.png
+  output_dir: out
+model_runtime:
+  kimi_command:
+    - kimi
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="kimi_command has been removed"):
+        load_drawai_config(config_path)
+
+
+def test_config_rejects_removed_acp_command(tmp_path: Path):
+    image = tmp_path / "input.png"
+    image.write_bytes(b"not-used-by-config")
+    config_path = tmp_path / "bad_acp_command.yaml"
+    config_path.write_text(
+        """
+input:
+  image: input.png
+  output_dir: out
+model_runtime:
+  acp_command:
+    - kimi
+    - acp
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="acp_command has been removed"):
+        load_drawai_config(config_path)
+
+
+def test_config_rejects_removed_acp_generation_mode(tmp_path: Path):
+    image = tmp_path / "input.png"
+    image.write_bytes(b"not-used-by-config")
+    config_path = tmp_path / "bad_acp_mode.yaml"
+    config_path.write_text(
+        """
+input:
+  image: input.png
+  output_dir: out
+svg:
+  generation_backend: acp
+  acp_generation_mode: compact
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="acp_generation_mode has been removed"):
+        load_drawai_config(config_path)
+
+
 def test_config_rejects_deprecated_template_visual_refine_rounds(tmp_path: Path):
     image = tmp_path / "input.png"
     image.write_bytes(b"not-used-by-config")

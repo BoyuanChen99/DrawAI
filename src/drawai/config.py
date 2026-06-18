@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import shlex
 from typing import Any
 
 import yaml
@@ -10,11 +11,14 @@ from .prompt_plan import DEFAULT_SAM3_PROMPTS, Sam3Prompt
 
 RECOGNIZED_OCR_PROVIDERS = frozenset({"remote_paddleocr", "fixture"})
 RECOGNIZED_ASSET_SELECTION_PROVIDERS = frozenset({"deterministic"})
-RECOGNIZED_SVG_GENERATION_BACKENDS = frozenset({"responses", "sdk_tool_loop", "codex_python_sdk_controlled"})
+RECOGNIZED_SVG_GENERATION_BACKENDS = frozenset(
+    {"responses", "sdk_tool_loop", "codex_python_sdk_controlled", "agent_cli"}
+)
 RECOGNIZED_SVG_TEXT_RENDERING = frozenset({"model_text"})
 RECOGNIZED_VISUAL_REVIEW_ROUNDS = frozenset({"text_style", "layout"})
 RECOGNIZED_RMBG_PROVIDERS = frozenset({"service"})
 RECOGNIZED_CODEX_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
+RECOGNIZED_AGENT_CLI_AGENTS = frozenset({"kimi", "claude", "codex", "custom"})
 
 
 @dataclass(frozen=True)
@@ -110,6 +114,18 @@ class DrawAiSvgToPptConfig:
 
 
 @dataclass(frozen=True)
+class AgentCliConfig:
+    agent: str = "kimi"
+    command: tuple[str, ...] = ()
+
+    def to_runtime_dict(self) -> dict[str, Any]:
+        return {
+            "agent": self.agent,
+            "command": list(self.command),
+        }
+
+
+@dataclass(frozen=True)
 class ModelRuntimeConfig:
     provider: str = "codex-python-sdk"
     connection_id: str = "codex-python-sdk-controlled"
@@ -123,6 +139,7 @@ class ModelRuntimeConfig:
     concurrency_mode: str = "auto"
     max_concurrent: int = 20
     max_critic_rounds: int = 3
+    cli: AgentCliConfig = AgentCliConfig()
 
     def to_runtime_dict(self) -> dict[str, Any]:
         return {
@@ -138,6 +155,7 @@ class ModelRuntimeConfig:
             "concurrency_mode": self.concurrency_mode,
             "max_concurrent": self.max_concurrent,
             "max_critic_rounds": self.max_critic_rounds,
+            "cli": self.cli.to_runtime_dict(),
         }
 
 
@@ -390,6 +408,8 @@ def _parse_svg_config(raw: Any) -> DrawAiSvgConfig:
         )
     if "sdk_runner" in data:
         raise ValueError("svg.sdk_runner is no longer supported; use svg.generation_backend directly")
+    if "acp_generation_mode" in data:
+        raise ValueError("svg.acp_generation_mode has been removed; use svg.generation_backend: agent_cli")
     visual_review_rounds_raw = data.get("visual_review_rounds", DrawAiSvgConfig.visual_review_rounds)
     if not isinstance(visual_review_rounds_raw, (list, tuple)):
         raise ValueError("svg.visual_review_rounds must be a list")
@@ -444,6 +464,10 @@ def _parse_model_runtime_config(raw: Any) -> ModelRuntimeConfig:
     if raw is None:
         return ModelRuntimeConfig()
     data = _require_mapping(raw, "model_runtime")
+    if "acp_command" in data:
+        raise ValueError("model_runtime.acp_command has been removed; use model_runtime.cli.command")
+    if "kimi_command" in data:
+        raise ValueError("model_runtime.kimi_command has been removed; use model_runtime.cli.command")
     return ModelRuntimeConfig(
         provider=_as_non_empty_str(
             data.get("provider", ModelRuntimeConfig.provider),
@@ -484,7 +508,30 @@ def _parse_model_runtime_config(raw: Any) -> ModelRuntimeConfig:
             data.get("max_critic_rounds", ModelRuntimeConfig.max_critic_rounds),
             "model_runtime.max_critic_rounds",
         ),
+        cli=_parse_agent_cli_config(data.get("cli")),
     )
+
+
+def _parse_agent_cli_config(raw: Any) -> AgentCliConfig:
+    if raw is None:
+        return AgentCliConfig()
+    data = _require_mapping(raw, "model_runtime.cli")
+    agent = _as_non_empty_str(data.get("agent", AgentCliConfig.agent), "model_runtime.cli.agent").strip().lower()
+    command_raw = data.get("command", AgentCliConfig.command)
+    command = _parse_agent_cli_command(command_raw)
+    return AgentCliConfig(agent=agent, command=command)
+
+
+def _parse_agent_cli_command(raw: Any) -> tuple[str, ...]:
+    if raw in (None, ""):
+        return ()
+    if isinstance(raw, str):
+        command = tuple(shlex.split(raw))
+    elif isinstance(raw, (list, tuple)):
+        command = tuple(_as_non_empty_str(item, "model_runtime.cli.command[]") for item in raw)
+    else:
+        raise ValueError("model_runtime.cli.command must be a string or list of strings")
+    return command
 
 
 def _parse_extra_headers(raw: Any) -> dict[str, str]:
@@ -572,6 +619,14 @@ def _validate_config(cfg: DrawAiPipelineConfig, validate_input_exists: bool) -> 
                 f"svg.visual_review_rounds[{index}]={round_name!r} is unsupported. "
                 f"Expected one of: {supported}"
             )
+    if cfg.model_runtime.cli.agent not in RECOGNIZED_AGENT_CLI_AGENTS:
+        supported = ", ".join(sorted(RECOGNIZED_AGENT_CLI_AGENTS))
+        raise ValueError(
+            f"Unsupported model_runtime.cli.agent: {cfg.model_runtime.cli.agent!r}. "
+            f"Expected one of: {supported}"
+        )
+    if cfg.model_runtime.cli.agent == "custom" and not cfg.model_runtime.cli.command:
+        raise ValueError("model_runtime.cli.command is required when model_runtime.cli.agent is custom")
     if cfg.model_runtime.max_concurrent <= 0:
         raise ValueError("model_runtime.max_concurrent must be positive")
     if cfg.model_runtime.max_critic_rounds < 0:
