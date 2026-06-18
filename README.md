@@ -19,6 +19,27 @@
 
 https://github.com/user-attachments/assets/59a81ac2-cdbe-49b6-a4fa-8db897afc6bb
 
+<details>
+<summary>更新日志</summary>
+
+### 2026-06-18
+
+- 支持 Agent CLI 后端，可用于 run0 资产分析和 SVG 生成，已支持 `codex cli`、`claude`、`kimi-code` 和自定义 agent 命令。
+- 支持 Codex SDK 图像生成和编辑，并在 Workbench 中开放相关图像生成流程。
+- 支持 Windows 原生部署，包括 packaged Codex CLI 检测、启动器输出刷新、跨平台路径测试和 README 说明。
+- 增加 Workbench 运行时和队列状态展示，便于任务运行时查看后端状态。
+- 强化继承式 Codex provider 配置，提升本地和嵌套运行配置的解析稳定性。
+- 提升 SVG 生成恢复能力，延长 Codex recovery timeout，并在公开路径默认关闭 SAM mask 输出。
+- 更新公开文档：GitHub 托管演示视频、带音频演示链接、已支持 agent/model 说明、AutoFigure-Edit 致谢和开发期文档清理。
+
+### 2026-06-17
+
+- 发布 DrawAI 初始源码快照。
+- 支持资产管线中的多边形和不规则 mask 几何。
+- 在资产 review 中展示 mask 和 polygon 几何，方便在 SVG/PPTX 生成前检查更细的资产边界。
+
+</details>
+
 <a id="roadmap"></a>
 ## 🗺️ 规划
 
