@@ -552,6 +552,11 @@ def _idle_wait_remaining(deadline: float | None) -> float | None:
 def _has_external_refinement_analysis(paths: DrawAiArtifactPaths) -> bool:
     if not paths.element_analysis_json.is_file():
         return False
+    status_path = paths.element_analysis_json.parent / "run_status.json"
+    if status_path.is_file():
+        status = json.loads(status_path.read_text(encoding="utf-8"))
+        if isinstance(status, dict) and status.get("status") != "ok":
+            return False
     analysis = json.loads(paths.element_analysis_json.read_text(encoding="utf-8"))
     if not isinstance(analysis, dict):
         raise ValueError("Codex element refinement analysis must be a JSON object")

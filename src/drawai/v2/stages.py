@@ -7,8 +7,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
-from PIL import Image
-
 from drawai.artifacts import DrawAiArtifactPaths, write_json
 from drawai.config import DrawAiPipelineConfig
 from drawai.core import ArtifactRef, ArtifactStore, ProviderRef, RunContext, StageResult, StageSpec
@@ -640,23 +638,207 @@ def _refine_with_codex_analysis(
 ) -> tuple[ElementPlan, ...]:
     if refine_config.provider != "codex_element_refiner":
         raise RuntimeError(f"Unsupported v2 refine provider: {refine_config.provider}")
-    analysis = _read_external_refinement_analysis(paths)
+    raw_analysis = _read_external_refinement_analysis(paths)
+    exposed_plan_ids = _refinement_exposed_element_ids(paths, raw_analysis, plans)
+    analysis = _translate_compat_analysis_source_ids(raw_analysis, plans)
     candidates = _read_parser_candidates(paths)
-    expected_candidate_ids = {
-        candidate_id
-        for plan in plans
-        for candidate_id in plan.source_candidate_ids
-    }
+    expected_candidate_ids = _refinement_expected_source_candidate_ids(plans, exposed_plan_ids)
     locked_geometry_by_candidate = {
         candidate.candidate_id: dict(candidate.geometry)
         for candidate in candidates
         if str(candidate.geometry.get("kind") or "").lower() == "mask"
     }
-    return CodexElementRefiner(refine_config).convert_analysis(
+    refined_plans = CodexElementRefiner(refine_config).convert_analysis(
         analysis,
         expected_candidate_ids=expected_candidate_ids,
         locked_geometry_by_candidate=locked_geometry_by_candidate,
     )
+    return _merge_refined_plans_with_unexposed(plans, refined_plans, exposed_plan_ids)
+
+
+def _refinement_exposed_element_ids(
+    paths: DrawAiArtifactPaths,
+    analysis: Mapping[str, Any],
+    plans: Sequence[ElementPlan],
+) -> set[str]:
+    plan_ids = {plan.element_id for plan in plans}
+    exposed = _compat_box_ir_element_ids(paths, plan_ids)
+    exposed.update(_analysis_compat_plan_ids(analysis, plan_ids))
+    return exposed
+
+
+def _compat_box_ir_element_ids(paths: DrawAiArtifactPaths, plan_ids: set[str]) -> set[str]:
+    if not paths.box_ir_json.exists():
+        return set(plan_ids)
+    document = _read_json_file(paths.box_ir_json, "compat BoxIR document")
+    raw_boxes = document.get("boxes")
+    if not isinstance(raw_boxes, list):
+        return set(plan_ids)
+    exposed: set[str] = set()
+    for raw_box in raw_boxes:
+        if not isinstance(raw_box, Mapping):
+            continue
+        box_id = str(raw_box.get("id") or "")
+        if box_id in plan_ids:
+            exposed.add(box_id)
+    return exposed or set(plan_ids)
+
+
+def _analysis_compat_plan_ids(analysis: Mapping[str, Any], plan_ids: set[str]) -> set[str]:
+    exposed: set[str] = set()
+    for record in _analysis_records_with_removals(analysis):
+        if not isinstance(record, Mapping):
+            continue
+        record_id = str(record.get("element_id") or record.get("box_id") or "")
+        if record_id in plan_ids:
+            exposed.add(record_id)
+        for field_name in ("source_candidate_ids", "removed_source_candidate_ids"):
+            raw_source_ids = record.get(field_name)
+            if isinstance(raw_source_ids, list):
+                exposed.update(str(source_id) for source_id in raw_source_ids if str(source_id) in plan_ids)
+    return exposed
+
+
+def _analysis_records_with_removals(analysis: Mapping[str, Any]) -> list[Any]:
+    records: list[Any] = []
+    raw_elements = analysis.get("elements")
+    if isinstance(raw_elements, list):
+        records.extend(raw_elements)
+    raw_removals = analysis.get("removal_records")
+    if isinstance(raw_removals, list):
+        records.extend(raw_removals)
+    return records
+
+
+def _refinement_expected_source_candidate_ids(
+    plans: Sequence[ElementPlan],
+    exposed_plan_ids: set[str],
+) -> set[str]:
+    if not exposed_plan_ids:
+        return {
+            candidate_id
+            for plan in plans
+            for candidate_id in plan.source_candidate_ids
+        }
+    return {
+        candidate_id
+        for plan in plans
+        if plan.element_id in exposed_plan_ids
+        for candidate_id in plan.source_candidate_ids
+    }
+
+
+def _merge_refined_plans_with_unexposed(
+    original_plans: Sequence[ElementPlan],
+    refined_plans: Sequence[ElementPlan],
+    exposed_plan_ids: set[str],
+) -> tuple[ElementPlan, ...]:
+    if not exposed_plan_ids:
+        return tuple(refined_plans)
+    unexposed_plans = [plan for plan in original_plans if plan.element_id not in exposed_plan_ids]
+    if not unexposed_plans:
+        return tuple(refined_plans)
+
+    order_by_source_id = {
+        source_id: plan.z_order
+        for plan in original_plans
+        for source_id in plan.source_candidate_ids
+    }
+    order_by_element_id = {plan.element_id: plan.z_order for plan in original_plans}
+    fallback_order = len(original_plans)
+
+    def plan_order(plan: ElementPlan) -> tuple[int, int]:
+        source_orders = [
+            order_by_source_id[source_id]
+            for source_id in plan.source_candidate_ids
+            if source_id in order_by_source_id
+        ]
+        if source_orders:
+            return (min(source_orders), plan.z_order)
+        return (order_by_element_id.get(plan.element_id, fallback_order + plan.z_order), plan.z_order)
+
+    merged = sorted((*unexposed_plans, *refined_plans), key=plan_order)
+    return tuple(replace(plan, z_order=index) for index, plan in enumerate(merged))
+
+
+def _translate_compat_analysis_source_ids(
+    analysis: Mapping[str, Any],
+    plans: Sequence[ElementPlan],
+) -> Mapping[str, Any]:
+    raw_elements = analysis.get("elements")
+    if not isinstance(raw_elements, list):
+        return analysis
+    source_ids_by_element_id = {
+        plan.element_id: tuple(plan.source_candidate_ids)
+        for plan in plans
+    }
+    translated_elements = _translate_compat_analysis_records(
+        raw_elements,
+        source_ids_by_element_id,
+    )
+    raw_removals = analysis.get("removal_records")
+    translated_removals: list[Any] | None = None
+    if isinstance(raw_removals, list):
+        translated_removals = _translate_compat_analysis_records(
+            raw_removals,
+            source_ids_by_element_id,
+        )
+    if translated_elements == raw_elements and translated_removals == raw_removals:
+        return analysis
+    translated = dict(analysis)
+    translated["elements"] = translated_elements
+    if translated_removals is not None:
+        translated["removal_records"] = translated_removals
+    return translated
+
+
+def _translate_compat_analysis_records(
+    raw_records: Sequence[Any],
+    source_ids_by_element_id: Mapping[str, Sequence[str]],
+) -> list[Any]:
+    translated_records: list[Any] = []
+    changed = False
+    for raw_record in raw_records:
+        if not isinstance(raw_record, Mapping):
+            translated_records.append(raw_record)
+            continue
+        record = dict(raw_record)
+        action = str(record.get("refinement_action") or record.get("action") or "").strip()
+        if action != "added":
+            box_id = str(record.get("box_id") or record.get("element_id") or "")
+            for field_name in ("source_candidate_ids", "removed_source_candidate_ids"):
+                if isinstance(record.get(field_name), list):
+                    translated = _translate_source_id_list(
+                        record[field_name],
+                        source_ids_by_element_id,
+                    )
+                    if translated != record[field_name]:
+                        record[field_name] = translated
+                        changed = True
+            if "source_candidate_ids" not in record and "removed_source_candidate_ids" not in record and box_id in source_ids_by_element_id:
+                record["source_candidate_ids"] = list(source_ids_by_element_id[box_id])
+                changed = True
+        translated_records.append(record)
+    return translated_records if changed else list(raw_records)
+
+
+def _translate_source_id_list(
+    source_ids: Sequence[Any],
+    source_ids_by_element_id: Mapping[str, Sequence[str]],
+) -> list[str]:
+    translated: list[str] = []
+    for raw_source_id in source_ids:
+        source_id = str(raw_source_id)
+        mapped_source_ids = source_ids_by_element_id.get(source_id)
+        if mapped_source_ids:
+            translated.extend(str(mapped_source_id) for mapped_source_id in mapped_source_ids)
+            continue
+        translated.append(source_id)
+    deduped: list[str] = []
+    for source_id in translated:
+        if source_id and source_id not in deduped:
+            deduped.append(source_id)
+    return deduped
 
 
 def _read_external_refinement_analysis(paths: DrawAiArtifactPaths) -> Mapping[str, Any]:

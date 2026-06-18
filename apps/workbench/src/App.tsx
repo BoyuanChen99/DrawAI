@@ -146,17 +146,17 @@ const PIPELINE_GROUPS = [
     title: "元素解析",
     subtitle: "统一输入并融合解析器结果",
     nodes: [
-      { stage: "prepare", title: "准备输入", detail: "统一画布", description: "归一化源图像和画布尺寸，生成 v2 package 的基础运行上下文。" },
+      { stage: "prepare", title: "准备输入", detail: "统一画布", description: "归一化源图像和画布尺寸，生成 v2 run 的基础运行上下文。" },
       { stage: "parse_elements", title: "元素解析", detail: "SAM / OCR", description: "调用一个或多个解析器，输出统一格式的候选元素。" },
       { stage: "fuse_elements", title: "候选融合", detail: "优先级 / NMS", description: "按融合规则合并候选框，保留来源、置信度和几何信息。" }
     ]
   },
   {
-    title: "Package 规划",
+    title: "Assets 规划",
     subtitle: "校正类型并生成资产计划",
     nodes: [
       { stage: "refine_elements", title: "Agent 校验", detail: "可选 refine", description: "可选地用 Agent 校正元素位置、大小和类型。" },
-      { stage: "plan_assets", title: "资产计划", detail: "处理意图", description: "为每个元素写入处理类型和资产 package 初始状态。" },
+      { stage: "plan_assets", title: "资产计划", detail: "处理意图", description: "为每个元素写入处理类型和资产初始状态。" },
       { stage: "process_assets", title: "资产处理", detail: "裁剪 / 去背景 / 生成", description: "按元素级处理器写入可追踪结果，单个资产失败不会吞掉错误。" }
     ]
   },
@@ -166,7 +166,7 @@ const PIPELINE_GROUPS = [
     nodes: [
       { stage: "compose_svg", title: "SVG 组合", detail: "可编辑重建", description: "基于 active asset result 组合可编辑 SVG 与预览图。" },
       { stage: "export", title: "PPT 导出", detail: "PPTX", description: "将 SVG 输出为 PPTX；默认拒绝 failed / unsupported 资产。" },
-      { stage: "package_run", title: "运行包封装", detail: "完整数据包", description: "保留最终渲染结果、资产 package 和后续可修改的运行上下文。" }
+      { stage: "package_run", title: "运行包封装", detail: "完整数据包", description: "保留最终渲染结果、资产记录和后续可修改的运行上下文。" }
     ]
   }
 ] as const;
@@ -1548,8 +1548,8 @@ function V2AssetPackagePanel({
     <section className="v2-package-panel">
       <header className="v2-package-head">
         <div>
-          <span>V2 Package</span>
-          <strong>{runPackage?.metadata?.last_stage ? humanize(String(runPackage.metadata.last_stage)) : "运行包"}</strong>
+          <span>Assets</span>
+          <strong>{runPackage?.metadata?.last_stage ? humanize(String(runPackage.metadata.last_stage)) : "资产记录"}</strong>
         </div>
         <div className="v2-package-actions">
           <button type="button" className={actionPending === "compose" ? "running" : ""} disabled={!canCompose} onClick={onCompose}>
@@ -2478,6 +2478,7 @@ function TaskSelectionWorkspace({
             const taskActionRunning = caseActionPendingId === item.case_id || pptxExporting || (selected && runInProgress);
             const taskActionEnabled = failed ? !taskActionRunning && !itemReadOnly : actionsEnabled && canRunFromAssets && !itemReadOnly;
             const taskActionLabel = taskActionRunning ? "运行中" : failed ? `重试（从 ${humanize(retryStage)} 开始）` : itemV2 ? "组合" : "运行";
+            const taskAssetsEnabled = itemV2 ? editorReady && !itemReadOnly : actionsEnabled && assetsReady && !itemReadOnly;
             return (
               <article
                 key={item.case_id}
@@ -2511,10 +2512,16 @@ function TaskSelectionWorkspace({
                   >
                     <button
                       className={needsAssetReview ? "task-thumb-action needs-review" : "task-thumb-action"}
-                      disabled={!actionsEnabled || !assetsReady || itemReadOnly}
-                      onClick={onOpenAssetsEditor}
+                      disabled={!taskAssetsEnabled}
+                      onClick={() => {
+                        if (itemV2) {
+                          void onFocusCase(item.case_id);
+                          return;
+                        }
+                        onOpenAssetsEditor();
+                      }}
                     >
-                      <span className="task-thumb-action__zh">{itemV2 ? "Package" : "素材"}</span>
+                      <span className="task-thumb-action__zh">{itemV2 ? "Assets" : "素材"}</span>
                       <span className="task-thumb-action__en">{itemV2 ? "查看" : "编辑"}</span>
                     </button>
                     <button className="task-thumb-action" disabled={!actionsEnabled || !canvasReady} onClick={onOpenSvgEditor}>
@@ -2671,7 +2678,7 @@ function TaskSelectionWorkspace({
               void runContextAction("assets");
             }}
           >
-            <span>{contextCompatibility === "v2" ? "Package" : "素材"}</span>
+            <span>{contextCompatibility === "v2" ? "Assets" : "素材"}</span>
             <em>{contextReadOnly ? "历史只读" : contextSelected ? "编辑素材" : "正在选择"}</em>
           </button>
           <button

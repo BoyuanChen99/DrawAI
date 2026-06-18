@@ -161,6 +161,146 @@ def test_v2_export_counts_codex_removal_records_for_coverage(tmp_path: Path):
     ]
 
 
+def test_finalize_analysis_outputs_counts_top_level_removal_records(tmp_path: Path):
+    module = _load_run0_module()
+    case_dir = tmp_path / "case"
+    output_dir = case_dir / "reports" / "element_analysis_codex"
+    output_path = output_dir / "element_analysis.json"
+    _write_json(
+        case_dir / "box_ir" / "box_ir.json",
+        {
+            "boxes": [
+                {"id": "B001", "type": "icon", "bbox": [1, 2, 21, 32]},
+                {"id": "B002", "type": "icon", "bbox": [30, 40, 50, 60]},
+            ]
+        },
+    )
+    request = {
+        "candidates": [
+            {"box_id": "B001", "type": "icon", "bbox": [1, 2, 21, 32]},
+            {"box_id": "B002", "type": "icon", "bbox": [30, 40, 50, 60]},
+        ]
+    }
+    _write_json(output_dir / "element_analysis_request.json", request)
+    _write_json(
+        output_path,
+        {
+            "schema": module.SCHEMA_OUTPUT,
+            "elements": [
+                {
+                    "box_id": "B001",
+                    "source_candidate_ids": ["B001"],
+                    "refinement_action": "unchanged",
+                    "category": "crop",
+                    "confidence": "high",
+                    "visual_role": "retained icon",
+                    "reason": "Kept as source crop.",
+                    "bbox": [1, 2, 21, 32],
+                    "type": "icon",
+                }
+            ],
+            "removal_records": [
+                {
+                    "box_id": "B002",
+                    "source_candidate_ids": ["B002"],
+                    "refinement_action": "merged",
+                    "reason": "Merged into B001 because it is a duplicate.",
+                }
+            ],
+        },
+    )
+
+    validation, v2_export = module.finalize_analysis_outputs(
+        case_dir=case_dir,
+        output_dir=output_dir,
+        output_path=output_path,
+        request=request,
+    )
+
+    saved = json.loads(output_path.read_text(encoding="utf-8"))
+    assert [element["box_id"] for element in saved["elements"]] == ["B001"]
+    assert validation["candidate_count"] == 2
+    assert validation["element_count"] == 1
+    assert validation["removal_count"] == 1
+    assert v2_export["validation"]["element_count"] == 1
+    assert v2_export["validation"]["removal_count"] == 1
+    assert v2_export["removals"] == [
+        {
+            "action": "merged",
+            "source_candidate_ids": ["B002"],
+            "reason": "Merged into B001 because it is a duplicate.",
+        }
+    ]
+
+
+def test_finalize_analysis_outputs_backfills_omitted_candidates_as_unchanged(tmp_path: Path):
+    module = _load_run0_module()
+    case_dir = tmp_path / "case"
+    output_dir = case_dir / "reports" / "element_analysis_codex"
+    output_path = output_dir / "element_analysis.json"
+    _write_json(
+        case_dir / "box_ir" / "box_ir.json",
+        {
+            "boxes": [
+                {"id": "B001", "type": "icon", "bbox": [1, 2, 21, 32]},
+                {"id": "B002", "type": "icon", "bbox": [30, 40, 50, 60]},
+            ]
+        },
+    )
+    request = {
+        "candidates": [
+            {
+                "box_id": "B001",
+                "type": "icon",
+                "bbox": [1, 2, 21, 32],
+                "current_pipeline_method": "crop",
+            },
+            {
+                "box_id": "B002",
+                "type": "icon",
+                "bbox": [30, 40, 50, 60],
+                "current_pipeline_method": "svg_self_draw",
+            },
+        ]
+    }
+    _write_json(output_dir / "element_analysis_request.json", request)
+    _write_json(
+        output_path,
+        {
+            "schema": module.SCHEMA_OUTPUT,
+            "elements": [
+                {
+                    "box_id": "B001",
+                    "source_candidate_ids": ["B001"],
+                    "refinement_action": "unchanged",
+                    "category": "crop",
+                    "confidence": "high",
+                    "visual_role": "retained icon",
+                    "reason": "Kept as source crop.",
+                    "bbox": [1, 2, 21, 32],
+                    "type": "icon",
+                }
+            ],
+        },
+    )
+
+    validation, v2_export = module.finalize_analysis_outputs(
+        case_dir=case_dir,
+        output_dir=output_dir,
+        output_path=output_path,
+        request=request,
+    )
+
+    saved = json.loads(output_path.read_text(encoding="utf-8"))
+    backfilled = saved["elements"][1]
+    assert validation["candidate_count"] == 2
+    assert backfilled["box_id"] == "B002"
+    assert backfilled["source_candidate_ids"] == ["B002"]
+    assert backfilled["refinement_action"] == "unchanged"
+    assert backfilled["category"] == "svg_self_draw"
+    assert [element["element_id"] for element in v2_export["elements"]] == ["B001", "B002"]
+
+
 def test_v2_export_preserves_added_element_empty_sources(tmp_path: Path):
     module = _load_run0_module()
     output_dir = tmp_path / "reports" / "element_analysis_codex"
@@ -189,6 +329,49 @@ def test_v2_export_preserves_added_element_empty_sources(tmp_path: Path):
 
     assert v2_export["elements"][0]["element_id"] == "N001"
     assert v2_export["elements"][0]["source_candidate_ids"] == []
+
+
+def test_v2_export_normalizes_added_asset_meta_type(tmp_path: Path):
+    module = _load_run0_module()
+    output_dir = tmp_path / "reports" / "element_analysis_codex"
+    analysis = {
+        "schema": module.SCHEMA_OUTPUT,
+        "elements": [
+            {
+                "box_id": "N001",
+                "source_candidate_ids": [],
+                "refinement_action": "added",
+                "category": "crop_nobg",
+                "confidence": "medium",
+                "visual_role": "decorative robot at upper right",
+                "reason": "Added because the parser missed this illustration.",
+                "bbox": [1, 2, 21, 32],
+                "type": "added_asset",
+            },
+            {
+                "box_id": "N002",
+                "source_candidate_ids": [],
+                "refinement_action": "added",
+                "category": "svg_self_draw",
+                "confidence": "medium",
+                "visual_role": "main title text line",
+                "reason": "Added because the parser missed this title.",
+                "bbox": [30, 40, 90, 60],
+                "type": "added_asset",
+            },
+        ],
+    }
+
+    v2_export = module.write_v2_element_plans_export(
+        output_dir,
+        analysis,
+        {"candidates": []},
+    )
+
+    assert [(item["element_id"], item["element_type"]) for item in v2_export["elements"]] == [
+        ("N001", "picture"),
+        ("N002", "text"),
+    ]
 
 
 def test_added_records_cannot_claim_existing_source_candidates(tmp_path: Path):

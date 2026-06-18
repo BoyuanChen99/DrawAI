@@ -10,6 +10,32 @@ from .schema import ElementPlan, ProcessingIntent, validate_element_plan
 CODEX_ELEMENT_ANALYSIS_SCHEMA = "drawai.codex_element_analysis.v1"
 REFINED_ELEMENT_PLANS_EXPORT_SCHEMA = "drawai.refined_element_plans.v1"
 REMOVAL_ACTIONS = {"removed", "merged"}
+CORE_ELEMENT_TYPES = {
+    "text",
+    "icon",
+    "picture",
+    "table",
+    "chart",
+    "diagram",
+    "arrow",
+    "frame",
+    "grid",
+    "symbol",
+    "content_box",
+    "unknown",
+}
+ELEMENT_TYPE_ALIASES = {
+    "asset": "unknown",
+    "border": "frame",
+    "box": "content_box",
+    "container": "content_box",
+    "content": "content_box",
+    "contentbox": "content_box",
+    "image": "picture",
+    "photo": "picture",
+    "photograph": "picture",
+    "shape": "symbol",
+}
 
 
 @dataclass(frozen=True)
@@ -120,9 +146,8 @@ def codex_analysis_to_v2_removal_records(
     analysis: Mapping[str, Any],
 ) -> tuple[dict[str, Any], ...]:
     return tuple(
-        _normalized_removal_record(raw_element)
-        for raw_element in _codex_analysis_elements(analysis)
-        if _is_removal_record(raw_element)
+        _normalized_removal_record(raw_record)
+        for raw_record in _codex_analysis_removal_records(analysis)
     )
 
 
@@ -143,6 +168,20 @@ def _codex_analysis_elements(analysis: Mapping[str, Any]) -> tuple[Mapping[str, 
     return tuple(elements)
 
 
+def _codex_analysis_removal_records(analysis: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    records = [raw_element for raw_element in _codex_analysis_elements(analysis) if _is_removal_record(raw_element)]
+    raw_removal_records = analysis.get("removal_records", [])
+    if raw_removal_records is None:
+        raw_removal_records = []
+    if not isinstance(raw_removal_records, list):
+        raise ValueError("Codex element analysis removal_records must be a list")
+    for index, raw_record in enumerate(raw_removal_records):
+        if not isinstance(raw_record, Mapping):
+            raise ValueError(f"removal_records[{index}] must be a mapping")
+        records.append(raw_record)
+    return tuple(records)
+
+
 def _codex_element_to_plan(
     element: Mapping[str, Any],
     *,
@@ -154,9 +193,10 @@ def _codex_element_to_plan(
     )
     bbox_xyxy = _xyxy_bbox(element.get("bbox"), f"{element_id} bbox", allow_line=True)
     processing_type = _required_string(element.get("category"), f"{element_id} category")
-    element_type = _optional_string(
-        element.get("type") or element.get("element_type"),
-        "unknown",
+    element_type = normalize_codex_element_type(
+        element.get("element_type") or element.get("type"),
+        processing_type=processing_type,
+        visual_role=str(element.get("visual_role") or ""),
     )
     reason = _required_string(
         element.get("change_reason") or element.get("reason"),
@@ -206,6 +246,47 @@ def _plan_source_candidate_ids(
     if refinement_action == "added" and source_ids:
         raise ValueError(f"{element_id} added element must not include source_candidate_ids")
     return source_ids
+
+
+def normalize_codex_element_type(
+    raw_type: Any,
+    *,
+    processing_type: str = "",
+    visual_role: str = "",
+) -> str:
+    normalized = str(raw_type or "").strip().lower().replace("-", "_").replace(" ", "_").strip("_")
+    if normalized == "added_asset":
+        return _infer_added_asset_element_type(
+            processing_type=processing_type,
+            visual_role=visual_role,
+        )
+    if not normalized:
+        return "unknown"
+    normalized = ELEMENT_TYPE_ALIASES.get(normalized, normalized)
+    if normalized in CORE_ELEMENT_TYPES:
+        return normalized
+    return "unknown"
+
+
+def _infer_added_asset_element_type(*, processing_type: str, visual_role: str) -> str:
+    role = visual_role.strip().lower().replace("-", " ").replace("_", " ")
+    if processing_type in {"crop", "crop_nobg"}:
+        return "picture"
+    if any(token in role for token in ("text", "title", "subtitle", "caption", "label", "word")):
+        return "text"
+    if "arrow" in role:
+        return "arrow"
+    if any(token in role for token in ("table", "spreadsheet")):
+        return "table"
+    if any(token in role for token in ("chart", "plot", "graph")):
+        return "chart"
+    if any(token in role for token in ("grid", "matrix")):
+        return "grid"
+    if any(token in role for token in ("frame", "border", "panel", "card", "box")):
+        return "content_box"
+    if any(token in role for token in ("icon", "symbol", "accent", "badge", "marker")):
+        return "icon"
+    return "unknown"
 
 
 def _validate_plan(plan: ElementPlan) -> None:

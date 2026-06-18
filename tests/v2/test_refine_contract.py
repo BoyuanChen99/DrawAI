@@ -9,6 +9,7 @@ from drawai.v2.refine import (
     RefineConfig,
     RefinementValidationError,
     codex_analysis_to_v2_element_plans,
+    codex_analysis_to_v2_removal_records,
     validate_refined_elements,
 )
 from drawai.v2.schema import ElementPlan, ProcessingIntent
@@ -87,6 +88,33 @@ def _legacy_analysis_with_removal() -> dict[str, object]:
     }
 
 
+def _legacy_analysis_with_top_level_removal() -> dict[str, object]:
+    return {
+        "schema": "drawai.codex_element_analysis.v1",
+        "elements": [
+            {
+                "box_id": "B001",
+                "source_candidate_ids": ["B001"],
+                "refinement_action": "unchanged",
+                "category": "crop",
+                "confidence": "high",
+                "visual_role": "masked icon",
+                "reason": "Kept as source crop.",
+                "bbox": [1, 2, 21, 32],
+                "type": "icon",
+            }
+        ],
+        "removal_records": [
+            {
+                "box_id": "B002",
+                "source_candidate_ids": ["B002"],
+                "refinement_action": "merged",
+                "reason": "Merged into B001 because it is a duplicate mask.",
+            }
+        ],
+    }
+
+
 def _legacy_analysis_with_added_element() -> dict[str, object]:
     return {
         "schema": "drawai.codex_element_analysis.v1",
@@ -102,6 +130,36 @@ def _legacy_analysis_with_added_element() -> dict[str, object]:
                 "bbox": [1, 2, 21, 32],
                 "type": "icon",
             }
+        ],
+    }
+
+
+def _legacy_analysis_with_added_asset_meta_type() -> dict[str, object]:
+    return {
+        "schema": "drawai.codex_element_analysis.v1",
+        "elements": [
+            {
+                "box_id": "N001",
+                "source_candidate_ids": [],
+                "refinement_action": "added",
+                "category": "crop_nobg",
+                "confidence": "medium",
+                "visual_role": "decorative robot at upper right",
+                "reason": "Added because the parser missed this illustration.",
+                "bbox": [1, 2, 21, 32],
+                "type": "added_asset",
+            },
+            {
+                "box_id": "N002",
+                "source_candidate_ids": [],
+                "refinement_action": "added",
+                "category": "svg_self_draw",
+                "confidence": "medium",
+                "visual_role": "main title text line",
+                "reason": "Added because the parser missed this title.",
+                "bbox": [30, 40, 90, 60],
+                "type": "added_asset",
+            },
         ],
     }
 
@@ -315,6 +373,21 @@ def test_codex_analysis_preserves_added_element_empty_sources() -> None:
     )
 
 
+def test_codex_analysis_normalizes_added_asset_meta_type() -> None:
+    plans = codex_analysis_to_v2_element_plans(_legacy_analysis_with_added_asset_meta_type())
+
+    assert [(plan.element_id, plan.element_type) for plan in plans] == [
+        ("N001", "picture"),
+        ("N002", "text"),
+    ]
+    assert [plan.processing_intent.object_type for plan in plans] == ["picture", "text"]
+    validate_refined_elements(
+        plans,
+        expected_candidate_ids=set(),
+        locked_geometry_by_candidate={},
+    )
+
+
 def test_codex_analysis_rejects_added_element_with_source_candidate_ids() -> None:
     with pytest.raises(ValueError, match="added.*source_candidate_ids"):
         codex_analysis_to_v2_element_plans(
@@ -342,3 +415,22 @@ def test_codex_element_refiner_counts_removal_records_for_coverage() -> None:
     )
 
     assert [plan.element_id for plan in plans] == ["B001"]
+
+
+def test_codex_element_refiner_counts_top_level_removal_records_for_coverage() -> None:
+    refiner = CodexElementRefiner(RefineConfig())
+
+    plans = refiner.convert_analysis(
+        _legacy_analysis_with_top_level_removal(),
+        expected_candidate_ids={"B001", "B002"},
+        locked_geometry_by_candidate={},
+    )
+
+    assert [plan.element_id for plan in plans] == ["B001"]
+    assert codex_analysis_to_v2_removal_records(_legacy_analysis_with_top_level_removal()) == (
+        {
+            "action": "merged",
+            "source_candidate_ids": ("B002",),
+            "reason": "Merged into B001 because it is a duplicate mask.",
+        },
+    )

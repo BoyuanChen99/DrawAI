@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 from PIL import Image
@@ -8,6 +9,12 @@ from PIL import Image
 from drawai.artifacts import DrawAiArtifactPaths, prepare_artifact_paths
 from drawai.pipeline import run_drawai_pipeline_from_stage
 from drawai.public_stages import PUBLIC_STAGE_ORDER, run_public_stage
+from drawai.v2.schema import ElementPlan, ProcessingIntent
+from drawai.v2.stages import (
+    _merge_refined_plans_with_unexposed,
+    _refinement_expected_source_candidate_ids,
+    _translate_compat_analysis_source_ids,
+)
 
 
 def _config(
@@ -84,6 +91,31 @@ def _write_fixture_refinement_artifact(paths: DrawAiArtifactPaths) -> None:
                     {
                         "element_id": "E001",
                         "source_candidate_ids": ["ocr:T001"],
+                        "refinement_action": "unchanged",
+                        "category": "svg_self_draw",
+                        "confidence": "high",
+                        "visual_role": "text",
+                        "reason": "Keep the OCR text element.",
+                        "bbox": [4, 5, 20, 14],
+                        "type": "text",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_compat_id_refinement_artifact(paths: DrawAiArtifactPaths) -> None:
+    paths.element_analysis_json.parent.mkdir(parents=True, exist_ok=True)
+    paths.element_analysis_json.write_text(
+        json.dumps(
+            {
+                "schema": "drawai.codex_element_analysis.v1",
+                "elements": [
+                    {
+                        "element_id": "E001",
+                        "source_candidate_ids": ["E001"],
                         "refinement_action": "unchanged",
                         "category": "svg_self_draw",
                         "confidence": "high",
@@ -206,6 +238,137 @@ def test_refine_stage_consumes_existing_codex_artifact(tmp_path: Path) -> None:
     assert package["metadata"]["last_stage"] == "refine_elements"
     assert package["elements"][0]["review_status"] == "agent_refined"
     assert not stale_v2_export.exists()
+
+
+def test_refine_stage_translates_boxir_compat_ids_to_source_candidate_ids(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path, refine_enabled=None)
+    fusion_summary = run_public_stage(config, "fuse_elements")
+    assert fusion_summary["status"] == "ok"
+
+    paths = prepare_artifact_paths(tmp_path / "out")
+    _write_compat_id_refinement_artifact(paths)
+
+    summary = run_drawai_pipeline_from_stage(config, "refine_elements", to_stage="refine_elements")
+
+    assert summary["status"] == "ok"
+    package = json.loads(paths.run_package_json.read_text(encoding="utf-8"))
+    assert package["elements"][0]["element_id"] == "E001"
+    assert package["elements"][0]["source_candidate_ids"] == ["ocr:T001"]
+
+
+def test_refine_stage_translates_top_level_removal_compat_ids() -> None:
+    analysis = {
+        "schema": "drawai.codex_element_analysis.v1",
+        "elements": [
+            {
+                "element_id": "E001",
+                "source_candidate_ids": ["E001"],
+                "refinement_action": "unchanged",
+                "category": "svg_self_draw",
+                "confidence": "high",
+                "visual_role": "text",
+                "reason": "Keep text.",
+                "bbox": [4, 5, 20, 14],
+                "type": "text",
+            }
+        ],
+        "removal_records": [
+            {
+                "box_id": "E002",
+                "source_candidate_ids": ["E002"],
+                "refinement_action": "merged",
+                "reason": "Duplicate parser output.",
+            }
+        ],
+    }
+    plans = (
+        ElementPlan(
+            element_id="E001",
+            source_candidate_ids=("ocr:T001",),
+            element_type="text",
+            bbox=(4, 5, 16, 9),
+            geometry={"kind": "bbox", "bbox": [4, 5, 20, 14]},
+            z_order=0,
+            confidence="high",
+            processing_intent=ProcessingIntent(
+                object_type="text",
+                processing_type="svg_self_draw",
+            ),
+            review_status="pending",
+            created_by_stage="fuse_elements",
+            change_reason="fixture",
+        ),
+        ElementPlan(
+            element_id="E002",
+            source_candidate_ids=("sam3:B113",),
+            element_type="icon",
+            bbox=(20, 5, 10, 10),
+            geometry={"kind": "bbox", "bbox": [20, 5, 30, 15]},
+            z_order=1,
+            confidence="high",
+            processing_intent=ProcessingIntent(
+                object_type="icon",
+                processing_type="svg_self_draw",
+            ),
+            review_status="pending",
+            created_by_stage="fuse_elements",
+            change_reason="fixture",
+        ),
+    )
+
+    translated = _translate_compat_analysis_source_ids(analysis, plans)
+
+    assert translated["elements"][0]["source_candidate_ids"] == ["ocr:T001"]
+    assert translated["removal_records"][0]["source_candidate_ids"] == ["sam3:B113"]
+
+
+def test_refine_expected_sources_can_be_limited_to_exposed_compat_plans() -> None:
+    plans = (
+        ElementPlan(
+            element_id="E001",
+            source_candidate_ids=("ocr:T001",),
+            element_type="text",
+            bbox=(4, 5, 16, 9),
+            geometry={"kind": "bbox", "bbox": [4, 5, 20, 14]},
+            z_order=0,
+            confidence="high",
+            processing_intent=ProcessingIntent(
+                object_type="text",
+                processing_type="svg_self_draw",
+            ),
+            review_status="pending",
+            created_by_stage="fuse_elements",
+            change_reason="fixture",
+        ),
+        ElementPlan(
+            element_id="E002",
+            source_candidate_ids=("sam3:B113",),
+            element_type="icon",
+            bbox=(20, 5, 10, 10),
+            geometry={"kind": "bbox", "bbox": [20, 5, 30, 15]},
+            z_order=1,
+            confidence="high",
+            processing_intent=ProcessingIntent(
+                object_type="icon",
+                processing_type="crop_nobg",
+            ),
+            review_status="pending",
+            created_by_stage="fuse_elements",
+            change_reason="fixture",
+        ),
+    )
+
+    assert _refinement_expected_source_candidate_ids(plans, {"E002"}) == {"sam3:B113"}
+
+    refined_icon = replace(plans[1], review_status="agent_refined")
+    merged = _merge_refined_plans_with_unexposed(plans, (refined_icon,), {"E002"})
+
+    assert [(plan.element_id, plan.review_status, plan.z_order) for plan in merged] == [
+        ("E001", "pending", 0),
+        ("E002", "agent_refined", 1),
+    ]
 
 
 def test_export_refuses_failed_asset_by_default(tmp_path: Path) -> None:

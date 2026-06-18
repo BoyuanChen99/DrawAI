@@ -226,6 +226,71 @@ def test_runner_refine_stage_reuses_existing_external_codex_analysis(
     runner._run_stage(case.case_id, "refine_elements")
 
 
+def test_runner_refine_stage_regenerates_incomplete_codex_analysis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    batch = store.create_batch(
+        name="batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    case_root = Path(case.run_root)
+    config_path = create_case_config(
+        base_config_path=base_config,
+        source_image=source,
+        output_dir=case_root,
+        target_path=case_root / "drawai.config.yaml",
+    )
+    store.update_case_config_path(case.case_id, config_path)
+    case = store.get_case(case.case_id)
+    analysis_path = Path(case.run_root) / "reports" / "element_analysis_codex" / "element_analysis.json"
+    _write_json(analysis_path, {"schema": "drawai.codex_element_analysis.v1", "elements": []})
+    _write_json(analysis_path.parent / "run_status.json", {"status": "running"})
+    codex_analysis_roots: list[Path] = []
+
+    def fake_codex_analysis(cfg, paths) -> None:
+        codex_analysis_roots.append(paths.root)
+        _write_json(
+            paths.element_analysis_json,
+            {"schema": "drawai.codex_element_analysis.v1", "elements": []},
+        )
+        _write_json(paths.element_analysis_json.parent / "run_status.json", {"status": "ok"})
+
+    def fake_run_from_stage(
+        config_path_or_config,
+        from_stage: str,
+        *,
+        to_stage: str | None = None,
+        **kwargs,
+    ) -> dict[str, object]:
+        assert config_path_or_config == case.config_path
+        assert from_stage == "refine_elements"
+        assert to_stage == "refine_elements"
+        assert codex_analysis_roots == [Path(case.run_root)]
+        return {"status": "ok", "artifacts": {}}
+
+    monkeypatch.setattr("drawai.pipeline._run_codex_run0_asset_analysis", fake_codex_analysis)
+    monkeypatch.setattr("drawai.workbench.runner.run_drawai_pipeline_from_stage", fake_run_from_stage)
+    runner = WorkbenchRunner(store, _settings(tmp_path, base_config))
+
+    runner._run_stage(case.case_id, "refine_elements")
+
+    assert codex_analysis_roots == [Path(case.run_root)]
+
+
 def test_store_rejects_artifacts_outside_case_root(tmp_path: Path) -> None:
     store = WorkbenchStore(tmp_path / "workspace")
     config_path = tmp_path / "config.yaml"
