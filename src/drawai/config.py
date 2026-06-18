@@ -166,12 +166,18 @@ class V2ProcessorConfig:
 
 
 @dataclass(frozen=True)
+class V2ComposeConfig:
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
 class DrawAiV2Config:
     enabled: bool = True
     parser: V2ParserConfig = V2ParserConfig()
     fusion: V2FusionConfig = V2FusionConfig()
     refine: V2RefineConfig = V2RefineConfig()
     processor: V2ProcessorConfig = V2ProcessorConfig()
+    compose: V2ComposeConfig = V2ComposeConfig()
 
 
 @dataclass(frozen=True)
@@ -532,6 +538,7 @@ def _parse_v2_config(raw: Any) -> DrawAiV2Config:
         fusion=_parse_v2_fusion_config(data.get("fusion")),
         refine=_parse_v2_refine_config(data.get("refine")),
         processor=_parse_v2_processor_config(data.get("processor")),
+        compose=_parse_v2_compose_config(data.get("compose")),
     )
 
 
@@ -574,6 +581,15 @@ def _parse_v2_processor_config(raw: Any) -> V2ProcessorConfig:
     data = _require_mapping(raw, "v2.processor")
     return V2ProcessorConfig(
         enabled=_as_bool(data.get("enabled", V2ProcessorConfig.enabled), "v2.processor.enabled"),
+    )
+
+
+def _parse_v2_compose_config(raw: Any) -> V2ComposeConfig:
+    if raw is None:
+        return V2ComposeConfig()
+    data = _require_mapping(raw, "v2.compose")
+    return V2ComposeConfig(
+        enabled=_as_bool(data.get("enabled", V2ComposeConfig.enabled), "v2.compose.enabled"),
     )
 
 

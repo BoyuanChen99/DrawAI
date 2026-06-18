@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import threading
+import time
 from collections.abc import Callable
 from contextlib import ExitStack, contextmanager
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -112,10 +113,25 @@ class WorkbenchRunner:
         self.executor.shutdown(wait=False, cancel_futures=False)
 
     def wait_for_idle(self, timeout: float | None = None) -> None:
-        with self._futures_lock:
-            futures = list(self._futures)
-        for future in futures:
-            future.result(timeout=timeout)
+        deadline = time.monotonic() + timeout if timeout is not None else None
+        while True:
+            with self._futures_lock:
+                futures = list(self._futures)
+            with self._case_jobs_lock:
+                case_jobs = set(self._case_jobs)
+            if not futures and not case_jobs:
+                return
+            if not futures:
+                remaining = _idle_wait_remaining(deadline)
+                if remaining is not None and remaining <= 0:
+                    raise TimeoutError("Workbench runner did not become idle before timeout.")
+                time.sleep(min(0.01, remaining) if remaining is not None else 0.01)
+                continue
+            for future in futures:
+                remaining = _idle_wait_remaining(deadline)
+                if remaining is not None and remaining <= 0:
+                    raise TimeoutError("Workbench runner did not become idle before timeout.")
+                future.result(timeout=remaining)
 
     def resource_activity(self) -> dict[str, dict[str, int]]:
         with self._resource_activity_lock:
@@ -502,6 +518,12 @@ class WorkbenchRunner:
             self.store.update_batch_status(batch_id, "failed", error_message=failed_case.error_message if failed_case else "")
         elif "canceled" in statuses:
             self.store.update_batch_status(batch_id, "canceled")
+
+
+def _idle_wait_remaining(deadline: float | None) -> float | None:
+    if deadline is None:
+        return None
+    return deadline - time.monotonic()
 
 
 def _next_svg_archive_dir(root: Path) -> Path:

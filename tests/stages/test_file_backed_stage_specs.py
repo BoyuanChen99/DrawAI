@@ -16,8 +16,8 @@ def test_file_backed_stage_specs_expose_v2_order_dependencies_and_outputs():
     assert [spec.stage_id for spec in specs] == ["compose_svg", "export"]
     assert specs[0].depends_on == ()
     assert specs[1].depends_on == ("compose_svg",)
-    assert "semantic_svg" in specs[0].outputs
-    assert "rendered_png" in specs[0].outputs
+    assert "run_package" in specs[0].outputs
+    assert "svg_validation_report" in specs[0].outputs
     assert "svg_to_ppt_export_report" in specs[1].outputs
     assert [spec.stage_id for spec in DagRunner(specs).topological_order()] == [
         "compose_svg",

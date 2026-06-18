@@ -91,8 +91,7 @@ _STAGE_OUTPUT_PATHS: Mapping[str, Mapping[str, str]] = {
         "processor_trace": "v2_processor_trace_jsonl",
     },
     "compose_svg": {
-        "semantic_svg": "semantic_svg",
-        "rendered_png": "rendered_png",
+        "run_package": "run_package_json",
         "svg_validation_report": "svg_validation_report_json",
     },
     "export": {
@@ -301,6 +300,17 @@ def _run_v2_stage(
         asset_packages = _read_asset_packages(paths, plans)
         asset_manifest = write_asset_manifest_compat(paths.root, asset_packages)
         _write_compat_outputs(paths, plans)
+        if not cfg.v2.compose.enabled:
+            write_json(paths.svg_validation_report_json, _compose_skipped_report(paths))
+            _write_v2_package(
+                paths,
+                cfg,
+                elements=plans,
+                asset_packages=asset_packages,
+                stage="compose_svg",
+                compose_outputs=_compose_skipped_outputs(paths),
+            )
+            return
         _run_svg_generation_from_v2_package(cfg, paths, asset_manifest, options)
         _write_v2_package(
             paths,
@@ -315,6 +325,27 @@ def _run_v2_stage(
     if stage == "export":
         plans = _read_element_plans(paths)
         asset_packages = _read_asset_packages(paths, plans)
+        if not cfg.v2.compose.enabled:
+            report = {
+                "schema": "drawai.svg_to_ppt_export_report.v1",
+                "status": "ok",
+                "source": "v2.export",
+                "enabled": cfg.svg_to_ppt.enabled,
+                "export_pptx": cfg.svg_to_ppt.export_pptx,
+                "skipped": True,
+                "skip_reason": "v2.compose.disabled",
+            }
+            write_json(paths.svg_to_ppt_export_report_json, report)
+            _write_v2_package(
+                paths,
+                cfg,
+                elements=plans,
+                asset_packages=asset_packages,
+                stage="export",
+                compose_outputs=_existing_package_outputs(paths, "compose_outputs"),
+                export_outputs=_export_outputs(paths, report),
+            )
+            return
         failed_asset_report = _failed_asset_export_report(cfg, paths, asset_packages)
         if failed_asset_report is not None:
             _write_export_failure_package(paths, cfg, plans, asset_packages)
@@ -858,12 +889,38 @@ def _compose_outputs(paths: DrawAiArtifactPaths) -> dict[str, Any]:
     }
 
 
+def _compose_skipped_report(paths: DrawAiArtifactPaths) -> dict[str, Any]:
+    return {
+        "schema": "drawai.svg_validation_report.v1",
+        "status": "skipped",
+        "source": "v2.compose",
+        "enabled": False,
+        "skip_reason": "v2.compose.disabled",
+        "semantic_svg": None,
+    }
+
+
+def _compose_skipped_outputs(paths: DrawAiArtifactPaths) -> dict[str, Any]:
+    return {
+        "status": "skipped",
+        "enabled": False,
+        "skip_reason": "v2.compose.disabled",
+        "validation_report": _path_ref(paths.root, paths.svg_validation_report_json),
+    }
+
+
 def _export_outputs(paths: DrawAiArtifactPaths, report: Mapping[str, Any]) -> dict[str, Any]:
     outputs: dict[str, Any] = {
         "report": _path_ref(paths.root, paths.svg_to_ppt_export_report_json),
         "enabled": bool(report.get("enabled", False)),
         "export_pptx": bool(report.get("export_pptx", False)),
     }
+    if report.get("skipped") is True:
+        outputs["status"] = "skipped"
+        outputs["skipped"] = True
+        skip_reason = report.get("skip_reason")
+        if isinstance(skip_reason, str) and skip_reason:
+            outputs["skip_reason"] = skip_reason
     pptx_path = report.get("pptx_path")
     if isinstance(pptx_path, str) and pptx_path:
         outputs["pptx_path"] = _path_ref(paths.root, Path(pptx_path))

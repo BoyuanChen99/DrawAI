@@ -15,17 +15,28 @@ def _config(
     *,
     refine_enabled: bool | None = False,
     export_pptx: bool = False,
+    compose_enabled: bool | None = None,
 ) -> Path:
     image = tmp_path / "input.png"
     Image.new("RGB", (80, 40), "white").save(image)
     config = tmp_path / "config.yaml"
-    v2_section = ""
+    v2_lines: list[str] = []
     if refine_enabled is not None:
-        v2_section = f"""
-v2:
+        v2_lines.append(
+            f"""
   refine:
     enabled: {str(refine_enabled).lower()}
-"""
+""".rstrip()
+        )
+    if compose_enabled is not None:
+        v2_lines.append(
+            f"""
+  compose:
+    enabled: {str(compose_enabled).lower()}
+""".rstrip()
+        )
+    v2_body = "\n".join(v2_lines)
+    v2_section = f"\nv2:\n{v2_body}\n" if v2_lines else ""
     config.write_text(
         f"""
 input:
@@ -319,6 +330,33 @@ def test_compose_svg_uses_svg_generation_loop(tmp_path: Path) -> None:
     package = json.loads((root / "drawai_package.json").read_text(encoding="utf-8"))
     assert package["compose_outputs"]["semantic_svg"] == "svg/semantic.svg"
     assert package["compose_outputs"]["validation_report"] == "reports/svg_validation_report.json"
+
+
+def test_compose_disabled_packages_run_without_svg_generation(tmp_path: Path) -> None:
+    config = _config(tmp_path, compose_enabled=False)
+
+    summary = run_public_stage(config, "all")
+
+    assert summary["status"] == "ok"
+    root = Path(summary["output_dir"])
+    assert not (root / "svg" / "semantic.svg").exists()
+    assert (root / "elements" / "E001" / "asset_package.json").is_file()
+    validation_report = json.loads(
+        (root / "reports" / "svg_validation_report.json").read_text(encoding="utf-8")
+    )
+    assert validation_report["status"] == "skipped"
+    assert validation_report["skip_reason"] == "v2.compose.disabled"
+    assert validation_report["semantic_svg"] is None
+    package = json.loads((root / "drawai_package.json").read_text(encoding="utf-8"))
+    assert package["metadata"]["last_stage"] == "package_run"
+    assert package["compose_outputs"] == {
+        "status": "skipped",
+        "enabled": False,
+        "skip_reason": "v2.compose.disabled",
+        "validation_report": "reports/svg_validation_report.json",
+    }
+    assert package["export_outputs"]["status"] == "skipped"
+    assert package["export_outputs"]["skip_reason"] == "v2.compose.disabled"
 
 
 def test_export_records_v2_export_outputs_on_success(tmp_path: Path) -> None:

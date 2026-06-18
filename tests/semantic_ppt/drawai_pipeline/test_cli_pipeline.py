@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -33,6 +34,44 @@ def _iter_manifest_paths(value):
             yield from _iter_manifest_paths(item)
 
 
+@pytest.fixture(autouse=True)
+def _stub_run0_asset_analysis(monkeypatch):
+    def fake_codex_run0_asset_analysis(_cfg, paths):
+        paths.element_analysis_dir.mkdir(parents=True, exist_ok=True)
+        paths.element_analysis_json.write_text(
+            json.dumps(
+                {
+                    "schema": "drawai.codex_element_analysis.v1",
+                    "case_dir": str(paths.root),
+                    "elements": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        paths.element_analysis_validation_json.write_text(
+            json.dumps({"schema": "drawai.codex_element_analysis_validation.v1", "status": "ok"}),
+            encoding="utf-8",
+        )
+        paths.element_analysis_status_json.write_text(
+            json.dumps({"schema": "drawai.codex_element_analysis_status.v1", "status": "ok"}),
+            encoding="utf-8",
+        )
+        paths.element_analysis_request_json.write_text(
+            json.dumps({"schema": "drawai.codex_element_analysis_request.v1"}),
+            encoding="utf-8",
+        )
+        paths.element_analysis_prompt_txt.write_text("deterministic test run0 asset analysis\n", encoding="utf-8")
+        paths.element_analysis_trace_jsonl.write_text('{"status":"ok"}\n', encoding="utf-8")
+        overlay = paths.reports_dir / "assemble_debug" / "assets" / "08_asset_plan.png"
+        overlay.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (8, 8), "white").save(overlay)
+
+    monkeypatch.setattr(
+        "drawai.pipeline._run_codex_run0_asset_analysis",
+        fake_codex_run0_asset_analysis,
+    )
+
+
 def test_pipeline_dry_run_with_fakes_writes_summary(tmp_path: Path):
     image = tmp_path / "input.png"
     Image.new("RGB", (100, 50), "white").save(image)
@@ -61,6 +100,8 @@ svg:
 svg_to_ppt:
   enabled: true
   export_pptx: false
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )
@@ -211,6 +252,8 @@ svg:
 svg_to_ppt:
   enabled: true
   export_pptx: false
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )
@@ -279,6 +322,8 @@ ocr:
 svg_to_ppt:
   enabled: true
   export_pptx: true
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )
@@ -398,6 +443,8 @@ svg:
 svg_to_ppt:
   enabled: true
   export_pptx: false
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )
@@ -472,6 +519,8 @@ svg:
 svg_to_ppt:
   enabled: true
   export_pptx: false
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )
@@ -534,6 +583,14 @@ def test_cli_dry_run_config_prints_default_summary():
         ],
         check=False,
         capture_output=True,
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                item
+                for item in [str(Path.cwd() / "src"), os.environ.get("PYTHONPATH", "")]
+                if item
+            ),
+        },
         text=True,
     )
 
@@ -1169,13 +1226,16 @@ def test_cli_setup_local_success_message_uses_uv_run(tmp_path: Path, monkeypatch
 
 def test_cli_setup_local_runs_doctor_after_full_setup(tmp_path: Path, monkeypatch, capsys):
     from drawai.cli import main
+    from drawai import local_cli
     from drawai.local_cli import DoctorCheck
 
-    commands = []
+    setup_calls = []
 
-    def fake_run(command, **kwargs):
-        commands.append(command)
-        return subprocess.CompletedProcess(command, 0)
+    def fake_download(**kwargs):
+        setup_calls.append(("download", kwargs))
+
+    def fake_bootstrap(**kwargs):
+        setup_calls.append(("bootstrap", kwargs))
 
     def fake_checks(*, runtime_root, repo_root):
         return [
@@ -1184,7 +1244,8 @@ def test_cli_setup_local_runs_doctor_after_full_setup(tmp_path: Path, monkeypatc
             DoctorCheck("SVG browser renderer", "warn", "Chrome/Chromium was not found on PATH."),
         ]
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(local_cli, "download_local_models", fake_download)
+    monkeypatch.setattr(local_cli, "bootstrap_local_runtime", fake_bootstrap)
     monkeypatch.setattr("drawai.local_cli.local_runtime_checks", fake_checks)
     runtime_root = tmp_path / "runtime"
 
@@ -1192,7 +1253,11 @@ def test_cli_setup_local_runs_doctor_after_full_setup(tmp_path: Path, monkeypatc
 
     captured = capsys.readouterr()
     assert result == 0
-    assert len(commands) == 2
+    assert [call[0] for call in setup_calls] == ["download", "bootstrap"]
+    assert setup_calls[0][1]["include_sam3"] is True
+    assert setup_calls[0][1]["include_paddle"] is True
+    assert setup_calls[0][1]["include_rmbg"] is True
+    assert setup_calls[1][1]["dry_run"] is False
     assert "post_setup: running uv run drawai doctor local" in captured.out
     assert "DrawAI local doctor" in captured.out
     assert "status: ok" in captured.out
@@ -1201,14 +1266,21 @@ def test_cli_setup_local_runs_doctor_after_full_setup(tmp_path: Path, monkeypatc
 
 def test_cli_setup_local_skip_doctor_keeps_manual_next_step(tmp_path: Path, monkeypatch, capsys):
     from drawai.cli import main
+    from drawai import local_cli
 
-    def fake_run(command, **kwargs):
-        return subprocess.CompletedProcess(command, 0)
+    setup_calls = []
+
+    def fake_download(**kwargs):
+        setup_calls.append(("download", kwargs))
+
+    def fake_bootstrap(**kwargs):
+        setup_calls.append(("bootstrap", kwargs))
 
     def fail_checks(**kwargs):
         raise AssertionError("local_runtime_checks should not run with --skip-doctor")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(local_cli, "download_local_models", fake_download)
+    monkeypatch.setattr(local_cli, "bootstrap_local_runtime", fake_bootstrap)
     monkeypatch.setattr("drawai.local_cli.local_runtime_checks", fail_checks)
     runtime_root = tmp_path / "runtime"
 
@@ -1216,6 +1288,7 @@ def test_cli_setup_local_skip_doctor_keeps_manual_next_step(tmp_path: Path, monk
 
     captured = capsys.readouterr()
     assert result == 0
+    assert [call[0] for call in setup_calls] == ["download", "bootstrap"]
     assert "doctor: skipped (--skip-doctor)" in captured.out
     assert "next: uv run drawai doctor local" in captured.out
 
@@ -1524,6 +1597,8 @@ ocr:
 svg_to_ppt:
   enabled: true
   export_pptx: false
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )
@@ -1568,6 +1643,8 @@ svg:
 svg_to_ppt:
   enabled: true
   export_pptx: false
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )
@@ -1920,6 +1997,8 @@ svg:
 svg_to_ppt:
   enabled: true
   export_pptx: false
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )
@@ -1981,6 +2060,8 @@ svg:
 svg_to_ppt:
   enabled: true
   export_pptx: false
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )
@@ -2051,6 +2132,8 @@ ocr:
 svg_to_ppt:
   enabled: true
   export_pptx: false
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )
@@ -2111,6 +2194,8 @@ ocr:
 svg_to_ppt:
   enabled: true
   export_pptx: false
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )

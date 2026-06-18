@@ -76,7 +76,10 @@ def test_legacy_structure_alias_can_use_injected_sam_transport(tmp_path: Path):
 def test_public_all_summary_records_v2_stage_chain(tmp_path: Path):
     config = _write_minimal_public_config(tmp_path)
 
-    summary = run_public_stage(config, "all", parallel=False)
+    def svg_invoker(**kwargs):
+        return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 40" width="80" height="40"><rect width="80" height="40" fill="white"/><circle cx="20" cy="20" r="8" fill="#222"/></svg>'
+
+    summary = run_public_stage(config, "all", parallel=False, svg_invoker=svg_invoker)
 
     assert summary["status"] == "ok"
     assert summary["public_stage"] == "all"
