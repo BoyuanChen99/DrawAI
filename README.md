@@ -14,6 +14,8 @@
 
 它会把输入图片拆成结构、文字和局部素材，再生成更容易继续编辑的矢量结果。你可以把它当成一个 CLI，也可以启动 Workbench，在浏览器里批量上传、查看进度和管理结果。
 
+新流水线会把每次运行封装成一个 `drawai_package.json` 数据包：里面记录元素解析、融合、Agent 校验、素材处理、SVG 生成和导出的过程。用户通常只打开最终的 SVG、PNG 或 PPTX，但后续重新处理某个元素时会从这个数据包继续，而不是只依赖渲染图。
+
 <a id="roadmap"></a>
 ## 🗺️ 规划
 
@@ -120,11 +122,17 @@ runs/<date>/<time>_<run-name>/
 reports/run_summary.json
 outputs/case_001_*/
   reports/pipeline_summary.json
-  box_ir/box_ir.json
+  drawai_package.json
+  elements/E001/element.json
+  elements/E001/asset_package.json
+  reports/svg_validation_report.json
+  reports/svg_to_ppt_export_report.json
   svg/semantic.svg
   svg/rendered.png
-  svg_to_ppt/semantic.svg_to_ppt.pptx
+  exports/
 ```
+
+`drawai_package.json` 是运行级索引，`elements/<element_id>/asset_package.json` 是元素级素材包。Workbench 会保留旧版本结果的展示和下载入口；这类历史结果不会再进入 `asset process`、`compose` 或 `export` 的二次处理链路。
 
 Workbench 的任务和上传文件默认写到：
 
@@ -144,6 +152,7 @@ Workbench 的任务和上传文件默认写到：
 
 DrawAI 的目标不是把原图简单塞进 PPT，而是尽量生成可编辑、可检查、可继续加工的结果：
 
+- `package`：完整运行数据包，记录元素、素材、处理结果和导出状态
 - `svg`：主要可编辑矢量结果
 - `pptx`：可直接进入幻灯片流程的导出结果
 - `psd`：TODO
