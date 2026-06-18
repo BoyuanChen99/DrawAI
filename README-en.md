@@ -19,7 +19,7 @@ It decomposes input images into structure, text, and local assets, then generate
 
 For open-source stability, DrawAI currently keeps some still-under-validation capabilities out of the public path. These features will be tested and opened progressively after cross-platform validation, dependency cleanup, and license review.
 
-- [ ] Support Windows systems (currently tested only on macOS and Linux)
+- [x] Support Windows systems (native deployment is supported; macOS and Linux remain compatible)
 - [ ] Support polygon and irregular masks
 - [ ] Support asset redrawing with GPT-Image-2
 - [ ] Support more complex generation modes, including image-generation skills
