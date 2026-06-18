@@ -1,5 +1,16 @@
 """DrawAI workflow DAG contracts."""
 
+from .agents import (
+    AgentOutputDeclaration,
+    AgentPreset,
+    AgentPrompt,
+    AgentProviderSpec,
+    agent_preset_by_id,
+    default_agent_provider_registry,
+    render_agent_prompt,
+    run0_agent_preset,
+    svg_agent_preset,
+)
 from .formats import (
     FormatSpec,
     FormatValidationResult,
@@ -48,6 +59,10 @@ from .templates import (
 from .validation import validate_workflow_template
 
 __all__ = [
+    "AgentOutputDeclaration",
+    "AgentPreset",
+    "AgentPrompt",
+    "AgentProviderSpec",
     "DEFAULT_WORKFLOW_TEMPLATE_ID",
     "FormatSpec",
     "FormatValidationResult",
@@ -63,10 +78,12 @@ __all__ = [
     "WorkflowTemplate",
     "WorkflowValidationError",
     "WorkflowValidationResult",
+    "agent_preset_by_id",
     "begin_node_run",
     "builtin_workflow_templates",
     "copy_builtin_template_to_workspace",
     "copy_builtin_template",
+    "default_agent_provider_registry",
     "default_format_registry",
     "default_drawai_workflow_template",
     "finish_node_run_blocked",
@@ -77,7 +94,10 @@ __all__ = [
     "load_workflow_template_by_id",
     "mark_node_run_stale",
     "node_run_dir",
+    "render_agent_prompt",
+    "run0_agent_preset",
     "save_workflow_template",
+    "svg_agent_preset",
     "user_workflow_template_path",
     "validate_format_file",
     "validate_workflow_template",
