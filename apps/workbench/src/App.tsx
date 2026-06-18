@@ -1464,21 +1464,7 @@ function TaskDetailPanel({
           onForkV2FromSource={onForkV2FromSource}
         />
       )}
-      {runCompatibility === "v2" && (
-        <V2AssetPackagePanel
-          activeCase={caseDetail}
-          runPackage={runPackage}
-          elements={v2Elements}
-          selectedElementId={selectedV2ElementId}
-          selectedAssetPackage={selectedAssetPackage}
-          loadingElementId={v2AssetLoadingElementId}
-          packageError={v2PackageError}
-          actionPending={v2ActionPending}
-          onSelectElement={onSelectV2Element}
-          onProcessAsset={onProcessV2Asset}
-          onSetActiveResult={onSetActiveV2Result}
-        />
-      )}
+      {runCompatibility === "v2" && v2PackageError && <p className="detail-error">{shortenError(v2PackageError)}</p>}
       {caseDetail.case.error_message && <p className="detail-error">{shortenError(caseDetail.case.error_message)}</p>}
     </aside>
   );
@@ -1794,6 +1780,7 @@ function V2AssetsWorkspace({
 }) {
   const editorRef = useRef<HTMLElement | null>(null);
   const [zoom, setZoom] = useState(0.72);
+  const [assetView, setAssetView] = useState<AssetEditorView>("extraction");
   const runPending = runInProgress || actionPending === "compose";
   const canRun = Boolean(runPackage && !runPending && !actionPending && !hasBlockingAssetPackage(runPackage));
 
@@ -1833,12 +1820,39 @@ function V2AssetsWorkspace({
           <div className="toolbar-note">
             Assets · {elements.length}
           </div>
+          <div className={`asset-type-switch is-${assetView}`} role="tablist" aria-label="v2 assets 查看模式">
+            <span className="asset-type-switch__thumb" aria-hidden="true" />
+            <button
+              type="button"
+              role="tab"
+              aria-selected={assetView === "extraction"}
+              className={assetView === "extraction" ? "active" : ""}
+              onClick={() => setAssetView("extraction")}
+            >
+              <span className="asset-type-switch__index">1</span>
+              提取
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={assetView === "processing"}
+              className={assetView === "processing" ? "active" : ""}
+              onClick={() => setAssetView("processing")}
+            >
+              <span className="asset-type-switch__index">2</span>
+              处理
+            </button>
+          </div>
           <div className="editor-toolbar">
-            <div className="tool-group">
-              <button className="icon-button" title="缩小" onClick={() => changeZoom(-0.1)}>−</button>
-              <span className="zoom-readout">{Math.round(zoom * 100)}%</span>
-              <button className="icon-button" title="放大" onClick={() => changeZoom(0.1)}>+</button>
-            </div>
+            {assetView === "extraction" ? (
+              <div className="tool-group">
+                <button className="icon-button" title="缩小" onClick={() => changeZoom(-0.1)}>−</button>
+                <span className="zoom-readout">{Math.round(zoom * 100)}%</span>
+                <button className="icon-button" title="放大" onClick={() => changeZoom(0.1)}>+</button>
+              </div>
+            ) : (
+              <div className="toolbar-note">查看每个 asset 的处理结果并切换 active result</div>
+            )}
           </div>
           <div className="editor-actions">
             <button
@@ -1860,8 +1874,8 @@ function V2AssetsWorkspace({
     <>
       {topbarPortal}
       <main ref={editorRef} className="editor-workspace v2-assets-workspace">
-        <div className="asset-stage v2-assets-stage" data-asset-view="extraction">
-          <div className="v2-assets-workspace-grid">
+        <div className="asset-stage v2-assets-stage" key={assetView} data-asset-view={assetView}>
+          {assetView === "extraction" ? (
             <V2AssetCanvas
               activeCase={activeCase}
               runPackage={runPackage}
@@ -1872,7 +1886,8 @@ function V2AssetsWorkspace({
               zoom={zoom}
               onSelectElement={onSelectElement}
             />
-            <aside className="v2-assets-workspace-panel">
+          ) : (
+            <section className="v2-assets-processing-stage">
               <V2AssetPackagePanel
                 activeCase={activeCase}
                 runPackage={runPackage}
@@ -1886,8 +1901,8 @@ function V2AssetsWorkspace({
                 onProcessAsset={onProcessAsset}
                 onSetActiveResult={onSetActiveResult}
               />
-            </aside>
-          </div>
+            </section>
+          )}
         </div>
       </main>
     </>
@@ -1918,6 +1933,8 @@ function V2AssetCanvas({
   const [hoveredElementId, setHoveredElementId] = useState("");
   const selectedElement = elements.find((element) => element.element_id === selectedElementId) || null;
   const canvasWidth = naturalSize.width > 1 ? Math.max(320, Math.round(naturalSize.width * zoom)) : undefined;
+  const currentElementIds = useMemo(() => new Set(elements.map((element) => element.element_id)), [elements]);
+  const sourceElements = (runPackage?.source_elements || []).filter((element) => !currentElementIds.has(element.element_id));
   const packageByElementId = useMemo(() => {
     const items = new Map<string, V2AssetPackage>();
     (runPackage?.asset_packages || []).forEach((assetPackage) => {
@@ -1928,10 +1945,13 @@ function V2AssetCanvas({
     }
     return items;
   }, [runPackage, selectedAssetPackage]);
-  const visibleElements = elements
-    .map((element, originalIndex) => ({ element, originalIndex, area: v2BBoxArea(element.bbox) }))
+  const visibleElements = [
+    ...sourceElements.map((element, originalIndex) => ({ element, originalIndex, area: v2BBoxArea(element.bbox), sourceOnly: true })),
+    ...elements.map((element, originalIndex) => ({ element, originalIndex: sourceElements.length + originalIndex, area: v2BBoxArea(element.bbox), sourceOnly: false }))
+  ]
     .sort((left, right) => right.area - left.area || left.originalIndex - right.originalIndex);
   const hoveredElement = visibleElements.find(({ element }) => element.element_id === hoveredElementId)?.element || null;
+  const hoveredSourceOnly = visibleElements.find(({ element }) => element.element_id === hoveredElementId)?.sourceOnly || false;
   const selectedStatus = selectedElement ? packageByElementId.get(selectedElement.element_id)?.status || "pending" : "";
   const activeResultId = selectedElement ? packageByElementId.get(selectedElement.element_id)?.active_result?.result_id || "" : "";
 
@@ -1947,23 +1967,33 @@ function V2AssetCanvas({
               draggable={false}
               onLoad={(event) => setNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
             />
-            {visibleElements.map(({ element }, layerIndex) => {
+            {visibleElements.map(({ element, sourceOnly }, layerIndex) => {
               const assetPackage = packageByElementId.get(element.element_id);
               return (
                 <V2ElementBox
                   key={element.element_id}
                   element={element}
                   naturalSize={naturalSize}
-                  selected={element.element_id === selectedElementId}
+                  selected={!sourceOnly && element.element_id === selectedElementId}
                   status={assetPackage?.status || "pending"}
+                  sourceOnly={sourceOnly}
                   zIndex={layerIndex + 1}
-                  onSelect={() => onSelectElement(element.element_id)}
+                  onSelect={() => {
+                    if (!sourceOnly) onSelectElement(element.element_id);
+                  }}
                   onHover={() => setHoveredElementId(element.element_id)}
                   onLeave={() => setHoveredElementId((id) => (id === element.element_id ? "" : id))}
                 />
               );
             })}
-            {hoveredElement && <V2ElementTooltip element={hoveredElement} naturalSize={naturalSize} status={packageByElementId.get(hoveredElement.element_id)?.status || "pending"} />}
+            {hoveredElement && (
+              <V2ElementTooltip
+                element={hoveredElement}
+                naturalSize={naturalSize}
+                status={packageByElementId.get(hoveredElement.element_id)?.status || "pending"}
+                sourceOnly={hoveredSourceOnly}
+              />
+            )}
           </div>
         ) : (
           <EmptyState label="原图还没准备好" />
@@ -1989,6 +2019,7 @@ function V2ElementBox({
   naturalSize,
   selected,
   status,
+  sourceOnly,
   zIndex,
   onSelect,
   onHover,
@@ -1998,6 +2029,7 @@ function V2ElementBox({
   naturalSize: { width: number; height: number };
   selected: boolean;
   status: V2AssetStatus;
+  sourceOnly: boolean;
   zIndex: number;
   onSelect: () => void;
   onHover: () => void;
@@ -2007,13 +2039,14 @@ function V2ElementBox({
   const statusClass = status === "failed" ? "v2-asset-box-failed" : status === "unsupported" ? "v2-asset-box-unsupported" : "";
   return (
     <div
-      className={`asset-box v2-asset-box ${v2ElementProcessingClass(element)} ${statusClass} ${selected ? "selected" : ""}`}
+      className={`asset-box v2-asset-box ${v2ElementProcessingClass(element)} ${statusClass} ${sourceOnly ? "v2-asset-box-source-only" : ""} ${selected ? "selected" : ""}`}
       data-asset-id={element.element_id}
-      role="button"
-      tabIndex={0}
+      role={sourceOnly ? undefined : "button"}
+      tabIndex={sourceOnly ? undefined : 0}
       style={style}
       onPointerDown={(event) => {
         event.stopPropagation();
+        if (sourceOnly) return;
         onSelect();
       }}
       onPointerEnter={onHover}
@@ -2023,6 +2056,7 @@ function V2ElementBox({
       onKeyDown={(event) => {
         if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
+          if (sourceOnly) return;
           onSelect();
         }
       }}
@@ -2030,7 +2064,7 @@ function V2ElementBox({
       <span className="asset-badge">
         {element.element_id} · {humanize(element.element_type)} · {humanize(element.processing_intent.processing_type)}
       </span>
-      <span className="v2-asset-status-chip">{humanize(status)}</span>
+      <span className="v2-asset-status-chip">{sourceOnly ? "来源" : humanize(status)}</span>
     </div>
   );
 }
@@ -2038,17 +2072,19 @@ function V2ElementBox({
 function V2ElementTooltip({
   element,
   naturalSize,
-  status
+  status,
+  sourceOnly
 }: {
   element: V2ElementPlan;
   naturalSize: { width: number; height: number };
   status: V2AssetStatus;
+  sourceOnly: boolean;
 }) {
   return (
     <div className={`canvas-tooltip ${v2ElementProcessingClass(element)}`} style={v2TooltipStyle(element.bbox, naturalSize)}>
       <strong>{element.element_id}</strong>
       <em>{humanize(element.element_type)} · {humanize(element.processing_intent.object_type)}</em>
-      <small>{humanize(element.processing_intent.processing_type)} · {humanize(status)} · {element.confidence}</small>
+      <small>{humanize(element.processing_intent.processing_type)} · {sourceOnly ? "来源展示" : humanize(status)} · {element.confidence}</small>
       <p>{element.change_reason || bboxText(element.bbox)}</p>
     </div>
   );

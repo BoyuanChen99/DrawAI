@@ -139,6 +139,7 @@ export interface V2RunPackage {
   created_at: string;
   metadata: Record<string, unknown>;
   elements?: V2ElementPlan[];
+  source_elements?: V2ElementPlan[];
   asset_packages?: V2AssetPackage[];
   compose_outputs?: Record<string, unknown>;
   export_outputs?: Record<string, unknown>;
