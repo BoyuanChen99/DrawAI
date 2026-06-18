@@ -879,6 +879,7 @@ def test_workbench_frontend_only_uses_native_npm_on_windows(monkeypatch):
 
 
 def test_workbench_native_uses_runtime_python_for_api(monkeypatch, tmp_path: Path):
+    from drawai.local_setup import runtime_venv_python
     from drawai.server_cli import _run_workbench_native
 
     commands = []
@@ -902,7 +903,8 @@ def test_workbench_native_uses_runtime_python_for_api(monkeypatch, tmp_path: Pat
 
     repo_root = tmp_path / "repo"
     (repo_root / "apps" / "workbench").mkdir(parents=True)
-    runtime_python = repo_root / ".local" / "drawai_runtime" / ".venv" / "Scripts" / "python.exe"
+    runtime_root = (repo_root / ".local" / "drawai_runtime").resolve(strict=False)
+    runtime_python = runtime_venv_python(runtime_root)
     args = argparse.Namespace(
         host="127.0.0.1",
         port=5174,
