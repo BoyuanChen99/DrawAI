@@ -272,7 +272,7 @@ select:focus {
   position: relative;
   margin-left: 14px;
   display: grid;
-  grid-template-columns: repeat(2, minmax(56px, 1fr));
+  grid-template-columns: repeat(3, minmax(64px, 1fr));
   align-items: stretch;
   height: 32px;
   padding: 3px;
@@ -288,7 +288,7 @@ select:focus {
   top: 3px;
   bottom: 3px;
   left: 3px;
-  width: calc((100% - 6px) / 2);
+  width: calc((100% - 6px) / 3);
   border-radius: 999px;
   background: var(--surface);
   box-shadow: 0 2px 8px rgba(15, 23, 42, 0.14), 0 0 0 1px rgba(15, 23, 42, 0.04);
@@ -298,6 +298,10 @@ select:focus {
 
 .board-mode-switch.is-process .board-mode-switch__thumb {
   transform: translateX(100%);
+}
+
+.board-mode-switch.is-workflow .board-mode-switch__thumb {
+  transform: translateX(200%);
 }
 
 .board-mode-switch button {
@@ -3093,14 +3097,29 @@ button.asset-status-unsupported {
   font-size: 12px;
 }
 
+.upload-workflow-select,
 .upload-review-toggle {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
   gap: 10px;
   border: 1px solid rgba(15, 23, 42, 0.08);
   background: #f8faf6;
   padding: 11px 12px;
+}
+
+.upload-workflow-select {
+  grid-template-columns: 92px minmax(0, 1fr);
+  align-items: center;
+}
+
+.upload-workflow-select span {
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-weight: 560;
+}
+
+.upload-review-toggle {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
 }
 
 .upload-review-toggle input {

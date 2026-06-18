@@ -48,6 +48,7 @@ export interface BatchRecord {
   created_at: string;
   updated_at: string;
   case_counts: Record<string, number>;
+  workflow_template_id: string;
   error_message: string;
 }
 

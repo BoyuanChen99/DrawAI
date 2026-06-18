@@ -29,6 +29,8 @@ import {
   type WorkbenchRerunStage,
 } from "./api";
 import ImageGenStudio, { type ImageGenConnectionSettings } from "./ImageGenStudio";
+import WorkflowWorkspace from "./WorkflowWorkspace";
+import { listWorkflowTemplates } from "./workflowApi";
 import type {
   ArtifactRecord,
   AssetElement,
@@ -51,9 +53,10 @@ import type {
   V2ElementPlan,
   V2RunPackage
 } from "./types";
+import type { WorkflowTemplate } from "./workflowTypes";
 
 type AppView = "board" | "editor" | "svg";
-type BoardMode = "generate" | "process";
+type BoardMode = "generate" | "process" | "workflow";
 type CanvasMode = "select" | "add" | "polygon";
 type AssetEditorView = "extraction" | "processing";
 type PipelineNodeState = "waiting" | "running" | "done" | "failed" | "review" | "stale";
@@ -852,6 +855,15 @@ export default function App() {
               >
                 处理
               </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={boardMode === "workflow"}
+                className={boardMode === "workflow" ? "active" : ""}
+                onClick={() => setBoardMode("workflow")}
+              >
+                Workflow
+              </button>
             </div>
           )}
         </div>
@@ -908,6 +920,8 @@ export default function App() {
               onError={setError}
             />
           </main>
+        ) : boardMode === "workflow" ? (
+          <WorkflowWorkspace onError={setError} />
         ) : (
         <BoardWorkspace
           batches={batches}
@@ -3265,8 +3279,28 @@ function NewBatchForm({
   const [preparingUpload, setPreparingUpload] = useState(false);
   const [pendingUpload, setPendingUpload] = useState<UploadConfirmation | null>(null);
   const [manualAssetReview, setManualAssetReview] = useState(false);
+  const [workflowTemplates, setWorkflowTemplates] = useState<WorkflowTemplate[]>([]);
+  const [selectedWorkflowTemplateId, setSelectedWorkflowTemplateId] = useState("default_drawai_dag");
   const [uploadError, setUploadError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let canceled = false;
+    listWorkflowTemplates()
+      .then((response) => {
+        if (canceled) return;
+        setWorkflowTemplates(response.templates);
+        if (!response.templates.some((template) => template.template_id === selectedWorkflowTemplateId)) {
+          setSelectedWorkflowTemplateId(response.templates[0]?.template_id || "default_drawai_dag");
+        }
+      })
+      .catch((err) => {
+        if (!canceled) onError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      canceled = true;
+    };
+  }, []);
 
   async function handleDrop(event: DragEvent<HTMLElement>) {
     event.preventDefault();
@@ -3309,6 +3343,7 @@ function NewBatchForm({
       form.set("input_mode", "upload");
       form.set("max_concurrent_cases", "10");
       form.set("auto_run_svg_after_analysis", manualAssetReview ? "false" : "true");
+      form.set("workflow_template_id", selectedWorkflowTemplateId);
       pendingUpload.files.forEach((item) => form.append("files", item.file, item.relativePath));
       const detail = await createUploadBatch(form);
       await onCreated(detail);
@@ -3347,6 +3382,20 @@ function NewBatchForm({
                 {pendingUpload.zipErrors.map((warning) => <span key={warning}>{warning}</span>)}
               </div>
             )}
+            <label className="upload-workflow-select">
+              <span>Workflow</span>
+              <select
+                value={selectedWorkflowTemplateId}
+                disabled={submitting || workflowTemplates.length === 0}
+                onChange={(event) => setSelectedWorkflowTemplateId(event.currentTarget.value)}
+              >
+                {workflowTemplates.map((template) => (
+                  <option value={template.template_id} key={template.template_id}>
+                    {template.name}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label className="upload-review-toggle">
               <input
                 type="checkbox"
