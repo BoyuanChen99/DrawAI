@@ -29,7 +29,7 @@ For open-source stability, DrawAI currently keeps some still-under-validation ca
 - [ ] Support asset redrawing with GPT-Image-2
 - [ ] Support more complex generation modes, including image-generation skills
 - [ ] Support skill-based usage
-- [ ] Support other agents and models
+- [ ] Support other agents and models (already supports `codex cli`, `claude`, `kimi-code`)
 
 > Note: Because mask and redraw capabilities are currently reduced in the open-source path, robustness on full-image complex backgrounds is lower than the internal target. Support is being added rapidly.
 

@@ -29,7 +29,7 @@ https://github.com/user-attachments/assets/59a81ac2-cdbe-49b6-a4fa-8db897afc6bb
 - [ ] 支持用 GPT-Image-2 重绘素材
 - [ ] 支持更复杂的生成模式（各种图像生成 Skill 等）
 - [ ] 支持以 Skills 方式使用
-- [ ] 支持其他 Agent 和模型
+- [ ] 支持其他 Agent 和模型（已支持 `codex cli`、`claude`、`kimi-code`）
 
 > 备注：由于目前删减了 Mask 和重绘能力，对于全图复杂背景的鲁棒性有下降，目前正在火速支持中。
 
