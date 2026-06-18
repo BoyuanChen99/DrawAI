@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import html
 import json
+from contextlib import nullcontext
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, cast
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 from drawai.artifacts import DrawAiArtifactPaths, write_json
 from drawai.config import DrawAiPipelineConfig
@@ -299,22 +299,27 @@ def _run_v2_stage(
     if stage == "compose_svg":
         plans = _read_element_plans(paths)
         asset_packages = _read_asset_packages(paths, plans)
-        write_asset_manifest_compat(paths.root, asset_packages)
-        _write_semantic_svg(paths, plans)
-        _write_rendered_preview(paths, plans)
-        write_json(
-            paths.svg_validation_report_json,
-            {
-                "schema": "drawai.svg_validation_report.v1",
-                "status": "ok",
-                "source": "v2.compose_svg",
-                "semantic_svg": str(paths.semantic_svg),
-            },
+        asset_manifest = write_asset_manifest_compat(paths.root, asset_packages)
+        _write_compat_outputs(paths, plans)
+        _run_svg_generation_from_v2_package(cfg, paths, asset_manifest, options)
+        _write_v2_package(
+            paths,
+            cfg,
+            elements=plans,
+            asset_packages=asset_packages,
+            stage="compose_svg",
+            compose_outputs=_compose_outputs(paths),
         )
-        _write_v2_package(paths, cfg, elements=plans, asset_packages=asset_packages, stage="compose_svg")
         return
 
     if stage == "export":
+        plans = _read_element_plans(paths)
+        asset_packages = _read_asset_packages(paths, plans)
+        failed_asset_report = _failed_asset_export_report(cfg, paths, asset_packages)
+        if failed_asset_report is not None:
+            _write_export_failure_package(paths, cfg, plans, asset_packages)
+            write_json(paths.svg_to_ppt_export_report_json, failed_asset_report)
+            raise RuntimeError("V2 export refused failed assets.")
         asset_manifest = _read_json_if_exists(paths.asset_manifest_json, default={"assets": []})
         if cfg.svg_to_ppt.enabled and cfg.svg_to_ppt.export_pptx:
             from drawai.pipeline import _check_svg_to_ppt
@@ -331,13 +336,31 @@ def _run_v2_stage(
             }
         write_json(paths.svg_to_ppt_export_report_json, report)
         if report.get("status") != "ok":
+            _write_export_failure_package(paths, cfg, plans, asset_packages)
             raise RuntimeError("SVG-to-PPTX export failed.")
+        _write_v2_package(
+            paths,
+            cfg,
+            elements=plans,
+            asset_packages=asset_packages,
+            stage="export",
+            compose_outputs=_existing_package_outputs(paths, "compose_outputs"),
+            export_outputs=_export_outputs(paths, report),
+        )
         return
 
     if stage == "package_run":
         plans = _read_element_plans(paths)
         asset_packages = _read_asset_packages(paths, plans)
-        _write_v2_package(paths, cfg, elements=plans, asset_packages=asset_packages, stage="package_run")
+        _write_v2_package(
+            paths,
+            cfg,
+            elements=plans,
+            asset_packages=asset_packages,
+            stage="package_run",
+            compose_outputs=_existing_package_outputs(paths, "compose_outputs"),
+            export_outputs=_existing_package_outputs(paths, "export_outputs"),
+        )
         return
 
     raise ValueError(f"Unsupported v2 stage: {stage}")
@@ -671,6 +694,97 @@ def _read_asset_packages(
     return tuple(packages)
 
 
+def _failed_asset_export_report(
+    cfg: DrawAiPipelineConfig,
+    paths: DrawAiArtifactPaths,
+    asset_packages: Sequence[AssetPackage],
+) -> dict[str, Any] | None:
+    failed_assets = [
+        {
+            "asset_id": package.asset_id,
+            "element_id": package.element_id,
+            "processor_type": package.processor_type,
+            "status": package.status,
+            "failure": package.failure,
+        }
+        for package in asset_packages
+        if package.status in {"failed", "unsupported"}
+    ]
+    if not failed_assets:
+        return None
+    return {
+        "schema": "drawai.svg_to_ppt_export_report.v1",
+        "status": "failed",
+        "source": "v2.export",
+        "enabled": cfg.svg_to_ppt.enabled,
+        "export_pptx": cfg.svg_to_ppt.export_pptx,
+        "allow_partial_export": False,
+        "failure_class": "v2_failed_assets",
+        "issues": [
+            {
+                "code": "v2_asset_not_exportable",
+                "message": "V2 export refuses failed or unsupported assets by default.",
+                "asset_id": asset["asset_id"],
+                "element_id": asset["element_id"],
+                "status": asset["status"],
+            }
+            for asset in failed_assets
+        ],
+        "failed_assets": failed_assets,
+        "semantic_svg": str(paths.semantic_svg),
+    }
+
+
+def _write_export_failure_package(
+    paths: DrawAiArtifactPaths,
+    cfg: DrawAiPipelineConfig,
+    plans: Sequence[ElementPlan],
+    asset_packages: Sequence[AssetPackage],
+) -> None:
+    _write_v2_package(
+        paths,
+        cfg,
+        elements=plans,
+        asset_packages=asset_packages,
+        stage="export",
+        compose_outputs=_existing_package_outputs(paths, "compose_outputs"),
+    )
+
+
+def _run_svg_generation_from_v2_package(
+    cfg: DrawAiPipelineConfig,
+    paths: DrawAiArtifactPaths,
+    asset_manifest: Mapping[str, Any],
+    options: V2StageOptions,
+) -> None:
+    from drawai.pipeline import _copy_if_exists, _default_svg_invoker
+    from drawai.svg_generation_loop import run_svg_generation_loop
+
+    final_box_ir = _read_json_file(paths.box_ir_json, "v2-derived final layout IR")
+    svg_template_ir = _read_json_file(paths.svg_template_ir_json, "v2-derived SVG template IR")
+    svg_invoker_context = (
+        nullcontext(options.svg_invoker)
+        if options.svg_invoker is not None
+        else _default_svg_invoker(cfg, paths)
+    )
+    with svg_invoker_context as active_svg_invoker:
+        svg_result = run_svg_generation_loop(
+            box_ir=final_box_ir,
+            figure_path=paths.figure_image,
+            reference_image_path=paths.figure_image,
+            asset_manifest=asset_manifest,
+            output_dir=paths.svg_dir,
+            max_attempts=cfg.svg.max_attempts,
+            invoker=active_svg_invoker,
+            runtime_config=cfg.model_runtime.to_runtime_dict() if options.svg_invoker is None else None,
+            staged_generation=cfg.svg.staged_generation,
+            visual_review_rounds=cfg.svg.visual_review_rounds,
+            template_ir=svg_template_ir,
+            text_rendering=cfg.svg.text_rendering,
+        )
+    _copy_if_exists(Path(svg_result["artifacts"]["validation_report"]), paths.svg_validation_report_json)
+
+
 def _asset_package_from_payload(payload: Any) -> AssetPackage:
     if not isinstance(payload, Mapping):
         raise ValueError("asset package payload must be a mapping")
@@ -705,6 +819,8 @@ def _write_v2_package(
     elements: Sequence[ElementPlan],
     asset_packages: Sequence[AssetPackage | Mapping[str, Any]] = (),
     stage: str,
+    compose_outputs: Mapping[str, Any] | None = None,
+    export_outputs: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     source_metadata = _read_json_file(paths.source_metadata, "source metadata")
     canvas_width, canvas_height = _canvas_size(source_metadata)
@@ -726,49 +842,50 @@ def _write_v2_package(
             for package in asset_packages
         ],
     }
+    if compose_outputs is not None:
+        payload["compose_outputs"] = dict(compose_outputs)
+    if export_outputs is not None:
+        payload["export_outputs"] = dict(export_outputs)
     write_json(paths.run_package_json, payload)
     return payload
 
 
-def _write_semantic_svg(paths: DrawAiArtifactPaths, plans: Sequence[ElementPlan]) -> None:
-    source_metadata = _read_json_file(paths.source_metadata, "source metadata")
-    width, height = _canvas_size(source_metadata)
-    body: list[str] = [f'<rect x="0" y="0" width="{width}" height="{height}" fill="white"/>']
-    for plan in sorted(plans, key=lambda item: (item.z_order, item.element_id)):
-        x, y, w, h = plan.bbox
-        if plan.element_type == "text":
-            text = html.escape(str(plan.processing_intent.parameters.get("text") or ""))
-            body.append(
-                f'<text x="{x:.2f}" y="{y + h:.2f}" font-size="{max(8.0, h):.2f}" fill="#111111">{text}</text>'
-            )
-        else:
-            body.append(
-                f'<rect x="{x:.2f}" y="{y:.2f}" width="{w:.2f}" height="{h:.2f}" '
-                'fill="none" stroke="#1f5fbf" stroke-width="1.5"/>'
-            )
-    svg = (
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
-        f'width="{width}" height="{height}">\n  '
-        + "\n  ".join(body)
-        + "\n</svg>\n"
-    )
-    paths.semantic_svg.parent.mkdir(parents=True, exist_ok=True)
-    paths.semantic_svg.write_text(svg, encoding="utf-8")
+def _compose_outputs(paths: DrawAiArtifactPaths) -> dict[str, Any]:
+    return {
+        "semantic_svg": _path_ref(paths.root, paths.semantic_svg),
+        "rendered_png": _path_ref(paths.root, paths.rendered_png),
+        "validation_report": _path_ref(paths.root, paths.svg_validation_report_json),
+    }
 
 
-def _write_rendered_preview(paths: DrawAiArtifactPaths, plans: Sequence[ElementPlan]) -> None:
-    source_metadata = _read_json_file(paths.source_metadata, "source metadata")
-    width, height = _canvas_size(source_metadata)
-    image = Image.new("RGB", (width, height), "white")
-    draw = ImageDraw.Draw(image)
-    for plan in sorted(plans, key=lambda item: (item.z_order, item.element_id)):
-        x, y, w, h = plan.bbox
-        if plan.element_type == "text":
-            draw.text((x, y), str(plan.processing_intent.parameters.get("text") or ""), fill=(17, 17, 17))
-        else:
-            draw.rectangle((x, y, x + w, y + h), outline=(31, 95, 191), width=2)
-    paths.rendered_png.parent.mkdir(parents=True, exist_ok=True)
-    image.save(paths.rendered_png)
+def _export_outputs(paths: DrawAiArtifactPaths, report: Mapping[str, Any]) -> dict[str, Any]:
+    outputs: dict[str, Any] = {
+        "report": _path_ref(paths.root, paths.svg_to_ppt_export_report_json),
+        "enabled": bool(report.get("enabled", False)),
+        "export_pptx": bool(report.get("export_pptx", False)),
+    }
+    pptx_path = report.get("pptx_path")
+    if isinstance(pptx_path, str) and pptx_path:
+        outputs["pptx_path"] = _path_ref(paths.root, Path(pptx_path))
+    return outputs
+
+
+def _existing_package_outputs(paths: DrawAiArtifactPaths, field_name: str) -> dict[str, Any] | None:
+    payload = _read_json_if_exists(paths.run_package_json, default={})
+    if not isinstance(payload, Mapping):
+        return None
+    raw_outputs = payload.get(field_name)
+    if not isinstance(raw_outputs, Mapping):
+        return None
+    return dict(raw_outputs)
+
+
+def _path_ref(root: Path, path: Path) -> str:
+    resolved = path.expanduser().resolve(strict=False)
+    try:
+        return resolved.relative_to(root).as_posix()
+    except ValueError:
+        return str(resolved)
 
 
 def _register_stage_outputs(

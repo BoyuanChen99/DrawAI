@@ -10,7 +10,12 @@ from drawai.pipeline import run_drawai_pipeline_from_stage
 from drawai.public_stages import PUBLIC_STAGE_ORDER, run_public_stage
 
 
-def _config(tmp_path: Path, *, refine_enabled: bool | None = False) -> Path:
+def _config(
+    tmp_path: Path,
+    *,
+    refine_enabled: bool | None = False,
+    export_pptx: bool = False,
+) -> Path:
     image = tmp_path / "input.png"
     Image.new("RGB", (80, 40), "white").save(image)
     config = tmp_path / "config.yaml"
@@ -40,9 +45,13 @@ ocr:
 asset_materialization:
   rmbg:
     enabled: false
+svg:
+  max_attempts: 1
+  staged_generation: false
+  visual_review_rounds: []
 svg_to_ppt:
   enabled: true
-  export_pptx: false
+  export_pptx: {str(export_pptx).lower()}
 {v2_section}
 """,
         encoding="utf-8",
@@ -77,6 +86,27 @@ def _write_fixture_refinement_artifact(paths: DrawAiArtifactPaths) -> None:
         ),
         encoding="utf-8",
     )
+
+
+def _valid_fake_svg() -> str:
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 80 40" width="80" height="40">'
+        "<desc>from fake invoker</desc>"
+        '<rect x="0" y="0" width="80" height="40" fill="white"/>'
+        '<text x="4" y="14" font-size="12" data-pb-role="label" '
+        'data-pb-editable="true" data-pb-text-source="ocr" '
+        'data-pb-orientation="horizontal">Hello</text>'
+        "</svg>"
+    )
+
+
+def _fake_svg_invoker(calls: list[dict[str, object]] | None = None):
+    def fake_svg_invoker(**kwargs):
+        if calls is not None:
+            calls.append(kwargs)
+        return _valid_fake_svg()
+
+    return fake_svg_invoker
 
 
 def test_public_stage_order_uses_v2_main_path() -> None:
@@ -165,3 +195,153 @@ def test_refine_stage_consumes_existing_codex_artifact(tmp_path: Path) -> None:
     assert package["metadata"]["last_stage"] == "refine_elements"
     assert package["elements"][0]["review_status"] == "agent_refined"
     assert not stale_v2_export.exists()
+
+
+def test_export_refuses_failed_asset_by_default(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    summary = run_drawai_pipeline_from_stage(
+        config,
+        "prepare",
+        to_stage="compose_svg",
+        svg_invoker=_fake_svg_invoker(),
+    )
+    assert summary["status"] == "ok"
+
+    root = Path(summary["output_dir"])
+    package_path = root / "elements" / "E001" / "asset_package.json"
+    payload = json.loads(package_path.read_text(encoding="utf-8"))
+    payload["status"] = "failed"
+    payload["failure"] = "forced failure"
+    package_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    export_summary = run_drawai_pipeline_from_stage(config, "export", to_stage="export")
+
+    assert export_summary["status"] == "failed"
+    assert export_summary["failed_stage"] == "export"
+    report = json.loads((root / "reports" / "svg_to_ppt_export_report.json").read_text(encoding="utf-8"))
+    assert report["failure_class"] == "v2_failed_assets"
+    assert report["failed_assets"][0]["element_id"] == "E001"
+
+
+def test_failed_export_clears_previous_export_outputs(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    compose_summary = run_drawai_pipeline_from_stage(
+        config,
+        "prepare",
+        to_stage="compose_svg",
+        svg_invoker=_fake_svg_invoker(),
+    )
+    assert compose_summary["status"] == "ok"
+
+    export_summary = run_drawai_pipeline_from_stage(config, "export", to_stage="export")
+    assert export_summary["status"] == "ok"
+
+    root = Path(export_summary["output_dir"])
+    package_path = root / "drawai_package.json"
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    assert "export_outputs" in package
+
+    asset_path = root / "elements" / "E001" / "asset_package.json"
+    asset_payload = json.loads(asset_path.read_text(encoding="utf-8"))
+    asset_payload["status"] = "failed"
+    asset_payload["failure"] = "forced failure after successful export"
+    asset_path.write_text(json.dumps(asset_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    failed_summary = run_drawai_pipeline_from_stage(config, "export", to_stage="export")
+
+    assert failed_summary["status"] == "failed"
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    assert package["metadata"]["last_stage"] == "export"
+    assert "export_outputs" not in package
+    assert package["compose_outputs"]["semantic_svg"] == "svg/semantic.svg"
+
+
+def test_svg_to_ppt_failure_clears_previous_export_outputs(tmp_path: Path) -> None:
+    config = _config(tmp_path, export_pptx=True)
+    compose_summary = run_drawai_pipeline_from_stage(
+        config,
+        "prepare",
+        to_stage="compose_svg",
+        svg_invoker=_fake_svg_invoker(),
+    )
+    assert compose_summary["status"] == "ok"
+
+    def successful_compiler(svg_path: Path, output_pptx: Path):
+        output_pptx.write_bytes(b"pptx")
+        return {"backend": "drawai_native_shapes", "editable_surface": "native_shapes"}
+
+    export_summary = run_drawai_pipeline_from_stage(
+        config,
+        "export",
+        to_stage="export",
+        svg_to_ppt_compiler=successful_compiler,
+    )
+    assert export_summary["status"] == "ok"
+
+    root = Path(export_summary["output_dir"])
+    package_path = root / "drawai_package.json"
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    assert "export_outputs" in package
+
+    def missing_pptx_compiler(svg_path: Path, output_pptx: Path):
+        return {"backend": "drawai_native_shapes", "editable_surface": "native_shapes"}
+
+    failed_summary = run_drawai_pipeline_from_stage(
+        config,
+        "export",
+        to_stage="export",
+        svg_to_ppt_compiler=missing_pptx_compiler,
+    )
+
+    assert failed_summary["status"] == "failed"
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    assert package["metadata"]["last_stage"] == "export"
+    assert "export_outputs" not in package
+    assert package["compose_outputs"]["semantic_svg"] == "svg/semantic.svg"
+
+
+def test_compose_svg_uses_svg_generation_loop(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    calls: list[dict[str, object]] = []
+
+    summary = run_drawai_pipeline_from_stage(
+        config,
+        "prepare",
+        to_stage="compose_svg",
+        svg_invoker=_fake_svg_invoker(calls),
+    )
+
+    assert summary["status"] == "ok"
+    assert calls
+    root = Path(summary["output_dir"])
+    semantic_svg = root / "svg" / "semantic.svg"
+    assert "from fake invoker" in semantic_svg.read_text(encoding="utf-8")
+    package = json.loads((root / "drawai_package.json").read_text(encoding="utf-8"))
+    assert package["compose_outputs"]["semantic_svg"] == "svg/semantic.svg"
+    assert package["compose_outputs"]["validation_report"] == "reports/svg_validation_report.json"
+
+
+def test_export_records_v2_export_outputs_on_success(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    compose_summary = run_drawai_pipeline_from_stage(
+        config,
+        "prepare",
+        to_stage="compose_svg",
+        svg_invoker=_fake_svg_invoker(),
+    )
+    assert compose_summary["status"] == "ok"
+
+    export_summary = run_drawai_pipeline_from_stage(config, "export", to_stage="export")
+
+    assert export_summary["status"] == "ok"
+    root = Path(export_summary["output_dir"])
+    package = json.loads((root / "drawai_package.json").read_text(encoding="utf-8"))
+    assert package["metadata"]["last_stage"] == "export"
+    assert package["compose_outputs"]["semantic_svg"] == "svg/semantic.svg"
+    assert package["export_outputs"]["report"] == "reports/svg_to_ppt_export_report.json"
+
+    package_summary = run_drawai_pipeline_from_stage(config, "package_run", to_stage="package_run")
+    assert package_summary["status"] == "ok"
+    package = json.loads((root / "drawai_package.json").read_text(encoding="utf-8"))
+    assert package["compose_outputs"]["semantic_svg"] == "svg/semantic.svg"
+    assert package["export_outputs"]["report"] == "reports/svg_to_ppt_export_report.json"
