@@ -10,6 +10,7 @@ import drawai.v2.schema as v2_schema
 from drawai.v2.packages import (
     classify_run_root,
     element_dir,
+    read_asset_package,
     read_run_package,
     write_asset_package,
     write_element_plan,
@@ -138,6 +139,104 @@ def test_asset_package_validation_rejects_invalid_status_and_missing_ids(tmp_pat
             validate_asset_package(package)
         with pytest.raises(ValueError):
             write_asset_package(tmp_path, package)
+
+
+def test_asset_package_validation_rejects_malformed_durable_fields(tmp_path: Path) -> None:
+    invalid_packages = (
+        AssetPackage(
+            asset_id="A001",
+            element_id="E001",
+            processor_type="crop",
+            files="elements/E001/results/R001/crop.png",
+        ),
+        AssetPackage(
+            asset_id="A001",
+            element_id="E001",
+            processor_type="crop",
+            processor_runs=(
+                {
+                    "processor_type": "crop",
+                    "status": "ok",
+                    "started_at": "2026-01-01T00:00:00Z",
+                },
+            ),
+        ),
+        AssetPackage(
+            asset_id="A001",
+            element_id="E001",
+            processor_type="crop",
+            all_results=(
+                {
+                    "result_id": "R001",
+                    "processor_type": "crop",
+                    "status": "ok",
+                    "kind": "raster",
+                    "path": 12,
+                    "files": [],
+                    "metadata": {},
+                },
+            ),
+        ),
+        AssetPackage(
+            asset_id="A001",
+            element_id="E001",
+            processor_type="crop",
+            active_result={"result_id": "R001", "path": object()},
+        ),
+        AssetPackage(
+            asset_id="A001",
+            element_id="E001",
+            processor_type="crop",
+            editable_payload=[],
+        ),
+        AssetPackage(
+            asset_id="A001",
+            element_id="E001",
+            processor_type="crop",
+            failure={"message": "bad"},
+        ),
+    )
+
+    for package in invalid_packages:
+        with pytest.raises(ValueError):
+            v2_schema.validate_asset_package(package)
+        with pytest.raises(ValueError):
+            write_asset_package(tmp_path, package)
+
+
+def test_read_asset_package_rejects_malformed_durable_payload(tmp_path: Path) -> None:
+    root = tmp_path / "run"
+    package_path = root / "elements" / "E001" / "asset_package.json"
+    package_path.parent.mkdir(parents=True)
+    package_path.write_text(
+        json.dumps(
+            {
+                "schema": "drawai.asset_package.v1",
+                "asset_id": "A001",
+                "element_id": "E001",
+                "processor_type": "crop",
+                "status": "ok",
+                "files": "elements/E001/results/R001/crop.png",
+                "metadata": {},
+                "processor_runs": [
+                    {
+                        "processor_type": "crop",
+                        "status": "ok",
+                    }
+                ],
+                "all_results": [],
+                "active_result": None,
+                "editable_payload": None,
+                "failure": None,
+                "created_at": "2026-01-01T00:00:00Z",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="files"):
+        read_asset_package(root, "E001")
 
 
 def test_element_plan_validation_rejects_invalid_review_status() -> None:

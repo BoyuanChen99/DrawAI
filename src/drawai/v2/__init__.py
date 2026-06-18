@@ -5,12 +5,23 @@ from .packages import (
     RunClassification,
     classify_run_root,
     element_dir,
+    read_asset_package,
     read_run_package,
     write_asset_package,
     write_element_plan,
     write_run_package,
 )
 from .parsers import ocr_payload_to_candidates, sam3_payload_to_candidates
+from .processors import (
+    AssetProcessor,
+    ChartRebuildReservedProcessor,
+    CropNoBgProcessor,
+    CropProcessor,
+    ImageEditProcessor,
+    ImageGenerateProcessor,
+    SvgSelfDrawProcessor,
+    processor_for_type,
+)
 from .registry import DrawAiRegistry, default_registry
 from .refine import (
     CODEX_ELEMENT_ANALYSIS_SCHEMA,
@@ -45,6 +56,7 @@ from .schema import (
 
 __all__ = [
     "ASSET_PACKAGE_SCHEMA",
+    "AssetProcessor",
     "ELEMENT_CANDIDATE_SCHEMA",
     "ELEMENT_PLAN_SCHEMA",
     "FusionConfig",
@@ -53,10 +65,15 @@ __all__ = [
     "AssetPackage",
     "AssetStatus",
     "CODEX_ELEMENT_ANALYSIS_SCHEMA",
+    "ChartRebuildReservedProcessor",
     "CodexElementRefiner",
+    "CropNoBgProcessor",
+    "CropProcessor",
     "DrawAiRegistry",
     "ElementCandidate",
     "ElementPlan",
+    "ImageEditProcessor",
+    "ImageGenerateProcessor",
     "ProcessingIntent",
     "REFINED_ELEMENT_PLANS_EXPORT_SCHEMA",
     "RefineConfig",
@@ -64,11 +81,14 @@ __all__ = [
     "ReviewStatus",
     "RunClassification",
     "RunPackage",
+    "SvgSelfDrawProcessor",
     "classify_run_root",
     "default_registry",
     "element_dir",
     "fuse_candidates",
     "ocr_payload_to_candidates",
+    "processor_for_type",
+    "read_asset_package",
     "read_run_package",
     "sam3_payload_to_candidates",
     "utc_now",

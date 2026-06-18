@@ -114,6 +114,11 @@ class AssetPackage:
     status: AssetStatus = "pending"
     files: Sequence[str] = ()
     metadata: Mapping[str, Any] = field(default_factory=dict)
+    processor_runs: Sequence[Mapping[str, Any]] = ()
+    all_results: Sequence[Mapping[str, Any]] = ()
+    active_result: Mapping[str, Any] | None = None
+    editable_payload: Mapping[str, Any] | None = None
+    failure: str | None = None
     created_at: str = field(default_factory=utc_now)
     schema: str = field(init=False, default=ASSET_PACKAGE_SCHEMA)
 
@@ -140,6 +145,11 @@ class AssetPackage:
             "status": self.status,
             "files": _json_normalize(self.files),
             "metadata": _json_normalize(self.metadata),
+            "processor_runs": _json_normalize(self.processor_runs),
+            "all_results": _json_normalize(self.all_results),
+            "active_result": _json_normalize(self.active_result),
+            "editable_payload": _json_normalize(self.editable_payload),
+            "failure": self.failure,
             "created_at": self.created_at,
         }
 
@@ -256,12 +266,38 @@ def validate_element_plan(
 
 
 def validate_asset_package(package: AssetPackage) -> None:
-    if package.schema != ASSET_PACKAGE_SCHEMA:
-        raise ValueError(f"invalid asset package schema: {package.schema}")
-    _require_non_empty_string(package.asset_id, "asset_id")
-    _require_non_empty_string(package.element_id, "element_id")
-    _require_non_empty_string(package.processor_type, "processor_type")
-    _validate_literal(package.status, get_args(AssetStatus), "status")
+    validate_asset_package_payload(package.to_dict())
+
+
+def validate_asset_package_payload(payload: Mapping[str, Any]) -> None:
+    if not isinstance(payload, MappingABC):
+        raise ValueError("asset package must be a mapping")
+    if payload.get("schema") != ASSET_PACKAGE_SCHEMA:
+        raise ValueError(f"invalid asset package schema: {payload.get('schema')}")
+    _require_non_empty_string(payload.get("asset_id"), "asset_id")
+    _require_non_empty_string(payload.get("element_id"), "element_id")
+    _require_non_empty_string(payload.get("processor_type"), "processor_type")
+    _validate_literal(payload.get("status"), get_args(AssetStatus), "status")
+    _validate_string_sequence(payload.get("files", ()), "files")
+    _validate_json_mapping(payload.get("metadata", {}), "metadata")
+    _validate_processor_runs(payload.get("processor_runs", ()))
+    _validate_results(payload.get("all_results", ()), "all_results")
+
+    active_result = payload.get("active_result")
+    if active_result is not None:
+        _validate_result(active_result, "active_result")
+
+    editable_payload = payload.get("editable_payload")
+    if editable_payload is not None:
+        _validate_json_mapping(editable_payload, "editable_payload")
+
+    failure = payload.get("failure")
+    if failure is not None and not isinstance(failure, str):
+        raise ValueError("failure must be a string or null")
+
+    created_at = payload.get("created_at")
+    if created_at is not None and not isinstance(created_at, str):
+        raise ValueError("created_at must be a string")
 
 
 def validate_run_package(package: RunPackage) -> None:
@@ -278,6 +314,97 @@ def validate_run_package_payload(payload: Mapping[str, Any]) -> None:
     _require_non_empty_string(payload.get("source_image"), "source_image")
     if not isinstance(payload.get("canvas"), MappingABC):
         raise ValueError("canvas must be a mapping")
+
+
+def _validate_processor_runs(value: object) -> None:
+    runs = _validate_mapping_sequence(value, "processor_runs")
+    for index, run in enumerate(runs):
+        field_prefix = f"processor_runs[{index}]"
+        for field_name in ("processor_type", "status", "started_at", "ended_at"):
+            _require_non_empty_string(run.get(field_name), f"{field_prefix}.{field_name}")
+        _validate_literal(run.get("status"), get_args(AssetStatus), f"{field_prefix}.status")
+        _validate_json_mapping(run.get("input_refs"), f"{field_prefix}.input_refs")
+        _validate_json_mapping(run.get("output_refs"), f"{field_prefix}.output_refs")
+        _validate_json_mapping(run.get("metadata"), f"{field_prefix}.metadata")
+
+
+def _validate_results(value: object, field_name: str) -> None:
+    results = _validate_mapping_sequence(value, field_name)
+    for index, result in enumerate(results):
+        _validate_result(result, f"{field_name}[{index}]")
+
+
+def _validate_result(value: object, field_name: str) -> None:
+    if not isinstance(value, MappingABC):
+        raise ValueError(f"{field_name} must be a mapping")
+    for required in ("result_id", "processor_type", "status", "kind"):
+        _require_non_empty_string(value.get(required), f"{field_name}.{required}")
+    _validate_literal(value.get("status"), get_args(AssetStatus), f"{field_name}.status")
+    path = value.get("path")
+    if path is not None and (not isinstance(path, str) or not path):
+        raise ValueError(f"{field_name}.path must be a non-empty string or null")
+    files = value.get("files", ())
+    if isinstance(files, str) or not isinstance(files, SequenceABC):
+        raise ValueError(f"{field_name}.files must be a sequence")
+    for index, file_ref in enumerate(files):
+        item_name = f"{field_name}.files[{index}]"
+        if isinstance(file_ref, str):
+            if not file_ref:
+                raise ValueError(f"{item_name} must be non-empty")
+            continue
+        if not isinstance(file_ref, MappingABC):
+            raise ValueError(f"{item_name} must be a mapping or string")
+        file_path = file_ref.get("path")
+        if not isinstance(file_path, str) or not file_path:
+            raise ValueError(f"{item_name}.path must be a non-empty string")
+        _validate_json_value(file_ref, item_name)
+    _validate_json_mapping(value.get("metadata", {}), f"{field_name}.metadata")
+    _validate_json_value(value, field_name)
+
+
+def _validate_string_sequence(value: object, field_name: str) -> None:
+    if isinstance(value, str) or not isinstance(value, SequenceABC):
+        raise ValueError(f"{field_name} must be a sequence")
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item:
+            raise ValueError(f"{field_name}[{index}] must be a non-empty string")
+
+
+def _validate_mapping_sequence(value: object, field_name: str) -> list[MappingABC[str, Any]]:
+    if isinstance(value, str) or not isinstance(value, SequenceABC):
+        raise ValueError(f"{field_name} must be a sequence")
+    mappings: list[MappingABC[str, Any]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, MappingABC):
+            raise ValueError(f"{field_name}[{index}] must be a mapping")
+        mappings.append(item)
+    return mappings
+
+
+def _validate_json_mapping(value: object, field_name: str) -> None:
+    if not isinstance(value, MappingABC):
+        raise ValueError(f"{field_name} must be a mapping")
+    _validate_json_value(value, field_name)
+
+
+def _validate_json_value(value: object, field_name: str) -> None:
+    if value is None or isinstance(value, str | bool):
+        return
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        if not math.isfinite(float(value)):
+            raise ValueError(f"{field_name} must be JSON-compatible")
+        return
+    if isinstance(value, MappingABC):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"{field_name} keys must be strings")
+            _validate_json_value(item, f"{field_name}.{key}")
+        return
+    if isinstance(value, SequenceABC) and not isinstance(value, str | bytes | bytearray):
+        for index, item in enumerate(value):
+            _validate_json_value(item, f"{field_name}[{index}]")
+        return
+    raise ValueError(f"{field_name} must be JSON-compatible")
 
 
 def _validate_source_candidate_ids(value: object, *, allow_empty: bool = False) -> None:

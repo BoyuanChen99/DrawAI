@@ -15,6 +15,7 @@ from .schema import (
     ElementPlan,
     RunPackage,
     validate_asset_package,
+    validate_asset_package_payload,
     validate_element_plan,
     validate_run_package,
     validate_run_package_payload,
@@ -82,6 +83,19 @@ def write_asset_package(root: str | Path, package: AssetPackage) -> AssetPackage
         schema=ASSET_PACKAGE_SCHEMA,
     )
     return package
+
+
+def read_asset_package(root: str | Path, element_id: str) -> dict[str, Any]:
+    safe_element_id = _safe_element_id(element_id)
+    package_path = _resolve_run_relative(
+        root,
+        Path("elements") / safe_element_id / "asset_package.json",
+    )
+    payload = json.loads(package_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("asset package must be a JSON object")
+    validate_asset_package_payload(payload)
+    return payload
 
 
 def classify_run_root(root: str | Path) -> RunClassification:
