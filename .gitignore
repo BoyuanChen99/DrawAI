@@ -50,5 +50,6 @@ build/
 .codex/
 .claude/
 .superpowers/
+superpowers/
 .worktrees/
 input.png
