@@ -17,15 +17,7 @@ It decomposes input images into structure, text, and local assets, then generate
 <a id="demo"></a>
 ## 🎬 Demo
 
-<p align="center">
-  <a href="figures/readme_demo/drawai-workbench-demo.mp4">
-    <img src="figures/readme_demo/drawai-workbench-demo-poster.jpg" alt="DrawAI Workbench demo video" width="900">
-  </a>
-</p>
-
-<p align="center">
-  <a href="figures/readme_demo/drawai-workbench-demo.mp4">Open the 76-second Workbench demo video (MP4, 2.7 MB)</a>
-</p>
+https://github.com/user-attachments/assets/40666e4a-32f0-4836-b727-2d659c93868c
 
 <a id="roadmap"></a>
 ## 🗺️ Roadmap

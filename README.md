@@ -17,15 +17,7 @@
 <a id="demo"></a>
 ## 🎬 演示
 
-<p align="center">
-  <a href="figures/readme_demo/drawai-workbench-demo.mp4">
-    <img src="figures/readme_demo/drawai-workbench-demo-poster.jpg" alt="DrawAI Workbench 演示视频" width="900">
-  </a>
-</p>
-
-<p align="center">
-  <a href="figures/readme_demo/drawai-workbench-demo.mp4">打开 76 秒 Workbench 演示视频（MP4，2.7 MB）</a>
-</p>
+https://github.com/user-attachments/assets/40666e4a-32f0-4836-b727-2d659c93868c
 
 <a id="roadmap"></a>
 ## 🗺️ 规划
