@@ -76,9 +76,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run_cli(argv: Sequence[str]) -> int:
-    from .public_stages import PUBLIC_STAGE_ORDER
+    from .public_stages import LEGACY_STAGE_ALIASES, PUBLIC_STAGE_ORDER
 
-    if argv and argv[0] in {*PUBLIC_STAGE_ORDER, "all"}:
+    if argv and argv[0] in {*PUBLIC_STAGE_ORDER, *LEGACY_STAGE_ALIASES, "all"}:
         return _run_public_stage_cli(argv)
 
     from .local_cli import run_image_cli
@@ -87,10 +87,10 @@ def _run_cli(argv: Sequence[str]) -> int:
 
 
 def _run_public_stage_cli(argv: Sequence[str]) -> int:
-    from .public_stages import PUBLIC_STAGE_ORDER, run_public_stage
+    from .public_stages import LEGACY_STAGE_ALIASES, PUBLIC_STAGE_ORDER, run_public_stage
 
     parser = argparse.ArgumentParser(description="Run a public DrawAI pipeline stage.")
-    parser.add_argument("stage", choices=[*PUBLIC_STAGE_ORDER, "all"], help="Public stage to run.")
+    parser.add_argument("stage", choices=[*PUBLIC_STAGE_ORDER, *LEGACY_STAGE_ALIASES, "all"], help="Public stage to run.")
     parser.add_argument("--config", required=True, help="Path to a DrawAI YAML config.")
     parser.add_argument(
         "--sources",
@@ -149,6 +149,7 @@ def dry_run_config_summary(cfg: DrawAiPipelineConfig) -> dict[str, Any]:
         "svg": _json_safe(cfg.svg),
         "svg_to_ppt": _json_safe(cfg.svg_to_ppt),
         "model_runtime": model_runtime,
+        "v2": _json_safe(cfg.v2),
     }
 
 

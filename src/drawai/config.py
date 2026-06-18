@@ -15,6 +15,7 @@ RECOGNIZED_SVG_TEXT_RENDERING = frozenset({"model_text"})
 RECOGNIZED_VISUAL_REVIEW_ROUNDS = frozenset({"text_style", "layout"})
 RECOGNIZED_RMBG_PROVIDERS = frozenset({"service"})
 RECOGNIZED_CODEX_REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhigh"})
+RECOGNIZED_V2_REFINE_PROVIDERS = frozenset({"codex_element_refiner", "deterministic"})
 
 
 @dataclass(frozen=True)
@@ -142,6 +143,38 @@ class ModelRuntimeConfig:
 
 
 @dataclass(frozen=True)
+class V2ParserConfig:
+    enabled: bool = True
+    sam3_enabled: bool = True
+    ocr_enabled: bool = True
+
+
+@dataclass(frozen=True)
+class V2FusionConfig:
+    duplicate_iou_threshold: float = 0.85
+
+
+@dataclass(frozen=True)
+class V2RefineConfig:
+    enabled: bool = True
+    provider: str = "codex_element_refiner"
+
+
+@dataclass(frozen=True)
+class V2ProcessorConfig:
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
+class DrawAiV2Config:
+    enabled: bool = True
+    parser: V2ParserConfig = V2ParserConfig()
+    fusion: V2FusionConfig = V2FusionConfig()
+    refine: V2RefineConfig = V2RefineConfig()
+    processor: V2ProcessorConfig = V2ProcessorConfig()
+
+
+@dataclass(frozen=True)
 class DrawAiPipelineConfig:
     input: DrawAiInputConfig
     sam3: Sam3Config = Sam3Config()
@@ -152,6 +185,7 @@ class DrawAiPipelineConfig:
     svg: DrawAiSvgConfig = DrawAiSvgConfig()
     svg_to_ppt: DrawAiSvgToPptConfig = DrawAiSvgToPptConfig()
     model_runtime: ModelRuntimeConfig = ModelRuntimeConfig()
+    v2: DrawAiV2Config = DrawAiV2Config()
     config_path: Path | None = None
 
 
@@ -174,6 +208,7 @@ def load_drawai_config(path: str | Path, validate_input_exists: bool = True) -> 
         svg=_parse_svg_config(data.get("svg")),
         svg_to_ppt=_parse_svg_to_ppt_config(data.get("svg_to_ppt")),
         model_runtime=_parse_model_runtime_config(data.get("model_runtime")),
+        v2=_parse_v2_config(data.get("v2")),
         config_path=config_path,
     )
     _validate_config(cfg, validate_input_exists=validate_input_exists)
@@ -487,6 +522,61 @@ def _parse_model_runtime_config(raw: Any) -> ModelRuntimeConfig:
     )
 
 
+def _parse_v2_config(raw: Any) -> DrawAiV2Config:
+    if raw is None:
+        return DrawAiV2Config()
+    data = _require_mapping(raw, "v2")
+    return DrawAiV2Config(
+        enabled=_as_bool(data.get("enabled", DrawAiV2Config.enabled), "v2.enabled"),
+        parser=_parse_v2_parser_config(data.get("parser")),
+        fusion=_parse_v2_fusion_config(data.get("fusion")),
+        refine=_parse_v2_refine_config(data.get("refine")),
+        processor=_parse_v2_processor_config(data.get("processor")),
+    )
+
+
+def _parse_v2_parser_config(raw: Any) -> V2ParserConfig:
+    if raw is None:
+        return V2ParserConfig()
+    data = _require_mapping(raw, "v2.parser")
+    return V2ParserConfig(
+        enabled=_as_bool(data.get("enabled", V2ParserConfig.enabled), "v2.parser.enabled"),
+        sam3_enabled=_as_bool(data.get("sam3_enabled", V2ParserConfig.sam3_enabled), "v2.parser.sam3_enabled"),
+        ocr_enabled=_as_bool(data.get("ocr_enabled", V2ParserConfig.ocr_enabled), "v2.parser.ocr_enabled"),
+    )
+
+
+def _parse_v2_fusion_config(raw: Any) -> V2FusionConfig:
+    if raw is None:
+        return V2FusionConfig()
+    data = _require_mapping(raw, "v2.fusion")
+    return V2FusionConfig(
+        duplicate_iou_threshold=_as_float(
+            data.get("duplicate_iou_threshold", V2FusionConfig.duplicate_iou_threshold),
+            "v2.fusion.duplicate_iou_threshold",
+        ),
+    )
+
+
+def _parse_v2_refine_config(raw: Any) -> V2RefineConfig:
+    if raw is None:
+        return V2RefineConfig()
+    data = _require_mapping(raw, "v2.refine")
+    return V2RefineConfig(
+        enabled=_as_bool(data.get("enabled", V2RefineConfig.enabled), "v2.refine.enabled"),
+        provider=_as_non_empty_str(data.get("provider", V2RefineConfig.provider), "v2.refine.provider"),
+    )
+
+
+def _parse_v2_processor_config(raw: Any) -> V2ProcessorConfig:
+    if raw is None:
+        return V2ProcessorConfig()
+    data = _require_mapping(raw, "v2.processor")
+    return V2ProcessorConfig(
+        enabled=_as_bool(data.get("enabled", V2ProcessorConfig.enabled), "v2.processor.enabled"),
+    )
+
+
 def _parse_extra_headers(raw: Any) -> dict[str, str]:
     if raw is None:
         return {}
@@ -584,6 +674,11 @@ def _validate_config(cfg: DrawAiPipelineConfig, validate_input_exists: bool) -> 
             f"model_runtime.reasoning_effort={cfg.model_runtime.reasoning_effort!r} is unsupported. "
             f"Expected one of: {supported}"
         )
+    if not 0 <= cfg.v2.fusion.duplicate_iou_threshold <= 1:
+        raise ValueError("v2.fusion.duplicate_iou_threshold must be between 0 and 1")
+    if cfg.v2.refine.provider not in RECOGNIZED_V2_REFINE_PROVIDERS:
+        supported = ", ".join(sorted(RECOGNIZED_V2_REFINE_PROVIDERS))
+        raise ValueError(f"Unsupported v2.refine.provider: {cfg.v2.refine.provider!r}. Expected one of: {supported}")
 
 
 def _require_mapping(raw: Any, field_name: str) -> dict[str, Any]:

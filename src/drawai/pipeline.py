@@ -42,6 +42,7 @@ from .sam3_client import JsonTransport, run_sam3_prompt_plan
 from .stages import FileBackedStageOptions, build_file_backed_run_context, build_file_backed_stage_specs
 from .svg_generation_loop import SvgGenerationError, run_svg_generation_loop
 from .svg_to_ppt_check import CompilerCallable
+from .v2.stages import V2_STAGE_ORDER, V2StageOptions, build_v2_run_context, build_v2_stage_specs
 
 PipelineInvoker = Callable[..., Any]
 
@@ -70,6 +71,29 @@ RERUNNABLE_STAGE_ORDER = [
     for stage in STAGE_ORDER
     if stage not in {"config_loaded", "completed"}
 ]
+
+V2_RERUNNABLE_STAGE_ORDER = list(V2_STAGE_ORDER)
+
+V2_STAGE_ALIASES = {
+    "input_normalized": "prepare",
+    "detect_structure": "parse_elements",
+    "detect_text": "parse_elements",
+    "sam3_completed": "parse_elements",
+    "ocr_completed": "parse_elements",
+    "assemble_boxir": "fuse_elements",
+    "box_ir_merged": "fuse_elements",
+    "semantic_overlay_rendered": "fuse_elements",
+    "asset_plan": "plan_assets",
+    "asset_decisions_completed": "plan_assets",
+    "asset_analyze": "refine_elements",
+    "codex_run0_asset_analysis_completed": "refine_elements",
+    "asset_materialize": "process_assets",
+    "assets_materialized": "process_assets",
+    "svg": "compose_svg",
+    "svg_generated": "compose_svg",
+    "svg_to_ppt_exported": "export",
+    "completed": "package_run",
+}
 
 STAGE_IO_SCHEMA = "drawai.stage_io_manifest.v1"
 
@@ -109,6 +133,19 @@ def run_drawai_pipeline(
         return _config_load_failure_summary(config_path_or_config, exc)
 
     paths = prepare_artifact_paths(cfg.input.output_dir)
+    if cfg.v2.enabled:
+        return _run_v2_pipeline(
+            cfg,
+            paths,
+            options=V2StageOptions(
+                sam3_transport=sam3_transport,
+                ocr_provider=ocr_provider,
+                rmbg_client=rmbg_client,
+                svg_invoker=svg_invoker,
+                svg_to_ppt_compiler=svg_to_ppt_compiler,
+            ),
+        )
+
     _reset_run_owned_outputs(paths)
     completed: list[str] = []
     current_stage = "config_loaded"
@@ -496,6 +533,52 @@ def run_drawai_pipeline(
         return summary
 
 
+def _run_v2_pipeline(
+    cfg: DrawAiPipelineConfig,
+    paths: DrawAiArtifactPaths,
+    *,
+    options: V2StageOptions,
+) -> dict[str, Any]:
+    _reset_run_owned_outputs(paths)
+    completed: list[str] = []
+    current_stage = "prepare"
+
+    try:
+        runner = DagRunner(build_v2_stage_specs(V2_RERUNNABLE_STAGE_ORDER, options=options))
+        context = build_v2_run_context(cfg, paths, options=options)
+
+        def before_stage(stage) -> None:
+            nonlocal current_stage
+            current_stage = stage.stage_id
+            _mark_stage(paths, current_stage, "running", f"Running v2 stage {current_stage}.")
+
+        def after_stage(stage, _result) -> None:
+            _mark_stage(paths, stage.stage_id, "ok", f"v2 stage {stage.stage_id} completed.")
+            completed.append(stage.stage_id)
+
+        runner.run(context, before_stage=before_stage, after_stage=after_stage)
+
+        summary = _summary("ok", cfg, paths, completed)
+        summary["execution_mode"] = "v2_file_stage_runner"
+        summary["v2_enabled"] = True
+        write_json(paths.pipeline_summary_json, summary)
+        return summary
+    except Exception as exc:  # noqa: BLE001 - top-level pipeline report boundary.
+        _mark_stage(paths, current_stage, "failed", _sanitize_summary_string(f"{type(exc).__name__}: {exc}"))
+        summary = _summary(
+            "failed",
+            cfg,
+            paths,
+            completed,
+            failed_stage=current_stage,
+            exception=exc,
+        )
+        summary["execution_mode"] = "v2_file_stage_runner"
+        summary["v2_enabled"] = True
+        write_json(paths.pipeline_summary_json, summary)
+        return summary
+
+
 def run_drawai_pipeline_from_stage(
     config_path_or_config: str | Path | DrawAiPipelineConfig,
     from_stage: str,
@@ -513,6 +596,21 @@ def run_drawai_pipeline_from_stage(
         return _config_load_failure_summary(config_path_or_config, exc)
 
     paths = prepare_artifact_paths(cfg.input.output_dir)
+    if cfg.v2.enabled:
+        return _run_v2_pipeline_from_stage(
+            cfg,
+            paths,
+            from_stage,
+            to_stage=to_stage,
+            options=V2StageOptions(
+                sam3_transport=sam3_transport,
+                ocr_provider=ocr_provider,
+                rmbg_client=rmbg_client,
+                svg_invoker=svg_invoker,
+                svg_to_ppt_compiler=svg_to_ppt_compiler,
+            ),
+        )
+
     completed: list[str] = []
     current_stage = from_stage
 
@@ -563,6 +661,63 @@ def run_drawai_pipeline_from_stage(
         return summary
 
 
+def _run_v2_pipeline_from_stage(
+    cfg: DrawAiPipelineConfig,
+    paths: DrawAiArtifactPaths,
+    from_stage: str,
+    *,
+    to_stage: str | None,
+    options: V2StageOptions,
+) -> dict[str, Any]:
+    completed: list[str] = []
+    current_stage = _canonical_v2_stage(from_stage)
+
+    try:
+        stage_range = _v2_stage_range(from_stage, to_stage)
+        _reset_v2_outputs_from_stage(paths, stage_range[0])
+        runner = DagRunner(build_v2_stage_specs(stage_range, options=options))
+        context = build_v2_run_context(cfg, paths, options=options)
+
+        def before_stage(stage) -> None:
+            nonlocal current_stage
+            current_stage = stage.stage_id
+            _mark_stage(paths, current_stage, "running", f"Running v2 file-backed stage {current_stage}.")
+
+        def after_stage(stage, _result) -> None:
+            _mark_stage(paths, stage.stage_id, "ok", f"v2 file-backed stage {stage.stage_id} completed.")
+            completed.append(stage.stage_id)
+
+        runner.run(context, before_stage=before_stage, after_stage=after_stage)
+
+        summary = _summary("ok", cfg, paths, completed)
+        summary["execution_mode"] = "v2_file_stage_runner"
+        summary["from_stage"] = stage_range[0]
+        summary["to_stage"] = stage_range[-1]
+        summary["v2_enabled"] = True
+        if from_stage != stage_range[0]:
+            summary["from_stage_alias"] = from_stage
+        if to_stage is not None and to_stage != stage_range[-1]:
+            summary["to_stage_alias"] = to_stage
+        write_json(paths.pipeline_summary_json, summary)
+        return summary
+    except Exception as exc:  # noqa: BLE001 - top-level stage runner report boundary.
+        _mark_stage(paths, current_stage, "failed", _sanitize_summary_string(f"{type(exc).__name__}: {exc}"))
+        summary = _summary(
+            "failed",
+            cfg,
+            paths,
+            completed,
+            failed_stage=current_stage,
+            exception=exc,
+        )
+        summary["execution_mode"] = "v2_file_stage_runner"
+        summary["from_stage"] = from_stage
+        summary["to_stage"] = to_stage
+        summary["v2_enabled"] = True
+        write_json(paths.pipeline_summary_json, summary)
+        return summary
+
+
 def _stage_range(from_stage: str, to_stage: str | None) -> list[str]:
     if from_stage not in RERUNNABLE_STAGE_ORDER:
         raise ValueError(
@@ -578,6 +733,26 @@ def _stage_range(from_stage: str, to_stage: str | None) -> list[str]:
     if end_index < start_index:
         raise ValueError(f"to_stage {resolved_to_stage!r} is before from_stage {from_stage!r}")
     return RERUNNABLE_STAGE_ORDER[start_index : end_index + 1]
+
+
+def _v2_stage_range(from_stage: str, to_stage: str | None) -> list[str]:
+    resolved_from_stage = _canonical_v2_stage(from_stage)
+    resolved_to_stage = _canonical_v2_stage(to_stage) if to_stage is not None else V2_RERUNNABLE_STAGE_ORDER[-1]
+    start_index = V2_RERUNNABLE_STAGE_ORDER.index(resolved_from_stage)
+    end_index = V2_RERUNNABLE_STAGE_ORDER.index(resolved_to_stage)
+    if end_index < start_index:
+        raise ValueError(f"to_stage {resolved_to_stage!r} is before from_stage {resolved_from_stage!r}")
+    return V2_RERUNNABLE_STAGE_ORDER[start_index : end_index + 1]
+
+
+def _canonical_v2_stage(stage: str | None) -> str:
+    if stage is None:
+        return V2_RERUNNABLE_STAGE_ORDER[-1]
+    resolved_stage = V2_STAGE_ALIASES.get(stage, stage)
+    if resolved_stage not in V2_RERUNNABLE_STAGE_ORDER:
+        accepted = ", ".join((*V2_RERUNNABLE_STAGE_ORDER, *V2_STAGE_ALIASES))
+        raise ValueError(f"stage must be one of {accepted}; got {stage!r}")
+    return resolved_stage
 
 
 def _run_file_backed_stage(
@@ -3239,6 +3414,11 @@ def _reset_run_owned_outputs(paths: DrawAiArtifactPaths) -> None:
         paths.stage_status_json,
         paths.pipeline_summary_json,
         paths.stage_io_manifest_json,
+        paths.run_package_json,
+        paths.v2_fusion_trace_json,
+        paths.v2_refine_trace_json,
+        paths.v2_processor_trace_jsonl,
+        paths.v2_processor_trace_jsonl.with_suffix(".plan.json"),
         paths.original_image,
         paths.figure_image,
         paths.source_metadata,
@@ -3289,6 +3469,9 @@ def _reset_run_owned_outputs(paths: DrawAiArtifactPaths) -> None:
         paths.root / "svg_to_ppt",
         paths.element_analysis_dir,
         paths.reports_dir / "assemble_debug",
+        paths.v2_elements_dir,
+        paths.v2_parser_outputs_dir,
+        paths.exports_dir,
     ):
         _clear_run_owned_directory_contents(directory, paths.root)
 
@@ -3389,6 +3572,110 @@ def _clear_stage_outputs(paths: DrawAiArtifactPaths, stage: str) -> None:
         return
 
     raise ValueError(f"Unsupported stage for reset: {stage}")
+
+
+def _reset_v2_outputs_from_stage(paths: DrawAiArtifactPaths, from_stage: str) -> None:
+    if from_stage == "prepare":
+        _reset_run_owned_outputs(paths)
+        return
+
+    for report_path in (paths.stage_status_json, paths.pipeline_summary_json):
+        _unlink_run_owned_path(report_path, paths.root)
+
+    start_index = V2_RERUNNABLE_STAGE_ORDER.index(from_stage)
+    for stage in V2_RERUNNABLE_STAGE_ORDER[start_index:]:
+        _clear_v2_stage_outputs(paths, stage)
+
+
+def _clear_v2_stage_outputs(paths: DrawAiArtifactPaths, stage: str) -> None:
+    if stage == "prepare":
+        for path in (paths.original_image, paths.figure_image, paths.source_metadata):
+            _unlink_run_owned_path(path, paths.root)
+        return
+
+    if stage == "parse_elements":
+        for path in (paths.raw_regions_json, paths.sam_boxes_by_prompt_json, paths.ocr_boxes_json):
+            _unlink_run_owned_path(path, paths.root)
+        for directory in (paths.prompt_runs_dir, paths.sam_prompt_overlays_dir, paths.v2_parser_outputs_dir):
+            _clear_run_owned_directory_contents(directory, paths.root)
+        return
+
+    if stage == "fuse_elements":
+        for path in (
+            paths.run_package_json,
+            paths.v2_fusion_trace_json,
+            paths.v2_refine_trace_json,
+            paths.v2_processor_trace_jsonl,
+            paths.v2_processor_trace_jsonl.with_suffix(".plan.json"),
+            paths.asset_manifest_json,
+            paths.element_analysis_json,
+            paths.element_analysis_validation_json,
+            paths.element_analysis_status_json,
+            paths.box_ir_raw_json,
+            paths.box_ir_merged_json,
+            paths.box_ir_json,
+            paths.merge_trace_json,
+            paths.box_merge_diagnostics_json,
+            paths.svg_template_ir_json,
+        ):
+            _unlink_run_owned_path(path, paths.root)
+        _clear_run_owned_directory_contents(paths.v2_elements_dir, paths.root)
+        return
+
+    if stage == "refine_elements":
+        for path in (
+            paths.v2_refine_trace_json,
+            paths.v2_processor_trace_jsonl,
+            paths.v2_processor_trace_jsonl.with_suffix(".plan.json"),
+            paths.asset_manifest_json,
+            paths.element_analysis_json,
+            paths.element_analysis_validation_json,
+            paths.element_analysis_status_json,
+        ):
+            _unlink_run_owned_path(path, paths.root)
+        return
+
+    if stage == "plan_assets":
+        for path in (
+            paths.v2_processor_trace_jsonl,
+            paths.v2_processor_trace_jsonl.with_suffix(".plan.json"),
+            paths.asset_manifest_json,
+        ):
+            _unlink_run_owned_path(path, paths.root)
+        return
+
+    if stage == "process_assets":
+        for path in (
+            paths.v2_processor_trace_jsonl,
+            paths.asset_manifest_json,
+        ):
+            _unlink_run_owned_path(path, paths.root)
+        return
+
+    if stage == "compose_svg":
+        for path in (
+            paths.semantic_svg,
+            paths.rendered_png,
+            paths.svg_validation_report_json,
+        ):
+            _unlink_run_owned_path(path, paths.root)
+        return
+
+    if stage == "export":
+        for path in (
+            paths.svg_to_ppt_export_report_json,
+            paths.root / "svg_to_ppt" / "semantic.svg_to_ppt.pptx",
+            paths.root / "svg_to_ppt" / "svg_to_ppt_report.json",
+        ):
+            _unlink_run_owned_path(path, paths.root)
+        _clear_run_owned_directory_contents(paths.exports_dir, paths.root)
+        return
+
+    if stage == "package_run":
+        _unlink_run_owned_path(paths.run_package_json, paths.root)
+        return
+
+    raise ValueError(f"Unsupported v2 stage for reset: {stage}")
 
 
 def _unlink_run_owned_path(path: Path, root: Path) -> None:
@@ -3494,6 +3781,13 @@ def _config_load_failure_summary(
 
 def _artifact_summary(paths: DrawAiArtifactPaths) -> dict[str, str]:
     return {
+        "run_package": str(paths.run_package_json),
+        "v2_elements": str(paths.v2_elements_dir),
+        "v2_parser_outputs": str(paths.v2_parser_outputs_dir),
+        "v2_fusion_trace": str(paths.v2_fusion_trace_json),
+        "v2_refine_trace": str(paths.v2_refine_trace_json),
+        "v2_processor_trace": str(paths.v2_processor_trace_jsonl),
+        "exports": str(paths.exports_dir),
         "original_image": str(paths.original_image),
         "figure_image": str(paths.figure_image),
         "source_metadata": str(paths.source_metadata),
