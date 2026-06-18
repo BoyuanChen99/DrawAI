@@ -522,6 +522,45 @@ def test_runner_marks_interrupted_running_stage_run_failed_on_startup(tmp_path: 
     assert "interrupted" in updated_stage.error_message
 
 
+def test_runner_wait_for_idle_refreshes_stale_running_batch(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    batch = store.create_batch(
+        name="batch",
+        input_mode="upload",
+        max_concurrent_cases=2,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    for index in range(2):
+        case_root = store.runs_root / batch.batch_id / f"case_{index}"
+        case = store.create_case(
+            batch_id=batch.batch_id,
+            name=f"source_{index}.png",
+            source_image_path=source,
+            config_path=create_case_config(
+                base_config_path=base_config,
+                source_image=source,
+                output_dir=case_root,
+                target_path=case_root / "drawai.config.yaml",
+            ),
+        )
+        store.update_case_status(
+            case.case_id,
+            status="assets_review",
+            phase="analysis",
+            stage="plan_assets",
+        )
+    store.update_batch_status(batch.batch_id, "running")
+    runner = WorkbenchRunner(store, _settings(tmp_path, base_config), stage_executor=_deterministic_stage_executor)
+
+    runner.wait_for_idle(timeout=1)
+
+    assert store.get_batch(batch.batch_id).status == "waiting_review"
+
+
 def test_runner_copies_case_failure_to_batch_error(tmp_path: Path) -> None:
     store = WorkbenchStore(tmp_path / "workspace")
     base_config = _base_config(tmp_path)

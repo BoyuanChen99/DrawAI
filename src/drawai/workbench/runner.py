@@ -120,6 +120,7 @@ class WorkbenchRunner:
             with self._case_jobs_lock:
                 case_jobs = set(self._case_jobs)
             if not futures and not case_jobs:
+                self._refresh_running_batches()
                 return
             if not futures:
                 remaining = _idle_wait_remaining(deadline)
@@ -518,6 +519,11 @@ class WorkbenchRunner:
             self.store.update_batch_status(batch_id, "failed", error_message=failed_case.error_message if failed_case else "")
         elif "canceled" in statuses:
             self.store.update_batch_status(batch_id, "canceled")
+
+    def _refresh_running_batches(self) -> None:
+        for batch in self.store.list_batches():
+            if batch.status == "running":
+                self._refresh_batch_status(batch.batch_id)
 
 
 def _idle_wait_remaining(deadline: float | None) -> float | None:
