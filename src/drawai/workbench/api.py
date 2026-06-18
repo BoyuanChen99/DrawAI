@@ -278,7 +278,7 @@ def create_app(
     def get_case(case_id: str) -> dict[str, Any]:
         case = _get_case_or_404(resolved_store, case_id)
         return {
-            "case": case.to_api(),
+            "case": _case_to_api_with_preview(resolved_store, case),
             "stage_runs": [stage.to_api() for stage in resolved_store.list_stage_runs(case_id)],
             "artifacts": [artifact.to_api() for artifact in resolved_store.list_artifacts(case_id)],
         }
@@ -289,7 +289,7 @@ def create_app(
         root = Path(case.run_root)
         stage_runs = [stage.to_api() for stage in resolved_store.list_stage_runs(case_id)]
         return {
-            "case": case.to_api(),
+            "case": _case_to_api_with_preview(resolved_store, case),
             "stage_runs": stage_runs,
             "files": _standard_progress_files(case_id, root),
             "svg_attempts": _svg_attempts_progress(case_id, root),
@@ -558,6 +558,7 @@ def create_app(
             "materialize",
             "svg",
             "export",
+            "prepare",
             "parse_elements",
             "fuse_elements",
             "refine_elements",
@@ -565,6 +566,7 @@ def create_app(
             "process_assets",
             "compose",
             "compose_svg",
+            "package_run",
         }
         if stage not in accepted_stages:
             raise HTTPException(status_code=400, detail="stage is not supported")
@@ -1852,6 +1854,7 @@ def _runtime_service_health_error(decoded: Mapping[str, Any], name: str) -> str:
 
 def _case_to_api_with_preview(store: WorkbenchStore, case: CaseRecord) -> dict[str, Any]:
     payload = case.to_api()
+    classification = classify_run_root(case.run_root)
     source_path = Path(case.source_image_path).expanduser().resolve(strict=False)
     source_preview_url = (
         f"/api/cases/{case.case_id}/source-image"
@@ -1869,6 +1872,12 @@ def _case_to_api_with_preview(store: WorkbenchStore, case: CaseRecord) -> dict[s
     )
     payload["preview_url"] = source_preview_url or (preview.to_api()["url"] if preview else "")
     payload["editor_ready"] = (Path(case.run_root) / "reports" / "workbench" / "asset_draft.json").is_file()
+    payload["compatibility_mode"] = (
+        classification.mode
+        if classification.mode in {"v2", "legacy_readonly"}
+        else "none"
+    )
+    payload["can_fork_from_source"] = classification.can_fork_from_source
     return payload
 
 

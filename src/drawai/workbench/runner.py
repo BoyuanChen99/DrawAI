@@ -34,6 +34,7 @@ RerunStage = Literal[
     "materialize",
     "svg",
     "export",
+    "prepare",
     "parse_elements",
     "fuse_elements",
     "refine_elements",
@@ -41,6 +42,7 @@ RerunStage = Literal[
     "process_assets",
     "compose",
     "compose_svg",
+    "package_run",
 ]
 
 ANALYSIS_STAGES = (
@@ -60,10 +62,12 @@ STAGE_RESOURCES = {
 }
 
 RERUN_STAGE_ALIASES = {
+    "prepare": "analysis",
     "asset_analyze": "analysis",
     "materialize": "process_assets",
     "svg": "compose_svg",
     "compose": "compose_svg",
+    "package_run": "export",
 }
 
 

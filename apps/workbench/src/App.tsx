@@ -2,22 +2,32 @@ import { DragEvent, MouseEvent, PointerEvent, WheelEvent, useCallback, useEffect
 import { createPortal } from "react-dom";
 import {
   approveAssets,
+  composeV2Case,
   createUploadBatch,
   deleteBatch,
   downloadBatchPptx,
+  exportV2Case,
+  forkV2FromSource,
+  getAssetPackage,
   getAssets,
   getBatch,
   getCase,
   getCaseArtifacts,
   getCaseProgress,
+  getElements,
   getHealth,
+  getRunPackage,
   getSvgSource,
+  isDrawAiApiStatus,
   listBatches,
   processAssetElements,
+  processV2Asset,
   renameBatch,
   runCaseStage,
   runBatch,
   saveAssetDraft,
+  setActiveAssetResult,
+  type WorkbenchRerunStage,
 } from "./api";
 import ImageGenStudio, { type ImageGenConnectionSettings } from "./ImageGenStudio";
 import type {
@@ -34,7 +44,12 @@ import type {
   RuntimeActivityStatus,
   RuntimeServiceStatus,
   SourceStrategy,
-  StageRunRecord
+  StageRunRecord,
+  RunCompatibilityMode,
+  V2AssetPackage,
+  V2AssetResult,
+  V2ElementPlan,
+  V2RunPackage
 } from "./types";
 
 type AppView = "board" | "editor" | "svg";
@@ -43,6 +58,7 @@ type CanvasMode = "select" | "add" | "polygon";
 type AssetEditorView = "extraction" | "processing";
 type PipelineNodeState = "waiting" | "running" | "done" | "failed" | "review" | "stale";
 type AssetPlanChangeOptions = { track?: boolean };
+type V2ProcessorType = "crop" | "crop_nobg" | "image_generate" | "image_edit" | "chart_rebuild_reserved";
 type SvgEditableElement = { path: string; tag: string; label: string; detail: string; text: string; textEditable: boolean };
 type SvgDragState =
   | { kind: "move"; path: string; baseText: string; startClientX: number; startClientY: number; scaleX: number; scaleY: number }
@@ -115,7 +131,6 @@ const strategyClass: Record<SourceStrategy, string> = {
 const EDITOR_SOURCE_STRATEGIES = ["crop", "crop_nobg"] as const;
 type EditorSourceStrategy = (typeof EDITOR_SOURCE_STRATEGIES)[number];
 type AssetProcessingMode = EditorSourceStrategy | "gen";
-type WorkbenchRerunStage = "analysis" | "asset_analyze" | "materialize" | "svg" | "export";
 
 const ASSET_PROCESSING_MODES: Array<{ mode: AssetProcessingMode; label: string; disabled?: boolean }> = [
   { mode: "crop", label: "保留背景" },
@@ -128,46 +143,44 @@ const WORKBENCH_PROCESSING_MODE_REASON = "工作台处理模式设为";
 
 const PIPELINE_GROUPS = [
   {
-    title: "预处理",
-    subtitle: "规范化图像并收集基础信号",
+    title: "元素解析",
+    subtitle: "统一输入并融合解析器结果",
     nodes: [
-      { stage: "prepare", title: "图像预处理", detail: "工作图", description: "归一化输入图像，生成统一尺寸的工作图，作为后续所有阶段的基准。" },
-      { stage: "detect_structure", title: "提取结构（SAM）", detail: "版面候选", description: "用 SAM 对图像分割，提出版面结构候选区域。" },
-      { stage: "detect_text", title: "OCR解析", detail: "文本框", description: "OCR 识别图中文字，输出带位置的文本框。" }
+      { stage: "prepare", title: "准备输入", detail: "统一画布", description: "归一化源图像和画布尺寸，生成 v2 package 的基础运行上下文。" },
+      { stage: "parse_elements", title: "元素解析", detail: "SAM / OCR", description: "调用一个或多个解析器，输出统一格式的候选元素。" },
+      { stage: "fuse_elements", title: "候选融合", detail: "优先级 / NMS", description: "按融合规则合并候选框，保留来源、置信度和几何信息。" }
     ]
   },
   {
-    title: "素材规划",
-    subtitle: "合并信号并调整素材方案",
+    title: "Package 规划",
+    subtitle: "校正类型并生成资产计划",
     nodes: [
-      { stage: "assemble_boxir", title: "素材合并", detail: "SAM + OCR 合并", description: "合并 SAM 结构与 OCR 文本，整理成统一的素材集合。" },
-      { stage: "asset_plan", title: "素材规划", detail: "初始策略", description: "判断哪些区域适合 SVG 自绘，哪些区域需要保留为位图素材。" },
-      { stage: "asset_analyze", title: "素材调整", detail: "Codex 素材复核", description: "由 Codex 复核并调整素材方案，修正分类与边界。" }
+      { stage: "refine_elements", title: "Agent 校验", detail: "可选 refine", description: "可选地用 Agent 校正元素位置、大小和类型。" },
+      { stage: "plan_assets", title: "资产计划", detail: "处理意图", description: "为每个元素写入处理类型和资产 package 初始状态。" },
+      { stage: "process_assets", title: "资产处理", detail: "裁剪 / 去背景 / 生成", description: "按元素级处理器写入可追踪结果，单个资产失败不会吞掉错误。" }
     ]
   },
   {
     title: "可编辑输出",
-    subtitle: "用已确认素材生成可编辑 SVG",
+    subtitle: "组合、导出并封装运行包",
     nodes: [
-      { stage: "approved_asset_plan", title: "素材确认", detail: "人工确认方案", description: "等待人工确认素材方案，确认后才继续生成。" },
-      { stage: "asset_materialize", title: "素材处理", detail: "裁剪 / 去背景", description: "按已确认方案裁剪素材、去背景，并生成最终素材清单。" },
-      { stage: "svg", title: "SVG生成", detail: "可编辑重建", description: "将已确认的素材重建为可编辑的 SVG 结果。" },
-      { stage: "export", title: "PPT导出", detail: "PPTX", description: "将生成的 SVG 导出为 PPTX 文件。" }
+      { stage: "compose_svg", title: "SVG 组合", detail: "可编辑重建", description: "基于 active asset result 组合可编辑 SVG 与预览图。" },
+      { stage: "export", title: "PPT 导出", detail: "PPTX", description: "将 SVG 输出为 PPTX；默认拒绝 failed / unsupported 资产。" },
+      { stage: "package_run", title: "运行包封装", detail: "完整数据包", description: "保留最终渲染结果、资产 package 和后续可修改的运行上下文。" }
     ]
   }
 ] as const;
 
 const PIPELINE_STAGE_ORDER = [
   "prepare",
-  "detect_structure",
-  "detect_text",
-  "assemble_boxir",
-  "asset_plan",
-  "asset_analyze",
-  "approved_asset_plan",
-  "asset_materialize",
-  "svg",
-  "export"
+  "parse_elements",
+  "fuse_elements",
+  "refine_elements",
+  "plan_assets",
+  "process_assets",
+  "compose_svg",
+  "export",
+  "package_run"
 ] as const;
 
 export default function App() {
@@ -180,6 +193,15 @@ export default function App() {
   const [assetPlan, setAssetPlan] = useState<AssetPlan | null>(null);
   const [undoStack, setUndoStack] = useState<AssetPlan[]>([]);
   const [selectedAssetId, setSelectedAssetId] = useState("");
+  const [runPackage, setRunPackage] = useState<V2RunPackage | null>(null);
+  const [runCompatibility, setRunCompatibility] = useState<RunCompatibilityMode>("none");
+  const [canForkV2FromSource, setCanForkV2FromSource] = useState(false);
+  const [v2Elements, setV2Elements] = useState<V2ElementPlan[]>([]);
+  const [selectedV2ElementId, setSelectedV2ElementId] = useState("");
+  const [selectedAssetPackage, setSelectedAssetPackage] = useState<V2AssetPackage | null>(null);
+  const [v2PackageError, setV2PackageError] = useState("");
+  const [v2AssetLoadingElementId, setV2AssetLoadingElementId] = useState("");
+  const [v2ActionPending, setV2ActionPending] = useState("");
   const [activeView, setActiveView] = useState<AppView>("board");
   const [boardMode, setBoardMode] = useState<BoardMode>("process");
   const [submitOpen, setSubmitOpen] = useState(false);
@@ -253,13 +275,106 @@ export default function App() {
     return assets.asset_plan;
   }
 
+  function clearV2PackageState() {
+    setRunPackage(null);
+    setRunCompatibility("none");
+    setCanForkV2FromSource(false);
+    setV2Elements([]);
+    setSelectedV2ElementId("");
+    setSelectedAssetPackage(null);
+    setV2PackageError("");
+    setV2AssetLoadingElementId("");
+  }
+
+  function clearAssetEditingState() {
+    setAssetPlan(null);
+    setSelectedAssetId("");
+    setUndoStack([]);
+    clearV2PackageState();
+  }
+
+  function applyLegacyCompatibility(detail: CaseDetail) {
+    setRunPackage(null);
+    setRunCompatibility("legacy_readonly");
+    setCanForkV2FromSource(Boolean(detail.case.can_fork_from_source));
+    setV2Elements([]);
+    setSelectedV2ElementId("");
+    setSelectedAssetPackage(null);
+    setV2PackageError("");
+  }
+
+  async function loadV2PackageForCase(caseId: string, preferredElementId = "", options: { quiet?: boolean } = {}): Promise<boolean> {
+    try {
+      const packagePayload = await getRunPackage(caseId);
+      const elementsPayload = await getElements(caseId);
+      const elements = elementsPayload.elements.length > 0 ? elementsPayload.elements : packagePayload.package.elements || [];
+      const nextElementId = preferredElementId && elements.some((element) => element.element_id === preferredElementId)
+        ? preferredElementId
+        : elements[0]?.element_id || "";
+      const packageFromRun = nextElementId ? assetPackageFromRunPackage(packagePayload.package, nextElementId) : null;
+      let nextAssetPackage = packageFromRun;
+      if (nextElementId) {
+        setV2AssetLoadingElementId(nextElementId);
+        try {
+          nextAssetPackage = (await getAssetPackage(caseId, nextElementId)).asset_package;
+        } finally {
+          setV2AssetLoadingElementId((current) => (current === nextElementId ? "" : current));
+        }
+      }
+      setRunPackage(packagePayload.package);
+      setRunCompatibility(packagePayload.compatibility.mode === "v2" ? "v2" : packagePayload.compatibility.mode);
+      setCanForkV2FromSource(packagePayload.compatibility.can_fork_from_source);
+      setV2Elements(elements);
+      setSelectedV2ElementId(nextElementId);
+      setSelectedAssetPackage(nextAssetPackage);
+      setV2PackageError("");
+      return true;
+    } catch (err) {
+      setV2AssetLoadingElementId("");
+      if (isDrawAiApiStatus(err, 404)) {
+        return false;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      setV2PackageError(message);
+      if (!options.quiet) throw err;
+      return false;
+    }
+  }
+
+  async function selectV2Element(elementId: string) {
+    if (!activeCase || !runPackage) return;
+    setSelectedV2ElementId(elementId);
+    setV2PackageError("");
+    setV2AssetLoadingElementId(elementId);
+    try {
+      const response = await getAssetPackage(activeCase.case.case_id, elementId);
+      setSelectedAssetPackage(response.asset_package);
+    } catch (err) {
+      if (isDrawAiApiStatus(err, 404)) {
+        setSelectedAssetPackage(assetPackageFromRunPackage(runPackage, elementId));
+        return;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      setV2PackageError(message);
+      throw err;
+    } finally {
+      setV2AssetLoadingElementId((current) => (current === elementId ? "" : current));
+    }
+  }
+
   async function selectCase(caseId: string): Promise<{ detail: CaseDetail; hasAssetPlan: boolean }> {
     const detail = await getCase(caseId);
     setActiveCase(detail);
     setCaseProgress(await getCaseProgress(caseId));
-    setAssetPlan(null);
-    setSelectedAssetId("");
-    setUndoStack([]);
+    clearAssetEditingState();
+    const hasV2Package = await loadV2PackageForCase(caseId);
+    if (hasV2Package) {
+      return { detail, hasAssetPlan: false };
+    }
+    if (detail.case.compatibility_mode === "legacy_readonly" || caseHasLegacyArtifacts(detail)) {
+      applyLegacyCompatibility(detail);
+      return { detail, hasAssetPlan: false };
+    }
     try {
       await loadAssetsForCase(caseId);
       return { detail, hasAssetPlan: true };
@@ -295,35 +410,47 @@ export default function App() {
           const detail = await getCase(activeCase.case.case_id);
           setActiveCase(detail);
           setCaseProgress(await getCaseProgress(activeCase.case.case_id));
+          if (detail.case.compatibility_mode === "v2" || runCompatibility === "v2") {
+            await loadV2PackageForCase(activeCase.case.case_id, selectedV2ElementId, { quiet: true });
+          } else if (detail.case.compatibility_mode === "legacy_readonly" && runCompatibility !== "legacy_readonly") {
+            applyLegacyCompatibility(detail);
+          }
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     }, 2500);
     return () => window.clearInterval(timer);
-  }, [activeBatch?.batch.batch_id, activeCase?.case.case_id]);
+  }, [activeBatch?.batch.batch_id, activeCase?.case.case_id, runCompatibility, selectedV2ElementId]);
 
   const activeAssetPlan = activeCase && assetPlan?.case_id === activeCase.case.case_id ? assetPlan : null;
+  const activeRunPackage = activeCase && runPackage?.run_id === activeCase.case.case_id ? runPackage : null;
+  const legacyReadOnly = runCompatibility === "legacy_readonly";
+  const v2PackageReady = Boolean(activeCase && activeRunPackage && runCompatibility === "v2");
   const selectedAsset = activeAssetPlan?.elements.find((item) => item.box_id === selectedAssetId) || null;
   const figureArtifact = latestArtifact(activeCase?.artifacts || [], "figure");
   const renderedArtifact = latestArtifact(activeCase?.artifacts || [], "rendered_png");
   const activeBatchCase = activeBatch?.cases.find((item) => item.case_id === activeCase?.case.case_id) || null;
   const activeCaseRunning = Boolean(
     activeCase &&
-      (isCaseActivelyRunning(activeCase, caseProgress) || assetsRunPendingCaseId === activeCase.case.case_id)
+      (isCaseActivelyRunning(activeCase, caseProgress) ||
+        assetsRunPendingCaseId === activeCase.case.case_id ||
+        Boolean(v2ActionPending))
   );
   const assetsReady = Boolean(
     activeCase &&
-      (activeAssetPlan ||
+      !legacyReadOnly &&
+      (v2PackageReady ||
+        activeAssetPlan ||
         activeBatchCase?.editor_ready ||
         latestProgressFile(caseProgress, "asset_draft")?.exists ||
         latestArtifact(activeCase.artifacts, "asset_draft"))
   );
   const canvasReady = Boolean(activeCase && caseCanOpenCanvas(activeCase, caseProgress) && !activeCaseRunning);
-  const canRunFromAssets = Boolean(activeCase && assetsReady && !activeCaseRunning);
+  const canRunFromAssets = Boolean(activeCase && assetsReady && !activeCaseRunning && !legacyReadOnly);
 
   useEffect(() => {
-    if (!activeCase || activeAssetPlan || !assetsReady || activeCaseRunning) return;
+    if (!activeCase || activeAssetPlan || !assetsReady || activeCaseRunning || runCompatibility !== "none") return;
     let canceled = false;
     getAssets(activeCase.case.case_id)
       .then((assets) => {
@@ -338,7 +465,7 @@ export default function App() {
     return () => {
       canceled = true;
     };
-  }, [activeCase?.case.case_id, activeAssetPlan, activeCaseRunning, activeView, assetsReady, selectedAssetId]);
+  }, [activeCase?.case.case_id, activeAssetPlan, activeCaseRunning, activeView, assetsReady, runCompatibility, selectedAssetId]);
 
   const deleteSelectedAsset = useCallback(() => {
     if (!activeAssetPlan || !selectedAsset) return;
@@ -395,10 +522,114 @@ export default function App() {
     return response.asset_plan;
   }
 
+  async function refreshCaseAfterV2Mutation(caseId: string, preferredElementId = selectedV2ElementId) {
+    const detail = await getCase(caseId);
+    setActiveCase(detail);
+    setCaseProgress(await getCaseProgress(caseId));
+    if (activeBatch?.batch.batch_id === detail.case.batch_id) {
+      setActiveBatch(await getBatch(detail.case.batch_id));
+    }
+    await refreshBatches();
+    await loadV2PackageForCase(caseId, preferredElementId, { quiet: true });
+    return detail;
+  }
+
+  async function processSelectedV2Asset(processor: V2ProcessorType) {
+    if (!activeCase || !selectedV2ElementId || processor === "chart_rebuild_reserved") return;
+    const caseId = activeCase.case.case_id;
+    setV2ActionPending(`process:${processor}`);
+    setV2PackageError("");
+    try {
+      const response = await processV2Asset(caseId, selectedV2ElementId, processor);
+      setSelectedAssetPackage(response.asset_package);
+      mergeCaseStatus(response.case);
+      await refreshCaseAfterV2Mutation(caseId, selectedV2ElementId);
+    } catch (err) {
+      await loadV2PackageForCase(caseId, selectedV2ElementId, { quiet: true });
+      const message = err instanceof Error ? err.message : String(err);
+      setV2PackageError(message);
+      throw err;
+    } finally {
+      setV2ActionPending("");
+    }
+  }
+
+  async function activateV2AssetResult(resultId: string) {
+    if (!activeCase || !selectedV2ElementId) return;
+    const caseId = activeCase.case.case_id;
+    setV2ActionPending(`active:${resultId}`);
+    setV2PackageError("");
+    try {
+      const response = await setActiveAssetResult(caseId, selectedV2ElementId, resultId);
+      setSelectedAssetPackage(response.asset_package);
+      mergeCaseStatus(response.case);
+      await refreshCaseAfterV2Mutation(caseId, selectedV2ElementId);
+    } finally {
+      setV2ActionPending("");
+    }
+  }
+
+  async function composeActiveV2Case() {
+    if (!activeCase || runCompatibility !== "v2") return;
+    const caseId = activeCase.case.case_id;
+    setV2ActionPending("compose");
+    setAssetsRunPendingCaseId(caseId);
+    setV2PackageError("");
+    try {
+      const response = await composeV2Case(caseId);
+      mergeCaseStatus(response.case);
+      await refreshCaseAfterV2Mutation(caseId, selectedV2ElementId);
+    } finally {
+      setV2ActionPending("");
+      setAssetsRunPendingCaseId((current) => (current === caseId ? "" : current));
+    }
+  }
+
+  async function exportActiveV2Case() {
+    if (!activeCase || runCompatibility !== "v2") return;
+    const caseId = activeCase.case.case_id;
+    setV2ActionPending("export");
+    setPptxExportPendingCaseId(caseId);
+    setV2PackageError("");
+    try {
+      const response = await exportV2Case(caseId);
+      mergeCaseStatus(response.case);
+      await refreshCaseAfterV2Mutation(caseId, selectedV2ElementId);
+    } finally {
+      setV2ActionPending("");
+      setPptxExportPendingCaseId((current) => (current === caseId ? "" : current));
+    }
+  }
+
+  async function forkActiveCaseToV2() {
+    if (!activeCase || !canForkV2FromSource) return;
+    const currentCase = activeCase.case;
+    setV2ActionPending("fork");
+    setV2PackageError("");
+    try {
+      const response = await forkV2FromSource(currentCase.case_id);
+      const batchDetail = await getBatch(response.case.batch_id);
+      setActiveBatch(batchDetail);
+      await refreshBatches();
+      await selectCase(response.case.case_id);
+      setActiveView("board");
+    } finally {
+      setV2ActionPending("");
+    }
+  }
+
   async function runFromAssets() {
     if (!activeCase) return;
     if (activeCaseRunning) {
       setError("这张图正在运行。");
+      return;
+    }
+    if (runCompatibility === "legacy_readonly") {
+      setError("这是历史只读结果。请先从源图创建 v2 run，再进行处理。");
+      return;
+    }
+    if (runCompatibility === "v2") {
+      await composeActiveV2Case();
       return;
     }
     if (!assetsReady) {
@@ -437,6 +668,14 @@ export default function App() {
 
   async function openAssetsEditor() {
     if (!activeCase) return;
+    if (runCompatibility === "legacy_readonly") {
+      setError("这是历史只读结果，不能继续编辑素材。");
+      return;
+    }
+    if (runCompatibility === "v2") {
+      setActiveView("board");
+      return;
+    }
     if (!assetsReady) {
       setError("素材还没准备好。");
       return;
@@ -474,9 +713,7 @@ export default function App() {
     setActiveBatch(null);
     setActiveCase(null);
     setCaseProgress(null);
-    setAssetPlan(null);
-    setSelectedAssetId("");
-    setUndoStack([]);
+    clearAssetEditingState();
   }
 
   async function runTaskBatch(batchId: string) {
@@ -594,9 +831,7 @@ export default function App() {
     } else {
       setActiveCase(null);
       setCaseProgress(null);
-      setAssetPlan(null);
-      setSelectedAssetId("");
-      setUndoStack([]);
+      clearAssetEditingState();
     }
   }
 
@@ -695,6 +930,15 @@ export default function App() {
           canvasReady={canvasReady}
           runInProgress={activeCaseRunning}
           canRunFromAssets={canRunFromAssets}
+          runCompatibility={runCompatibility}
+          runPackage={activeRunPackage}
+          v2Elements={v2Elements}
+          selectedV2ElementId={selectedV2ElementId}
+          selectedAssetPackage={selectedAssetPackage}
+          v2PackageError={v2PackageError}
+          v2AssetLoadingElementId={v2AssetLoadingElementId}
+          v2ActionPending={v2ActionPending}
+          canForkV2FromSource={canForkV2FromSource}
           caseActionPendingId={assetsRunPendingCaseId}
           pptxExportPendingCaseId={pptxExportPendingCaseId}
           batchPptxDownloadPendingId={batchPptxDownloadPendingId}
@@ -713,6 +957,12 @@ export default function App() {
           onExportPptx={(caseId) => exportPptxForCase(caseId)}
           onDownloadPptx={(caseId, artifact) => downloadPptxArtifactForCase(caseId, artifact).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
           onDownloadBatchPptx={(batchId) => downloadBatchPptxForBatch(batchId)}
+          onSelectV2Element={(elementId) => selectV2Element(elementId).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+          onProcessV2Asset={(processor) => processSelectedV2Asset(processor).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+          onSetActiveV2Result={(resultId) => activateV2AssetResult(resultId).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+          onComposeV2={() => composeActiveV2Case().catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+          onExportV2={() => exportActiveV2Case().catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+          onForkV2FromSource={() => forkActiveCaseToV2().catch((err) => setError(err instanceof Error ? err.message : String(err)))}
         />
         )
       ) : activeView === "editor" ? (
@@ -744,6 +994,7 @@ export default function App() {
           canRunFromAssets={canRunFromAssets}
           runInProgress={activeCaseRunning}
           onRunFromAssets={() => runFromAssets().catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+          readOnly={legacyReadOnly}
         />
       )}
       {submitOpen && (
@@ -795,6 +1046,15 @@ function BoardWorkspace({
   canvasReady,
   runInProgress,
   canRunFromAssets,
+  runCompatibility,
+  runPackage,
+  v2Elements,
+  selectedV2ElementId,
+  selectedAssetPackage,
+  v2PackageError,
+  v2AssetLoadingElementId,
+  v2ActionPending,
+  canForkV2FromSource,
   caseActionPendingId,
   pptxExportPendingCaseId,
   batchPptxDownloadPendingId,
@@ -812,7 +1072,13 @@ function BoardWorkspace({
   onRetryCase,
   onExportPptx,
   onDownloadPptx,
-  onDownloadBatchPptx
+  onDownloadBatchPptx,
+  onSelectV2Element,
+  onProcessV2Asset,
+  onSetActiveV2Result,
+  onComposeV2,
+  onExportV2,
+  onForkV2FromSource
 }: {
   batches: BatchRecord[];
   activeBatch: BatchDetail | null;
@@ -822,6 +1088,15 @@ function BoardWorkspace({
   canvasReady: boolean;
   runInProgress: boolean;
   canRunFromAssets: boolean;
+  runCompatibility: RunCompatibilityMode;
+  runPackage: V2RunPackage | null;
+  v2Elements: V2ElementPlan[];
+  selectedV2ElementId: string;
+  selectedAssetPackage: V2AssetPackage | null;
+  v2PackageError: string;
+  v2AssetLoadingElementId: string;
+  v2ActionPending: string;
+  canForkV2FromSource: boolean;
   caseActionPendingId: string;
   pptxExportPendingCaseId: string;
   batchPptxDownloadPendingId: string;
@@ -840,6 +1115,12 @@ function BoardWorkspace({
   onExportPptx: (caseId: string) => Promise<ArtifactRecord[]>;
   onDownloadPptx: (caseId: string, artifact: ArtifactRecord) => void | Promise<void>;
   onDownloadBatchPptx: (batchId: string) => void | Promise<void>;
+  onSelectV2Element: (elementId: string) => void;
+  onProcessV2Asset: (processor: V2ProcessorType) => void;
+  onSetActiveV2Result: (resultId: string) => void;
+  onComposeV2: () => void;
+  onExportV2: () => void;
+  onForkV2FromSource: () => void;
 }) {
   return (
     <main className="board-workspace">
@@ -852,6 +1133,7 @@ function BoardWorkspace({
           canvasReady={canvasReady}
           runInProgress={runInProgress}
           canRunFromAssets={canRunFromAssets}
+          runCompatibility={runCompatibility}
           caseActionPendingId={caseActionPendingId}
           pptxExportPendingCaseId={pptxExportPendingCaseId}
           batchPptxDownloadPendingId={batchPptxDownloadPendingId}
@@ -874,6 +1156,21 @@ function BoardWorkspace({
         <TaskDetailPanel
           caseDetail={activeCase}
           progress={caseProgress}
+          runCompatibility={runCompatibility}
+          runPackage={runPackage}
+          v2Elements={v2Elements}
+          selectedV2ElementId={selectedV2ElementId}
+          selectedAssetPackage={selectedAssetPackage}
+          v2PackageError={v2PackageError}
+          v2AssetLoadingElementId={v2AssetLoadingElementId}
+          v2ActionPending={v2ActionPending}
+          canForkV2FromSource={canForkV2FromSource}
+          onSelectV2Element={onSelectV2Element}
+          onProcessV2Asset={onProcessV2Asset}
+          onSetActiveV2Result={onSetActiveV2Result}
+          onComposeV2={onComposeV2}
+          onExportV2={onExportV2}
+          onForkV2FromSource={onForkV2FromSource}
         />
       </div>
     </main>
@@ -1107,10 +1404,40 @@ function TaskDeleteDialog({
 
 function TaskDetailPanel({
   caseDetail,
-  progress
+  progress,
+  runCompatibility,
+  runPackage,
+  v2Elements,
+  selectedV2ElementId,
+  selectedAssetPackage,
+  v2PackageError,
+  v2AssetLoadingElementId,
+  v2ActionPending,
+  canForkV2FromSource,
+  onSelectV2Element,
+  onProcessV2Asset,
+  onSetActiveV2Result,
+  onComposeV2,
+  onExportV2,
+  onForkV2FromSource
 }: {
   caseDetail: CaseDetail | null;
   progress: CaseProgress | null;
+  runCompatibility: RunCompatibilityMode;
+  runPackage: V2RunPackage | null;
+  v2Elements: V2ElementPlan[];
+  selectedV2ElementId: string;
+  selectedAssetPackage: V2AssetPackage | null;
+  v2PackageError: string;
+  v2AssetLoadingElementId: string;
+  v2ActionPending: string;
+  canForkV2FromSource: boolean;
+  onSelectV2Element: (elementId: string) => void;
+  onProcessV2Asset: (processor: V2ProcessorType) => void;
+  onSetActiveV2Result: (resultId: string) => void;
+  onComposeV2: () => void;
+  onExportV2: () => void;
+  onForkV2FromSource: () => void;
 }) {
   if (!caseDetail) {
     return (
@@ -1122,8 +1449,239 @@ function TaskDetailPanel({
   return (
     <aside className="task-detail-panel">
       <PipelineProgressPanel caseDetail={caseDetail} progress={progress} />
+      {runCompatibility === "legacy_readonly" && (
+        <LegacyReadOnlyBanner
+          canForkV2FromSource={canForkV2FromSource}
+          actionPending={v2ActionPending === "fork"}
+          onForkV2FromSource={onForkV2FromSource}
+        />
+      )}
+      {runCompatibility === "v2" && (
+        <V2AssetPackagePanel
+          runPackage={runPackage}
+          elements={v2Elements}
+          selectedElementId={selectedV2ElementId}
+          selectedAssetPackage={selectedAssetPackage}
+          loadingElementId={v2AssetLoadingElementId}
+          packageError={v2PackageError}
+          actionPending={v2ActionPending}
+          onSelectElement={onSelectV2Element}
+          onProcessAsset={onProcessV2Asset}
+          onSetActiveResult={onSetActiveV2Result}
+          onCompose={onComposeV2}
+          onExport={onExportV2}
+        />
+      )}
       {caseDetail.case.error_message && <p className="detail-error">{shortenError(caseDetail.case.error_message)}</p>}
     </aside>
+  );
+}
+
+function LegacyReadOnlyBanner({
+  canForkV2FromSource,
+  actionPending,
+  onForkV2FromSource
+}: {
+  canForkV2FromSource: boolean;
+  actionPending: boolean;
+  onForkV2FromSource: () => void;
+}) {
+  return (
+    <section className="legacy-readonly-banner">
+      <div>
+        <strong>历史结果只读</strong>
+        <span>可以继续预览和下载已有 SVG / PPTX，但素材处理、SVG 编辑、重新组合和导出已关闭。</span>
+      </div>
+      {canForkV2FromSource ? (
+        <button type="button" className={actionPending ? "running" : ""} disabled={actionPending} onClick={onForkV2FromSource}>
+          {actionPending && <ButtonSpinner />}
+          {actionPending ? "创建中" : "从源图创建 v2 run"}
+        </button>
+      ) : (
+        <em>源图不可用，无法创建 v2 run</em>
+      )}
+    </section>
+  );
+}
+
+function V2AssetPackagePanel({
+  runPackage,
+  elements,
+  selectedElementId,
+  selectedAssetPackage,
+  loadingElementId,
+  packageError,
+  actionPending,
+  onSelectElement,
+  onProcessAsset,
+  onSetActiveResult,
+  onCompose,
+  onExport
+}: {
+  runPackage: V2RunPackage | null;
+  elements: V2ElementPlan[];
+  selectedElementId: string;
+  selectedAssetPackage: V2AssetPackage | null;
+  loadingElementId: string;
+  packageError: string;
+  actionPending: string;
+  onSelectElement: (elementId: string) => void;
+  onProcessAsset: (processor: V2ProcessorType) => void;
+  onSetActiveResult: (resultId: string) => void;
+  onCompose: () => void;
+  onExport: () => void;
+}) {
+  const selectedElement = elements.find((element) => element.element_id === selectedElementId) || null;
+  const packageStatus = selectedAssetPackage?.status || "pending";
+  const packageStatusClass = packageStatus === "failed"
+    ? "asset-status-failed"
+    : packageStatus === "unsupported"
+      ? "asset-status-unsupported"
+      : "";
+  const activeResultId = selectedAssetPackage?.active_result?.result_id || "";
+  const canProcess = Boolean(selectedElement && !actionPending);
+  const canCompose = Boolean(runPackage && !actionPending && !hasBlockingAssetPackage(runPackage));
+  const canExport = Boolean(runPackage && !actionPending && !hasBlockingAssetPackage(runPackage) && runPackage.compose_outputs);
+  const activeAction = (prefix: string) => actionPending.startsWith(prefix);
+
+  return (
+    <section className="v2-package-panel">
+      <header className="v2-package-head">
+        <div>
+          <span>V2 Package</span>
+          <strong>{runPackage?.metadata?.last_stage ? humanize(String(runPackage.metadata.last_stage)) : "运行包"}</strong>
+        </div>
+        <div className="v2-package-actions">
+          <button type="button" className={actionPending === "compose" ? "running" : ""} disabled={!canCompose} onClick={onCompose}>
+            {actionPending === "compose" && <ButtonSpinner />}
+            Compose
+          </button>
+          <button type="button" className={actionPending === "export" ? "running primary" : "primary"} disabled={!canExport} onClick={onExport}>
+            {actionPending === "export" && <ButtonSpinner />}
+            Export
+          </button>
+        </div>
+      </header>
+
+      {packageError && <p className="detail-error">{shortenError(packageError)}</p>}
+
+      <div className="v2-element-list" aria-label="v2 元素列表">
+        {elements.map((element) => (
+          <button
+            type="button"
+            key={element.element_id}
+            className={element.element_id === selectedElementId ? "active" : ""}
+            disabled={loadingElementId === element.element_id}
+            onClick={() => onSelectElement(element.element_id)}
+          >
+            <strong>{element.element_id}</strong>
+            <span>{humanize(element.element_type)}</span>
+            <em>{humanize(element.processing_intent.processing_type)}</em>
+          </button>
+        ))}
+        {elements.length === 0 && <EmptyState label="还没有 v2 元素" />}
+      </div>
+
+      <div className="v2-asset-drawer">
+        {selectedElement ? (
+          <>
+            <div className="v2-asset-summary">
+              <div>
+                <span>类型</span>
+                <strong>{humanize(selectedElement.element_type)}</strong>
+              </div>
+              <div>
+                <span>BBox</span>
+                <strong>{bboxText(selectedElement.bbox)}</strong>
+              </div>
+              <div>
+                <span>处理</span>
+                <strong>{humanize(selectedElement.processing_intent.processing_type)}</strong>
+              </div>
+              <div className={packageStatusClass}>
+                <span>状态</span>
+                <strong>{humanize(packageStatus)}</strong>
+              </div>
+            </div>
+            <div className="v2-asset-intent">
+              <span>{selectedElement.processing_intent.object_type}</span>
+              <code>{compactJson(selectedElement.processing_intent.parameters)}</code>
+            </div>
+
+            <div className="v2-processor-toolbar" aria-label="v2 资产处理器">
+              <button type="button" disabled={!canProcess || activeAction("process:")} onClick={() => onProcessAsset("crop")}>
+                {actionPending === "process:crop" && <ButtonSpinner />}
+                Crop
+              </button>
+              <button type="button" disabled={!canProcess || activeAction("process:")} onClick={() => onProcessAsset("crop_nobg")}>
+                {actionPending === "process:crop_nobg" && <ButtonSpinner />}
+                No BG
+              </button>
+              <button type="button" disabled={!canProcess || activeAction("process:")} onClick={() => onProcessAsset("image_generate")}>
+                {actionPending === "process:image_generate" && <ButtonSpinner />}
+                Generate
+              </button>
+              <button type="button" disabled={!canProcess || activeAction("process:")} onClick={() => onProcessAsset("image_edit")}>
+                {actionPending === "process:image_edit" && <ButtonSpinner />}
+                Edit
+              </button>
+              <button type="button" className="asset-status-unsupported" disabled title="图表 Agent 接口已预留，当前版本不执行">
+                Chart Agent
+              </button>
+            </div>
+
+            {selectedAssetPackage?.failure && (
+              <p className="asset-status-failed">{shortenError(selectedAssetPackage.failure)}</p>
+            )}
+
+            <div className="v2-result-list">
+              <div className="v2-subhead">
+                <span>Active result</span>
+                <strong>{activeResultId || "未设置"}</strong>
+              </div>
+              {(selectedAssetPackage?.all_results || []).map((result) => (
+                <div className="v2-result-row" key={result.result_id}>
+                  <div>
+                    <strong>{result.result_id}</strong>
+                    <span>{humanize(result.processor_type)} · {humanize(result.kind)}{result.path ? ` · ${result.path}` : ""}</span>
+                  </div>
+                  {result.result_id === activeResultId ? (
+                    <em>Active</em>
+                  ) : (
+                    <button type="button" disabled={Boolean(actionPending)} onClick={() => onSetActiveResult(result.result_id)}>
+                      {actionPending === `active:${result.result_id}` && <ButtonSpinner />}
+                      Set active
+                    </button>
+                  )}
+                </div>
+              ))}
+              {(!selectedAssetPackage || selectedAssetPackage.all_results.length === 0) && <EmptyState label="还没有处理结果" />}
+            </div>
+
+            <div className="v2-processor-history">
+              <div className="v2-subhead">
+                <span>Processor history</span>
+                <strong>{selectedAssetPackage?.processor_runs.length || 0}</strong>
+              </div>
+              {(selectedAssetPackage?.processor_runs || []).slice().reverse().map((run, index) => (
+                <div className="v2-history-row" key={`${run.processor_type}-${run.started_at}-${index}`}>
+                  <div>
+                    <strong>{humanize(run.processor_type)}</strong>
+                    <span>{durationText(run.started_at, run.ended_at)}</span>
+                  </div>
+                  <em className={run.status === "failed" ? "asset-status-failed" : run.status === "unsupported" ? "asset-status-unsupported" : ""}>
+                    {humanize(run.status)}
+                  </em>
+                </div>
+              ))}
+              {(!selectedAssetPackage || selectedAssetPackage.processor_runs.length === 0) && <EmptyState label="还没有处理历史" />}
+            </div>
+          </>
+        ) : (
+          <EmptyState label="选择一个 v2 元素" />
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -1137,7 +1695,8 @@ function SvgWorkspace({
   pptxExporting,
   canRunFromAssets,
   runInProgress,
-  onRunFromAssets
+  onRunFromAssets,
+  readOnly
 }: {
   activeCase: CaseDetail | null;
   progress: CaseProgress | null;
@@ -1149,6 +1708,7 @@ function SvgWorkspace({
   canRunFromAssets: boolean;
   runInProgress: boolean;
   onRunFromAssets: () => void;
+  readOnly: boolean;
 }) {
   return (
     <main className="svg-workspace">
@@ -1164,6 +1724,7 @@ function SvgWorkspace({
           canRunFromAssets={canRunFromAssets}
           runInProgress={runInProgress}
           onRunFromAssets={onRunFromAssets}
+          readOnly={readOnly}
           standalone
         />
       ) : (
@@ -1188,6 +1749,7 @@ function SvgResultStudio({
   canRunFromAssets,
   runInProgress,
   onRunFromAssets,
+  readOnly,
   standalone = false
 }: {
   caseDetail: CaseDetail;
@@ -1200,6 +1762,7 @@ function SvgResultStudio({
   canRunFromAssets: boolean;
   runInProgress: boolean;
   onRunFromAssets: () => void;
+  readOnly: boolean;
   standalone?: boolean;
 }) {
   const caseId = caseDetail.case.case_id;
@@ -1294,6 +1857,7 @@ function SvgResultStudio({
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (isEditableTarget(event.target)) return;
+      if (readOnly) return;
       if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === "z") {
         event.preventDefault();
         undoSvgEdit();
@@ -1307,7 +1871,7 @@ function SvgResultStudio({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [draftText, selectedPath]);
+  }, [draftText, readOnly, selectedPath]);
 
   function changeCanvasZoom(delta: number) {
     setZoom((value) => clamp(Number((value + delta).toFixed(2)), 0.3, 4));
@@ -1334,7 +1898,7 @@ function SvgResultStudio({
   }
 
   function beginSvgDrag(event: PointerEvent<HTMLDivElement>) {
-    if (!draftText || model.error || showOriginalCompare) return;
+    if (readOnly || !draftText || model.error || showOriginalCompare) return;
     if (event.target instanceof Element && event.target.closest(".svg-resize-handle, .svg-inline-text-editor")) return;
     const target = event.target instanceof Element ? event.target.closest("[data-drawai-path]") : null;
     if (!target) {
@@ -1363,7 +1927,7 @@ function SvgResultStudio({
   }
 
   function beginSvgResize(event: PointerEvent<HTMLButtonElement>) {
-    if (!selectedPath || !draftText || model.error) return;
+    if (readOnly || !selectedPath || !draftText || model.error) return;
     event.preventDefault();
     event.stopPropagation();
     recordSvgUndo();
@@ -1408,12 +1972,12 @@ function SvgResultStudio({
   }
 
   function updateSelectedText(value: string) {
-    if (!selectedPath || !draftText || model.error) return;
+    if (readOnly || !selectedPath || !draftText || model.error) return;
     setDraftText(updateSvgElementText(draftText, selectedPath, value));
   }
 
   function deleteSvgElement(path = selectedPath) {
-    if (!path || !draftText || model.error) return;
+    if (readOnly || !path || !draftText || model.error) return;
     recordSvgUndo();
     setDraftText(removeSvgElement(draftText, path));
     setSelectedPath("");
@@ -1421,6 +1985,7 @@ function SvgResultStudio({
   }
 
   function onSvgContextMenu(event: MouseEvent<HTMLDivElement>) {
+    if (readOnly) return;
     const target = event.target instanceof Element ? event.target.closest("[data-drawai-path]") : null;
     if (!target) return;
     const path = target.getAttribute("data-drawai-path") || "";
@@ -1478,7 +2043,7 @@ function SvgResultStudio({
           </button>
           <div className="editor-title">
             <strong>{caseDetail.case.name}</strong>
-            <span>{dirty ? "有未保存的本地修改" : `${humanize(caseDetail.case.status)} · ${humanize(caseDetail.case.phase)} / ${humanize(caseDetail.case.stage)}`}</span>
+            <span>{readOnly ? "历史只读结果" : dirty ? "有未保存的本地修改" : `${humanize(caseDetail.case.status)} · ${humanize(caseDetail.case.phase)} / ${humanize(caseDetail.case.stage)}`}</span>
           </div>
           {svgUrl ? (
             <div className="editor-toolbar" aria-label="SVG 画布工具">
@@ -1486,9 +2051,11 @@ function SvgResultStudio({
                 <button className="icon-button" title="缩小" disabled={zoom <= 0.3} onClick={() => changeCanvasZoom(-0.1)}>-</button>
                 <span className="zoom-readout">{Math.round(zoom * 100)}%</span>
                 <button className="icon-button" title="放大" disabled={zoom >= 4} onClick={() => changeCanvasZoom(0.1)}>+</button>
-                <button className="icon-button" title="撤销 Command+Z" disabled={undoStack.length === 0} onClick={undoSvgEdit} aria-label="撤销">
-                  <UndoToolIcon />
-                </button>
+                {!readOnly && (
+                  <button className="icon-button" title="撤销 Command+Z" disabled={undoStack.length === 0} onClick={undoSvgEdit} aria-label="撤销">
+                    <UndoToolIcon />
+                  </button>
+                )}
                 <button
                   className="compare-preview-button"
                   title={originalImageUrl ? "按住显示原图，松开恢复 SVG" : "原图还没准备好"}
@@ -1516,6 +2083,9 @@ function SvgResultStudio({
           ) : (
             <div className="toolbar-note">SVG 结果还没准备好</div>
           )}
+          {readOnly ? (
+            <div className="toolbar-note">历史结果只读，可在任务卡下载已有文件</div>
+          ) : (
           <div className="editor-actions">
             <button className={runInProgress ? "running" : ""} disabled={!canRunFromAssets} onClick={onRunFromAssets}>
               {runInProgress && <ButtonSpinner />}
@@ -1540,6 +2110,7 @@ function SvgResultStudio({
               </div>
             </div>
           </div>
+          )}
         </div>,
         topbarTarget
       )
@@ -1580,7 +2151,7 @@ function SvgResultStudio({
               ) : (
                 <div dangerouslySetInnerHTML={{ __html: model.svg }} />
               )}
-              {!showOriginalCompare && selectedElement && selectionOverlay && (
+              {!readOnly && !showOriginalCompare && selectedElement && selectionOverlay && (
                 <>
                   <div className="svg-selection-box" style={svgOverlayStyle(selectionOverlay)}>
                     {["nw", "ne", "sw", "se"].map((handle) => (
@@ -1661,6 +2232,7 @@ function TaskSelectionWorkspace({
   canvasReady,
   runInProgress,
   canRunFromAssets,
+  runCompatibility,
   caseActionPendingId,
   pptxExportPendingCaseId,
   batchPptxDownloadPendingId,
@@ -1687,6 +2259,7 @@ function TaskSelectionWorkspace({
   canvasReady: boolean;
   runInProgress: boolean;
   canRunFromAssets: boolean;
+  runCompatibility: RunCompatibilityMode;
   caseActionPendingId: string;
   pptxExportPendingCaseId: string;
   batchPptxDownloadPendingId: string;
@@ -1713,9 +2286,11 @@ function TaskSelectionWorkspace({
   const [artifactLoading, setArtifactLoading] = useState<Record<string, boolean>>({});
   const contextCase = contextMenu ? cases.find((item) => item.case_id === contextMenu.caseId) || null : null;
   const contextSelected = Boolean(contextCase && activeCase?.case.case_id === contextCase.case_id);
-  const contextAssetsReady = contextSelected && assetsReady;
+  const contextCompatibility = contextSelected ? runCompatibility : contextCase?.compatibility_mode || "none";
+  const contextReadOnly = contextCompatibility === "legacy_readonly";
+  const contextAssetsReady = contextSelected && assetsReady && !contextReadOnly;
   const contextCanvasReady = contextSelected && canvasReady;
-  const contextRunReady = contextSelected && canRunFromAssets;
+  const contextRunReady = contextSelected && canRunFromAssets && !contextReadOnly;
   const batchContextBusy = Boolean(batchContextMenu && (batchContextMenu.running || batchRunPendingId === batchContextMenu.batchId));
   const batchDownloadReady = Boolean(activeBatch && cases.length > 0 && cases.every((item) => item.status === "completed"));
   const batchDownloadPending = Boolean(activeBatch && batchPptxDownloadPendingId === activeBatch.batch.batch_id);
@@ -1893,13 +2468,16 @@ function TaskSelectionWorkspace({
             const artifactsLoading = Boolean(artifactLoading[item.case_id]);
             const pptxExporting = pptxExportPendingCaseId === item.case_id;
             const pptxExportBlocked = Boolean(pptxExportPendingCaseId);
-            const pptxExportable = Boolean(svgArtifact || item.status === "completed");
+            const itemCompatibility = selected ? runCompatibility : item.compatibility_mode || "none";
+            const itemReadOnly = itemCompatibility === "legacy_readonly";
+            const itemV2 = itemCompatibility === "v2";
+            const pptxExportable = !itemReadOnly && Boolean(svgArtifact || item.status === "completed");
             const failed = item.status === "failed";
             const needsAssetReview = item.status === "assets_review" && item.stage !== "approved_asset_plan";
             const retryStage = retryStageForCase(item);
             const taskActionRunning = caseActionPendingId === item.case_id || pptxExporting || (selected && runInProgress);
-            const taskActionEnabled = failed ? !taskActionRunning : actionsEnabled && canRunFromAssets;
-            const taskActionLabel = taskActionRunning ? "运行中" : failed ? `重试（从 ${humanize(retryStage)} 开始）` : "运行";
+            const taskActionEnabled = failed ? !taskActionRunning && !itemReadOnly : actionsEnabled && canRunFromAssets && !itemReadOnly;
+            const taskActionLabel = taskActionRunning ? "运行中" : failed ? `重试（从 ${humanize(retryStage)} 开始）` : itemV2 ? "组合" : "运行";
             return (
               <article
                 key={item.case_id}
@@ -1931,9 +2509,13 @@ function TaskSelectionWorkspace({
                     onClick={(event) => event.stopPropagation()}
                     onPointerDown={(event) => event.stopPropagation()}
                   >
-                    <button className={needsAssetReview ? "task-thumb-action needs-review" : "task-thumb-action"} disabled={!actionsEnabled || !assetsReady} onClick={onOpenAssetsEditor}>
-                      <span className="task-thumb-action__zh">素材</span>
-                      <span className="task-thumb-action__en">编辑</span>
+                    <button
+                      className={needsAssetReview ? "task-thumb-action needs-review" : "task-thumb-action"}
+                      disabled={!actionsEnabled || !assetsReady || itemReadOnly}
+                      onClick={onOpenAssetsEditor}
+                    >
+                      <span className="task-thumb-action__zh">{itemV2 ? "Package" : "素材"}</span>
+                      <span className="task-thumb-action__en">{itemV2 ? "查看" : "编辑"}</span>
                     </button>
                     <button className="task-thumb-action" disabled={!actionsEnabled || !canvasReady} onClick={onOpenSvgEditor}>
                       <span className="task-thumb-action__zh">结果</span>
@@ -2089,8 +2671,8 @@ function TaskSelectionWorkspace({
               void runContextAction("assets");
             }}
           >
-            <span>素材</span>
-            <em>{contextSelected ? "编辑素材" : "正在选择"}</em>
+            <span>{contextCompatibility === "v2" ? "Package" : "素材"}</span>
+            <em>{contextReadOnly ? "历史只读" : contextSelected ? "编辑素材" : "正在选择"}</em>
           </button>
           <button
             type="button"
@@ -2114,8 +2696,8 @@ function TaskSelectionWorkspace({
             }}
           >
             <PlayIcon />
-            <span>{runInProgress && contextSelected ? "运行中" : "运行"}</span>
-            <em>{contextSelected ? "从素材继续" : "正在选择"}</em>
+            <span>{runInProgress && contextSelected ? "运行中" : contextCompatibility === "v2" ? "组合" : "运行"}</span>
+            <em>{contextReadOnly ? "历史只读" : contextSelected ? "从素材继续" : "正在选择"}</em>
           </button>
         </div>
       )}
@@ -3443,7 +4025,7 @@ function ProgressView({ progress, caseDetail }: { progress: CaseProgress | null;
   const stageRuns = progress?.stage_runs || caseDetail.stage_runs;
   const running = latestStageRun(stageRuns, (stage) => stage.status === "running");
   const semanticFile = latestProgressFile(progress, "semantic_svg");
-  const hasSvgOk = stageRuns.some((stage) => stage.stage_name === "svg" && stage.status === "ok");
+  const hasSvgOk = stageRuns.some((stage) => stageMatchesNode(stage.stage_name, "compose_svg") && stage.status === "ok");
   return (
     <div className="progress-view">
       <section className="progress-hero">
@@ -3487,9 +4069,9 @@ function SvgStatusPanel({
   caseDetail: CaseDetail;
   stageRuns: StageRunRecord[];
 }) {
-  const runningSvg = latestStageRun(stageRuns, (stage) => stage.stage_name === "svg" && stage.status === "running");
-  const latestSvg = latestStageRun(stageRuns, (stage) => stage.stage_name === "svg");
-  const latestFailedSvg = latestStageRun(stageRuns, (stage) => stage.stage_name === "svg" && stage.status === "failed");
+  const runningSvg = latestStageRun(stageRuns, (stage) => stageMatchesNode(stage.stage_name, "compose_svg") && stage.status === "running");
+  const latestSvg = latestStageRun(stageRuns, (stage) => stageMatchesNode(stage.stage_name, "compose_svg"));
+  const latestFailedSvg = latestStageRun(stageRuns, (stage) => stageMatchesNode(stage.stage_name, "compose_svg") && stage.status === "failed");
   const status = runningSvg ? "running" : latestSvg?.status === "failed" ? "failed" : latestSvg?.status || caseDetail.case.status;
   const title = runningSvg
     ? "SVG 运行中"
@@ -3586,31 +4168,41 @@ function pipelineNodeState(
   files: CaseProgress["files"],
   artifacts: ArtifactRecord[]
 ): PipelineNodeView {
-  const latest = latestStageRun(stageRuns, (stage) => stage.stage_name === node.stage);
+  const latest = latestStageRun(stageRuns, (stage) => stageMatchesNode(stage.stage_name, node.stage));
   const current = caseDetail.case;
   let state: PipelineNodeState = "waiting";
   let meta: string = node.detail;
   let error = "";
 
-  if (node.stage === "approved_asset_plan") {
-    const approved = artifactOrFileReady(["approved_asset_plan"], files, artifacts);
-    if (approved || current.stage === "svg" || current.stage === "export" || current.stage === "completed" || current.status === "completed") {
+  if (node.stage === "plan_assets") {
+    const planned = artifactOrFileReady(["asset_manifest", "approved_asset_plan", "asset_draft"], files, artifacts);
+    if (planned || current.stage === "process_assets" || current.stage === "compose_svg" || current.stage === "export" || current.stage === "completed" || current.status === "completed") {
       state = "done";
-      meta = approved ? "素材方案已确认" : "已确认";
+      meta = planned ? "资产计划已写入" : "已计划";
     } else if (current.status === "assets_review") {
       state = "review";
-      meta = "等待人工确认";
+      meta = "等待资产确认";
     }
-  } else if (node.stage === "asset_materialize") {
-    const approved = artifactOrFileReady(["approved_asset_plan"], files, artifacts);
-    const materialized = artifactOrFileReady(["asset_manifest"], files, artifacts);
-    if (!approved) {
-      state = "waiting";
-      meta = "等待素材确认";
-    } else if (materialized) {
+  } else if (node.stage === "process_assets") {
+    const planned = artifactOrFileReady(["asset_manifest", "approved_asset_plan"], files, artifacts);
+    if (!planned) {
+      meta = "等待资产计划";
+    } else if (latest) {
+      if (latest.status === "ok") {
+        state = "done";
+        meta = durationText(latest.started_at, latest.ended_at);
+      } else if (latest.status === "running") {
+        state = "running";
+        meta = durationText(latest.started_at, "");
+      } else if (latest.status === "failed") {
+        state = "failed";
+        meta = "失败";
+        error = latest.error_message;
+      }
+    } else if (current.stage === "compose_svg" || current.stage === "export" || current.status === "completed") {
       state = "done";
       meta = "素材已处理";
-    } else if (current.stage === "materialize") {
+    } else if (stageMatchesNode(current.stage, node.stage)) {
       if (current.status === "failed") {
         state = "failed";
         meta = "失败";
@@ -3638,7 +4230,7 @@ function pipelineNodeState(
   } else if (current.status === "completed") {
     state = "done";
     meta = "已完成";
-  } else if (current.stage === node.stage) {
+  } else if (stageMatchesNode(current.stage, node.stage)) {
     if (current.status === "failed") {
       state = "failed";
       meta = "失败";
@@ -3667,10 +4259,12 @@ function pipelineNodeState(
 
 function stageReadyLabels(stage: string): string[] {
   if (stage === "prepare") return ["figure"];
-  if (stage === "asset_analyze") return ["asset_draft", "element_analysis"];
-  if (stage === "approved_asset_plan") return ["approved_asset_plan"];
-  if (stage === "asset_materialize") return ["asset_manifest"];
-  if (stage === "svg") return ["semantic_svg", "rendered_png", "svg_validation_report"];
+  if (stage === "parse_elements") return ["raw_regions", "ocr_boxes", "parser_outputs"];
+  if (stage === "fuse_elements") return ["box_ir", "fusion_trace"];
+  if (stage === "refine_elements") return ["element_analysis", "refine_trace", "asset_draft"];
+  if (stage === "plan_assets") return ["asset_manifest", "approved_asset_plan"];
+  if (stage === "process_assets") return ["processor_trace"];
+  if (stage === "compose_svg") return ["semantic_svg", "rendered_png", "svg_validation_report"];
   if (stage === "export") return ["pptx", "pptx_export_report"];
   return [];
 }
@@ -3684,9 +4278,36 @@ function artifactOrFileReady(labels: string[], files: CaseProgress["files"], art
 function isStaleStage(staleFromStage: string, stage: string): boolean {
   if (!staleFromStage) return false;
   const stageOrder = PIPELINE_STAGE_ORDER as readonly string[];
-  const staleIndex = stageOrder.indexOf(staleFromStage);
-  const stageIndex = stageOrder.indexOf(stage);
+  const staleIndex = stageOrder.indexOf(canonicalPipelineStage(staleFromStage));
+  const stageIndex = stageOrder.indexOf(canonicalPipelineStage(stage));
   return staleIndex >= 0 && stageIndex >= staleIndex;
+}
+
+function canonicalPipelineStage(stage: string): (typeof PIPELINE_STAGE_ORDER)[number] | "" {
+  const aliases: Record<string, (typeof PIPELINE_STAGE_ORDER)[number]> = {
+    analysis: "prepare",
+    detect_structure: "parse_elements",
+    detect_text: "parse_elements",
+    assemble_boxir: "fuse_elements",
+    asset_analyze: "refine_elements",
+    asset_plan: "plan_assets",
+    approved_asset_plan: "plan_assets",
+    materialize: "process_assets",
+    asset_materialize: "process_assets",
+    asset_processing: "process_assets",
+    svg: "compose_svg",
+    compose: "compose_svg",
+    svg_edit: "compose_svg",
+    package: "package_run"
+  };
+  if ((PIPELINE_STAGE_ORDER as readonly string[]).includes(stage)) {
+    return stage as (typeof PIPELINE_STAGE_ORDER)[number];
+  }
+  return aliases[stage] || "";
+}
+
+function stageMatchesNode(stageName: string, nodeStage: string): boolean {
+  return canonicalPipelineStage(stageName) === canonicalPipelineStage(nodeStage);
 }
 
 function stateLabel(state: PipelineNodeState): string {
@@ -3703,6 +4324,26 @@ function stateLabel(state: PipelineNodeState): string {
 
 function EmptyState({ label }: { label: string }) {
   return <div className="empty-state">{label}</div>;
+}
+
+function assetPackageFromRunPackage(runPackage: V2RunPackage | null, elementId: string): V2AssetPackage | null {
+  return (runPackage?.asset_packages || []).find((assetPackage) => assetPackage.element_id === elementId) || null;
+}
+
+function hasBlockingAssetPackage(runPackage: V2RunPackage): boolean {
+  return (runPackage.asset_packages || []).some((assetPackage) => assetPackage.status === "failed" || assetPackage.status === "unsupported");
+}
+
+function caseHasLegacyArtifacts(detail: CaseDetail): boolean {
+  if (detail.case.compatibility_mode === "legacy_readonly") return true;
+  const legacyLabels = new Set(["asset_draft", "approved_asset_plan", "asset_manifest", "semantic_svg", "rendered_png", "pptx"]);
+  return detail.artifacts.some((artifact) => legacyLabels.has(artifact.label));
+}
+
+function compactJson(value: Record<string, unknown>): string {
+  const keys = Object.keys(value || {});
+  if (keys.length === 0) return "{}";
+  return JSON.stringify(value);
 }
 
 function shortenError(value: string): string {
@@ -3728,6 +4369,14 @@ function humanize(value: string): string {
     analysis: "分析",
     reconstruction: "重建",
     prepare: "图像预处理",
+    parse_elements: "元素解析",
+    fuse_elements: "候选融合",
+    refine_elements: "Agent 校验",
+    plan_assets: "资产计划",
+    process_assets: "资产处理",
+    compose: "SVG 组合",
+    compose_svg: "SVG 组合",
+    package_run: "运行包封装",
     detect_structure: "提取结构（SAM）",
     detect_text: "OCR解析",
     assemble_boxir: "素材合并",
@@ -3741,6 +4390,20 @@ function humanize(value: string): string {
     svg: "SVG生成",
     svg_edit: "SVG 编辑",
     export: "导出",
+    crop: "裁剪",
+    crop_nobg: "去背景",
+    svg_self_draw: "SVG 自绘",
+    image_generate: "生成图",
+    image_edit: "编辑图",
+    chart_rebuild_reserved: "图表 Agent",
+    picture: "图片",
+    icon: "图标",
+    chart: "图表",
+    table: "表格",
+    text: "文本",
+    frame: "框架",
+    pending: "待处理",
+    unsupported: "暂不支持",
     analysis_running: "分析中",
     svg_running: "SVG生成中"
   };
@@ -4385,7 +5048,8 @@ function isCaseActivelyRunning(detail: CaseDetail | null, progress: CaseProgress
 
 function retryStageForCase(item: Pick<CaseRecord, "phase" | "stage" | "stale_from_stage">): WorkbenchRerunStage {
   const stage = (item.stale_from_stage || item.stage || item.phase || "").toLowerCase();
-  if (stage === "export" || stage === "svg" || stage === "materialize") return stage;
+  const canonical = canonicalPipelineStage(stage);
+  if (canonical) return canonical;
   return "analysis";
 }
 

@@ -584,6 +584,7 @@ def test_api_exposes_v2_package_and_asset_package(tmp_path: Path) -> None:
     package_response = client.get(f"/api/cases/{case.case_id}/package")
     elements_response = client.get(f"/api/cases/{case.case_id}/elements")
     asset_response = client.get(f"/api/cases/{case.case_id}/elements/E001/asset-package")
+    case_response = client.get(f"/api/cases/{case.case_id}")
 
     assert package_response.status_code == 200
     assert package_response.json()["package"]["schema"] == "drawai.run_package.v1"
@@ -592,6 +593,9 @@ def test_api_exposes_v2_package_and_asset_package(tmp_path: Path) -> None:
     assert elements_response.json()["elements"][0]["element_id"] == "E001"
     assert asset_response.status_code == 200
     assert asset_response.json()["asset_package"]["element_id"] == "E001"
+    assert case_response.status_code == 200
+    assert case_response.json()["case"]["compatibility_mode"] == "v2"
+    assert case_response.json()["case"]["can_fork_from_source"] is True
 
 
 def test_api_asset_process_marks_downstream_outputs_stale(tmp_path: Path) -> None:
@@ -1260,6 +1264,40 @@ def test_rerun_refreshes_case_runtime_config(tmp_path: Path) -> None:
     payload = yaml.safe_load(Path(store.get_case(case.case_id).config_path).read_text(encoding="utf-8"))
     assert payload["ocr"]["remote_paddleocr"]["base_url"] == "http://model-a:18080"
     assert payload["ocr"]["remote_paddleocr"]["timeout_seconds"] == 600
+
+
+def test_api_run_stage_accepts_v2_boundary_stage_names(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    settings = _settings(tmp_path, base_config)
+    runner = WorkbenchRunner(store, settings, stage_executor=_deterministic_stage_executor)
+    app = create_app(settings, store=store, runner=runner)
+    client = TestClient(app)
+    batch = store.create_batch(
+        name="v2 retry names",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+
+    prepare_response = client.post(f"/api/cases/{case.case_id}/run-stage", json={"stage": "prepare"})
+    runner.wait_for_idle(timeout=5)
+    package_response = client.post(f"/api/cases/{case.case_id}/run-stage", json={"stage": "package_run"})
+    runner.wait_for_idle(timeout=5)
+
+    assert prepare_response.status_code == 200
+    assert package_response.status_code == 200
+    assert store.list_stage_runs(case.case_id)[0].stage_name == "prepare"
+    assert any(stage.stage_name == "export" for stage in store.list_stage_runs(case.case_id))
 
 
 def test_api_case_list_uses_source_image_preview_before_artifacts(tmp_path: Path) -> None:

@@ -1,4 +1,6 @@
 export type SourceStrategy = "svg_self_draw" | "crop" | "crop_nobg";
+export type RunCompatibilityMode = "v2" | "legacy_readonly" | "none";
+export type V2AssetStatus = "pending" | "running" | "ok" | "failed" | "unsupported" | string;
 export type AssetGeometry =
   | { kind: "bbox"; bbox: [number, number, number, number]; coordinate_system?: string }
   | { kind: "polygon"; points: Array<[number, number]>; bbox?: [number, number, number, number]; coordinate_system?: string }
@@ -63,6 +65,87 @@ export interface CaseRecord {
   config_path: string;
   error_message: string;
   stale_from_stage: string;
+  compatibility_mode?: RunCompatibilityMode;
+  can_fork_from_source?: boolean;
+}
+
+export interface V2ProcessingIntent {
+  object_type: string;
+  processing_type: string;
+  parameters: Record<string, unknown>;
+}
+
+export interface V2ElementPlan {
+  schema: string;
+  element_id: string;
+  source_candidate_ids: string[];
+  element_type: string;
+  bbox: [number, number, number, number];
+  geometry: Record<string, unknown>;
+  z_order: number;
+  confidence: "low" | "medium" | "high" | string;
+  processing_intent: V2ProcessingIntent;
+  review_status: "deterministic" | "agent_refined" | "user_edited" | string;
+  created_by_stage: string;
+  change_reason: string;
+}
+
+export interface V2ProcessorRun {
+  processor_type: string;
+  status: V2AssetStatus;
+  started_at: string;
+  ended_at: string;
+  input_refs: Record<string, unknown>;
+  output_refs: Record<string, unknown>;
+  metadata: Record<string, unknown>;
+}
+
+export interface V2AssetResult {
+  result_id: string;
+  processor_type: string;
+  status: V2AssetStatus;
+  kind: string;
+  path?: string;
+  files?: Array<Record<string, unknown>>;
+  metadata?: Record<string, unknown>;
+  width?: number;
+  height?: number;
+  created_at?: string;
+}
+
+export interface V2AssetPackage {
+  schema: string;
+  asset_id: string;
+  element_id: string;
+  processor_type: string;
+  status: V2AssetStatus;
+  files: string[];
+  metadata: Record<string, unknown>;
+  processor_runs: V2ProcessorRun[];
+  all_results: V2AssetResult[];
+  active_result: V2AssetResult | null;
+  editable_payload: Record<string, unknown> | null;
+  failure: string | null;
+  created_at: string;
+}
+
+export interface V2RunPackage {
+  schema: string;
+  run_id: string;
+  root: string;
+  source_image: string;
+  canvas: Record<string, unknown>;
+  created_at: string;
+  metadata: Record<string, unknown>;
+  elements?: V2ElementPlan[];
+  asset_packages?: V2AssetPackage[];
+  compose_outputs?: Record<string, unknown>;
+  export_outputs?: Record<string, unknown>;
+}
+
+export interface V2Compatibility {
+  mode: RunCompatibilityMode;
+  can_fork_from_source: boolean;
 }
 
 export interface ArtifactRecord {
