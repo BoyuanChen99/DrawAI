@@ -192,8 +192,24 @@ def test_doctor_checks_packaged_codex_executable_in_runtime(tmp_path: Path, monk
     assert check.detail == str(codex)
 
 
+def test_doctor_checks_windows_packaged_codex_executable_in_runtime(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
+    runtime_root = tmp_path / "runtime"
+    package_bin = runtime_root / ".venv" / "Lib" / "site-packages" / "codex_cli_bin" / "bin"
+    package_bin.mkdir(parents=True)
+    codex = package_bin / "codex.exe"
+    codex.write_text("fake exe\n", encoding="utf-8")
+
+    check = _check_codex_executable(runtime_root)
+
+    assert check.status == "ok"
+    assert check.detail == str(codex)
+
+
 def test_doctor_reports_missing_codex_executable(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("PATH", str(tmp_path / "empty-path"))
+    monkeypatch.delenv("DRAWAI_LOCAL_RUNTIME_ROOT", raising=False)
+    monkeypatch.chdir(tmp_path)
 
     check = _check_codex_executable(tmp_path / "runtime")
 

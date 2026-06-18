@@ -25,10 +25,13 @@ def codex_executable_candidates(runtime_root: Path | None = None) -> list[Path]:
             [
                 root / ".venv" / "bin" / "codex",
                 root / ".venv" / "Scripts" / "codex.exe",
+                root / ".venv" / "Lib" / "site-packages" / "codex_cli_bin" / "bin" / "codex.exe",
+                root / ".venv" / "Lib" / "site-packages" / "codex_cli_bin" / "bin" / "codex",
             ]
         )
         site_packages_root = root / ".venv" / "lib"
         candidates.extend(site_packages_root.glob("python*/site-packages/codex_cli_bin/bin/codex"))
+        candidates.extend(site_packages_root.glob("python*/site-packages/codex_cli_bin/bin/codex.exe"))
 
     return candidates
 
