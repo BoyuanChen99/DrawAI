@@ -37,6 +37,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         from .server_cli import workbench_cli
 
         return workbench_cli(args_list[1:])
+    if args_list and args_list[0] == "workflow":
+        from .workflow.cli import workflow_cli
+
+        return workflow_cli(args_list[1:])
 
     parser = argparse.ArgumentParser(description="Run the DrawAI SVG pipeline.")
     parser.add_argument("--config", required=True, help="Path to a DrawAI pipeline YAML config.")
