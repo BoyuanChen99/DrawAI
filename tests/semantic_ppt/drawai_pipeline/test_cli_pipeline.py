@@ -1468,7 +1468,7 @@ svg_to_ppt:
     assert sessions[0].runtime_config["connection_id"] == "codex-python-sdk-controlled"
     assert sessions[0].runtime_config["model_name"] == "gpt-5.5"
     assert sessions[0].runtime_config["base_url"] == ""
-    assert sessions[0].runtime_config["timeout_seconds"] == 600
+    assert sessions[0].runtime_config["timeout_seconds"] == 1500
     isolated_cwd = sessions[0].isolated_cwd.replace("\\", "/")
     output_svg_path = calls[0]["output_svg_path"].replace("\\", "/")
     output_response_path = calls[0]["output_response_path"].replace("\\", "/")
@@ -1681,6 +1681,10 @@ def test_default_svg_invoker_recovers_valid_partial_codex_svg_after_timeout(monk
     assert output_svg_path.read_text(encoding="utf-8") == svg
     assert output_response_path.read_text(encoding="utf-8") == svg
     assert (tmp_path / "attempt" / "rendered.png").read_bytes() == b"png"
+    assert (tmp_path / "attempt" / "iteration_log.md").exists()
+    assert (tmp_path / "attempt" / "iteration_log.jsonl").exists()
+    iteration_log_jsonl = (tmp_path / "attempt" / "iteration_log.jsonl").read_text(encoding="utf-8")
+    assert "timeout_partial_recovery" in iteration_log_jsonl
     assert len(sessions) == 1
     assert sessions[0].closed is True
     assert invoker._codex_session is None

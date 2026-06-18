@@ -17,8 +17,8 @@
 | `drawai workbench` | Windows 原生启动模型服务、API、前端；非 Windows 调用 `scripts/start_drawai_workbench_local.sh`。 | Linux 仍走原 Bash/tmux launcher。 |
 | `drawai workbench --api ...` | Windows 直接在 `apps/workbench` 调 `npm.cmd`；非 Windows 调用 `scripts/run_drawai_workbench_frontend.sh`。 | Linux 前端-only 路径不变。 |
 | runtime venv 路径 | Windows 用 `.venv/Scripts/python.exe`，Linux 用 `.venv/bin/python`。 | 按 `os.name` 分支，无 Linux 路径回退。 |
-| 默认超时 | OCR、模型 HTTP、Codex、doctor SDK 探测等长操作统一按 600s 处理。 | 正向变化，Linux 同样生效。 |
-| SVG Codex 恢复 | Codex 超时后如果已有验证通过的 `semantic_N.svg`，会提升为 `semantic.svg`；死会话会被丢弃后重试。 | 正向变化，Linux 同样生效。 |
+| 默认超时 | OCR、SAM/RMBG、模型 HTTP、doctor SDK 探测等长操作按 600s 处理；SVG Codex 生成单独按 1500s 处理。 | 正向变化，Linux 同样生效。 |
+| SVG Codex 恢复 | Codex 超时后如果已有验证通过的 `semantic_N.svg`，会提升为 `semantic.svg`；如果只缺 `iteration_log.md/jsonl`，会补 recovery log；死会话会被丢弃后重试。 | 正向变化，Linux 同样生效。 |
 | SVG 重跑归档 | 跳过 `chrome-profile*`、`.playwright`、`playwright-report`、`test-results` 等临时浏览器目录，避免 Windows 长路径/锁文件问题。 | Linux 上无害。 |
 
 锁定 Linux launcher 不被 Windows 分支影响的测试：
@@ -39,10 +39,10 @@ uv run --python 3.12 pytest `
 | `src/drawai/local_cli.py` | `drawai setup local` 接入 Python-native setup；`drawai doctor local` 增加 600s SDK 探测、Windows Codex auth 路径识别。 |
 | `src/drawai/server_cli.py` | `drawai workbench` 在 Windows 上原生拉起模型服务、Workbench API、Vite 前端；非 Windows 保留脚本 launcher。 |
 | `src/drawai/_local_runtime_fs.py`、`src/drawai/local_runtime.py` | 统一 runtime 文件路径和 Windows/Linux venv bin 路径。 |
-| `src/drawai/codex_python_sdk_svg.py` | Codex SDK 使用隔离 `CODEX_HOME`；doctor 探针改成兼容当前 SDK 的 `low` effort；保留 600s 超时。 |
-| `src/drawai/pipeline.py` | SVG 生成失败/超时后重建 Codex session，并恢复最新验证通过的部分 SVG。 |
+| `src/drawai/codex_python_sdk_svg.py` | Codex SDK 使用隔离 `CODEX_HOME`；doctor 探针改成兼容当前 SDK 的 `low` effort；doctor/通用模型调用保留 600s 超时。 |
+| `src/drawai/pipeline.py` | SVG 生成使用独立 1500s timeout；失败/超时后重建 Codex session，并恢复最新验证通过的部分 SVG。 |
 | `src/drawai/workbench/runner.py` | SVG 重跑归档支持 Windows 长路径，跳过浏览器临时目录，错误信息优先返回结构化异常。 |
-| `configs/drawai/*.yaml` | 本地 OCR/模型/Codex 相关 timeout 调整到 600s。 |
+| `configs/drawai/*.yaml` | 本地 OCR/SAM/RMBG/通用模型 timeout 保持 600s，SVG Codex 生成单独设置为 1500s。 |
 | `tests/...` | 增加 Windows native launcher、Linux launcher 保持不变、SVG 超时恢复、SVG 归档、Codex auth 路径等回归测试。 |
 
 ## 3. 新 Windows 电脑前置条件
@@ -166,7 +166,8 @@ uv run --python 3.12 drawai setup local --source huggingface --accept-sam3-licen
 - setup 子命令会每 10 秒打印一次 heartbeat。
 - 直接下载文件会每 3 秒打印已下载字节数、当前速度、平均速度。
 - 网络和 HTTP 操作的超时为 600s。
-- 如果 600s 内没有进展，优先检查网络、代理、杀毒软件扫描、模型源可访问性。
+- SVG Codex 生成阶段单独允许等待 1500s。
+- 如果非 SVG 阶段 600s 内没有进展，优先检查网络、代理、杀毒软件扫描、模型源可访问性。
 
 ## 8. 验证 runtime
 
@@ -319,9 +320,9 @@ $env:OPENAI_API_KEY = "sk-..."
 uv run --python 3.12 drawai doctor local
 ```
 
-### SVG 生成 600s 超时
+### SVG 生成 1500s 超时
 
-当前实现会先丢弃死掉的 Codex session 再重试。如果 Codex 已经写出验证通过的 `semantic_N.svg`，会自动提升为最终 `semantic.svg`。
+当前实现会给 SVG Codex 生成阶段单独等待 1500s，然后丢弃死掉的 Codex session 再重试。如果 Codex 已经写出验证通过的 `semantic_N.svg`，会自动提升为最终 `semantic.svg`。如果 partial SVG 已合法但缺少 `iteration_log.md/jsonl`，会自动补一份 recovery log，避免因为日志缺失重跑整轮。
 
 检查 trace：
 

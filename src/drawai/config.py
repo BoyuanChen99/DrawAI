@@ -96,6 +96,7 @@ class AssetPolicyConfig:
 @dataclass(frozen=True)
 class DrawAiSvgConfig:
     max_attempts: int = 8
+    timeout_seconds: float = 1500
     generation_backend: str = "codex_python_sdk_controlled"
     staged_generation: bool = True
     text_rendering: str = "model_text"
@@ -394,6 +395,10 @@ def _parse_svg_config(raw: Any) -> DrawAiSvgConfig:
         raise ValueError("svg.visual_review_rounds must be a list")
     return DrawAiSvgConfig(
         max_attempts=_as_int(data.get("max_attempts", DrawAiSvgConfig.max_attempts), "svg.max_attempts"),
+        timeout_seconds=_as_float(
+            data.get("timeout_seconds", DrawAiSvgConfig.timeout_seconds),
+            "svg.timeout_seconds",
+        ),
         generation_backend=_as_non_empty_str(
             data.get("generation_backend", DrawAiSvgConfig.generation_backend),
             "svg.generation_backend",
@@ -547,6 +552,8 @@ def _validate_config(cfg: DrawAiPipelineConfig, validate_input_exists: bool) -> 
             raise ValueError("asset_materialization.rmbg.timeout_seconds must be positive")
     if cfg.svg.max_attempts <= 0:
         raise ValueError("svg.max_attempts must be positive")
+    if cfg.svg.timeout_seconds <= 0:
+        raise ValueError("svg.timeout_seconds must be positive")
     if cfg.svg.generation_backend not in RECOGNIZED_SVG_GENERATION_BACKENDS:
         supported = ", ".join(sorted(RECOGNIZED_SVG_GENERATION_BACKENDS))
         raise ValueError(

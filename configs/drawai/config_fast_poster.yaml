@@ -57,6 +57,7 @@ asset_materialization:
     model_path: ''
 svg:
   max_attempts: 2
+  timeout_seconds: 1500
   generation_backend: codex_python_sdk_controlled
   staged_generation: true
   text_rendering: model_text

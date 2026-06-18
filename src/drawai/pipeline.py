@@ -1550,6 +1550,7 @@ class _DefaultSvgInvoker:
         self.cfg = cfg
         self.paths = paths
         self.runtime_config = cfg.model_runtime.to_runtime_dict()
+        self.runtime_config["timeout_seconds"] = cfg.svg.timeout_seconds
         self.trace_path = paths.trace_dir / "svg_generation_model.jsonl"
         self._codex_session: Any | None = None
 
@@ -1695,6 +1696,13 @@ def _recover_latest_valid_codex_partial_svg(
             shutil.copy2(rendered_candidate, rendered_output)
         output_response_path.parent.mkdir(parents=True, exist_ok=True)
         output_response_path.write_text(svg_text, encoding="utf-8")
+        _write_partial_svg_recovery_iteration_logs(
+            attempt_dir=attempt_dir,
+            recovered_svg=candidate,
+            recovered_render=rendered_candidate if rendered_candidate.exists() else None,
+            validation_report=report_path,
+            error=error,
+        )
         model_runtime._append_trace(
             trace_path,
             {
@@ -1708,6 +1716,48 @@ def _recover_latest_valid_codex_partial_svg(
         )
         return svg_text
     return None
+
+
+def _write_partial_svg_recovery_iteration_logs(
+    *,
+    attempt_dir: Path,
+    recovered_svg: Path,
+    recovered_render: Path | None,
+    validation_report: Path,
+    error: Exception,
+) -> None:
+    iteration_log = attempt_dir / "iteration_log.md"
+    iteration_log_jsonl = attempt_dir / "iteration_log.jsonl"
+    if not iteration_log.exists() or iteration_log.stat().st_size <= 0:
+        iteration_log.write_text(
+            "\n".join(
+                [
+                    "# Codex SVG self-iteration log",
+                    "",
+                    "- Recovered a valid partial SVG after the Codex SDK turn ended without a complete response.",
+                    f"- Recovered SVG: {recovered_svg.name}",
+                    f"- Validation report: {validation_report.name}",
+                    f"- Error: {type(error).__name__}: {error}",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+    if not iteration_log_jsonl.exists() or iteration_log_jsonl.stat().st_size <= 0:
+        payload = {
+            "iteration": 0,
+            "stage": "timeout_partial_recovery",
+            "status": "ok",
+            "svg": recovered_svg.name,
+            "rendered": recovered_render.name if recovered_render is not None else "",
+            "validation_report": validation_report.name,
+            "error_type": type(error).__name__,
+            "error": str(error),
+        }
+        iteration_log_jsonl.write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
 
 def _svg_generation_prompt(kwargs: Mapping[str, Any]) -> str:
