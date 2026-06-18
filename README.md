@@ -14,6 +14,11 @@
 
 它会把输入图片拆成结构、文字和局部素材，再生成更容易继续编辑的矢量结果。你可以把它当成一个 CLI，也可以启动 Workbench，在浏览器里批量上传、查看进度和管理结果。
 
+<a id="demo"></a>
+## 🎬 演示
+
+https://github.com/user-attachments/assets/40666e4a-32f0-4836-b727-2d659c93868c
+
 <a id="roadmap"></a>
 ## 🗺️ 规划
 

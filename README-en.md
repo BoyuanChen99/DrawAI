@@ -14,6 +14,11 @@
 
 It decomposes input images into structure, text, and local assets, then generates vector results that are easier to keep editing. Use it as a CLI, or start the Workbench in the browser for batch uploads, progress tracking, and artifact management.
 
+<a id="demo"></a>
+## 🎬 Demo
+
+https://github.com/user-attachments/assets/40666e4a-32f0-4836-b727-2d659c93868c
+
 <a id="roadmap"></a>
 ## 🗺️ Roadmap
 
