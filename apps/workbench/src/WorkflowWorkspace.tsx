@@ -1,4 +1,5 @@
 import { PointerEvent, WheelEvent, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   copyWorkflowTemplate,
   listWorkflowProviders,
@@ -320,6 +321,42 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     () => templates.filter((template) => workflowFolderIdForTemplate(template) === activeWorkflowFolder.folder_id),
     [templates, activeWorkflowFolder.folder_id]
   );
+  const topbarTarget = typeof document !== "undefined" ? document.getElementById("drawai-view-controls") : null;
+  const topbarPortal =
+    topbarTarget && workflowView === "canvas"
+      ? createPortal(
+          <div className="editor-banner-controls workflow-banner-controls">
+            <button type="button" className="home-button workflow-home-button" title="返回工作流" aria-label="返回工作流" onClick={returnToWorkflowLibrary}>
+              ←
+            </button>
+            <div className="editor-title">
+              <strong>{selectedTemplate?.name || draft?.name || "Workflow"}</strong>
+              <span>{readOnly ? "内置只读" : "可编辑"} · {selectedTemplate?.template_id || draft?.template_id || "draft"}</span>
+            </div>
+            <div className="toolbar-note workflow-validation-note">
+              {validation ? (
+                <em className={validation.ok ? "ok" : "failed"}>{validation.ok ? "校验通过" : `${validation.errors.length} 个问题`}</em>
+              ) : (
+                <em>未校验</em>
+              )}
+            </div>
+            <div className="editor-actions">
+              <button type="button" disabled={!draft || busy === "validate"} onClick={() => void validateDraft()}>
+                校验
+              </button>
+              <button type="button" className="primary" disabled={!draft || readOnly || busy === "save"} onClick={() => void saveDraft()}>
+                保存
+              </button>
+              {(selectedNode || selectedEdge) && (
+                <button type="button" onClick={() => setInspectorOpen((current) => !current)}>
+                  {canvasHasInspector ? "收起详情" : "详情"}
+                </button>
+              )}
+            </div>
+          </div>,
+          topbarTarget
+        )
+      : null;
 
   async function copySelectedTemplate(sourceId = selectedTemplateId || "default_drawai_dag", preferredName = "") {
     const source = templates.find((item) => item.template_id === sourceId) || null;
@@ -892,23 +929,43 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
 
   if (workflowView === "library") {
     return (
-      <main className="workflow-workspace workflow-library-workspace">
-        <aside className="workflow-library-sidebar" aria-label="工作流类型">
-          <div className="workflow-library-sidebar-head">
-            <span>工作流类型</span>
-            <strong>{templates.length}</strong>
+      <main className="workflow-workspace workflow-library-workspace task-selection-workspace">
+        <section className="batch-rail workflow-folder-rail" aria-label="工作流类型">
+          <div className="board-panel-head">
+            <div>
+              <span>工作流类型</span>
+              <strong>{visibleWorkflowFolders.length} 个类型</strong>
+            </div>
+            <button type="button" className="task-submit-button workflow-add-button" title="新建文件夹" aria-label="新建文件夹" onClick={addWorkflowFolder}>
+              <PlusIcon />
+            </button>
           </div>
-          <div className="workflow-folder-list">
+          <div className="batch-list-modern workflow-folder-list">
             {visibleWorkflowFolders.map((folder) => (
-              <button
-                type="button"
+              <article
                 key={folder.folder_id}
-                className={folder.folder_id === activeWorkflowFolder.folder_id ? "active" : ""}
+                className={`batch-row ${folder.folder_id === activeWorkflowFolder.folder_id ? "active" : ""}`}
+                role="button"
+                tabIndex={0}
                 onClick={() => setActiveWorkflowFolderId(folder.folder_id)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setActiveWorkflowFolderId(folder.folder_id);
+                  }
+                }}
               >
-                <span>{folder.name}</span>
-                <em>{folder.count}</em>
-              </button>
+                <div className="batch-row-top">
+                  <span className={`status-pill ${folder.builtin ? "status-completed" : ""}`}>{folder.builtin ? "内置" : "自定义"}</span>
+                  <em>{folder.count} 个</em>
+                </div>
+                <div className="batch-row-main">
+                  <strong>{folder.name}</strong>
+                </div>
+                <div className="batch-row-bottom">
+                  <em>{folder.builtin ? "默认分类" : "本地分类"}</em>
+                </div>
+              </article>
             ))}
           </div>
           <div className="workflow-new-folder">
@@ -920,50 +977,68 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                 if (event.key === "Enter") addWorkflowFolder();
               }}
             />
-            <button type="button" title="新建文件夹" onClick={addWorkflowFolder}>+</button>
+            <button type="button" className="workflow-add-button" title="新建文件夹" aria-label="新建文件夹" onClick={addWorkflowFolder}>
+              <PlusIcon />
+            </button>
           </div>
-        </aside>
+        </section>
 
-        <section className="workflow-library-main">
-          <header className="workflow-library-head">
+        <section className="case-lane workflow-template-lane">
+          <div className="board-panel-head workflow-template-head">
             <div>
               <span>{activeWorkflowFolder.builtin ? "内置工作流" : "工作流"}</span>
               <strong>{activeWorkflowFolder.name}</strong>
             </div>
-            <button type="button" className="primary" onClick={createLocalTemplate}>
-              新建工作流
+            <button type="button" className="task-submit-button workflow-add-button" title="新建工作流" aria-label="新建工作流" onClick={createLocalTemplate}>
+              <PlusIcon />
             </button>
-          </header>
+          </div>
 
-          <div className="workflow-card-grid">
+          <div className="task-list workflow-template-list">
             {libraryTemplates.map((template) => {
               const stats = workflowNodeStats(template);
               const builtin = Boolean(template.defaults?.builtin);
               return (
-                <button
-                  type="button"
+                <article
                   key={template.template_id}
-                  className="workflow-card"
+                  className={`task-row workflow-template-row ${template.template_id === selectedTemplateId ? "active" : ""} ${builtin ? "readonly" : ""}`}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => openWorkflowCanvas(template.template_id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      openWorkflowCanvas(template.template_id);
+                    }
+                  }}
                 >
-                  <div className="workflow-card-head">
-                    <span>{builtin ? "内置" : "自定义"}</span>
+                  <div className="task-row-top">
+                    <span className={`status-pill ${builtin ? "status-completed" : "status-running"}`}>{builtin ? "内置" : "自定义"}</span>
                     <em>{template.version ? `v${template.version}` : "draft"}</em>
                   </div>
-                  <strong>{template.name}</strong>
-                  <p>{template.description || "Workflow DAG"}</p>
-                  <dl>
-                    <div><dt>节点</dt><dd>{template.nodes.length}</dd></div>
-                    <div><dt>连线</dt><dd>{template.edges.length}</dd></div>
-                    <div><dt>Agent</dt><dd>{stats.agent}</dd></div>
-                  </dl>
-                </button>
+                  <div className="task-thumb workflow-template-thumb">
+                    <WorkflowTemplatePreview template={template} />
+                  </div>
+                  <div className="task-bottom">
+                    <div className="task-info">
+                      <div className="task-main">
+                        <strong>{template.name}</strong>
+                        <span>{template.description || "Workflow DAG"}</span>
+                      </div>
+                      <div className="task-meta">
+                        <em>{template.nodes.length} 节点 · {template.edges.length} 连线 · {stats.agent} Agent</em>
+                      </div>
+                    </div>
+                  </div>
+                </article>
               );
             })}
             {libraryTemplates.length === 0 && (
               <div className="workflow-library-empty">
                 <strong>这个分类还没有工作流</strong>
-                <button type="button" onClick={createLocalTemplate}>新建工作流</button>
+                <button type="button" className="task-submit-button workflow-add-button" title="新建工作流" aria-label="新建工作流" onClick={createLocalTemplate}>
+                  <PlusIcon />
+                </button>
               </div>
             )}
           </div>
@@ -973,37 +1048,10 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
   }
 
   return (
-    <main className={`workflow-workspace workflow-canvas-workspace ${canvasHasInspector ? "inspector-open" : "inspector-closed"}`}>
-      <header className="workflow-topbar">
-        <div className="workflow-topbar-main">
-          <button type="button" className="workflow-back-button" onClick={returnToWorkflowLibrary}>
-            ← 返回
-          </button>
-          <div className="workflow-canvas-title">
-            <span>{readOnly ? "内置只读" : "可编辑"}</span>
-            <strong>{selectedTemplate?.name || draft?.name || "Workflow"}</strong>
-          </div>
-          <div className="workflow-topbar-actions">
-            <button type="button" disabled={!draft || busy === "validate"} onClick={() => void validateDraft()}>
-              校验
-            </button>
-            <button type="button" className="primary" disabled={!draft || readOnly || busy === "save"} onClick={() => void saveDraft()}>
-              保存
-            </button>
-            {(selectedNode || selectedEdge) && (
-              <button type="button" onClick={() => setInspectorOpen((current) => !current)}>
-                {canvasHasInspector ? "收起详情" : "详情"}
-              </button>
-            )}
-          </div>
-        </div>
-        <div className="workflow-topbar-status">
-          {selectedTemplate && <span>{selectedTemplate.template_id}</span>}
-          {validation && <em className={validation.ok ? "ok" : "failed"}>{validation.ok ? "校验通过" : `${validation.errors.length} 个问题`}</em>}
-        </div>
-      </header>
-
-      <section className="workflow-canvas-shell">
+    <>
+      {topbarPortal}
+      <main className={`workflow-workspace workflow-canvas-workspace ${canvasHasInspector ? "inspector-open" : "inspector-closed"}`}>
+        <section className="workflow-canvas-shell">
         <aside className="workflow-canvas-rail" aria-label="Workflow tools">
           <button type="button" className="active" title="编排">W</button>
           <button type="button" title="选择">↖</button>
@@ -1135,8 +1183,9 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                     <button
                       type="button"
                       className={`workflow-node-plus ${connecting?.nodeId === node.node_id && connecting.portId === sourceOutput.port_id ? "connecting" : ""}`}
-                      disabled={readOnly}
-                      title="点击添加节点，拖拽连接节点"
+                      disabled={readOnly || node.node_type === "output"}
+                      title={readOnly || node.node_type === "output" ? "不可添加下游节点" : "添加或连接下游节点"}
+                      aria-label={readOnly || node.node_type === "output" ? "不可添加下游节点" : "添加或连接下游节点"}
                       onClick={(event) => event.stopPropagation()}
                       onPointerDown={(event) => beginOutputHandlePointer(event, node, sourceOutput)}
                       onPointerMove={moveOutputHandlePointer}
@@ -1146,7 +1195,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                         setConnecting(null);
                       }}
                     >
-                      +
+                      <PlusIcon />
                     </button>
                   )}
                 </article>
@@ -1212,7 +1261,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
             <button type="button" title="适配画布" onClick={fitWorkflowToView}>⤢</button>
           </div>
         </div>
-      </section>
+        </section>
 
       {canvasHasInspector && (
       <aside className="workflow-inspector">
@@ -1432,7 +1481,8 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
         )}
       </aside>
       )}
-    </main>
+      </main>
+    </>
   );
 }
 
@@ -1589,6 +1639,35 @@ function nodeIcon(node: WorkflowNode): string {
   if (node.node_type === "human_review") return "H";
   if (node.node_type === "fusion") return "M";
   return (node.node_type[0] || "N").toUpperCase();
+}
+
+function PlusIcon() {
+  return (
+    <svg className="plus-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 5v14M5 12h14" />
+    </svg>
+  );
+}
+
+function WorkflowTemplatePreview({ template }: { template: WorkflowTemplate }) {
+  const nodes = template.nodes.slice(0, 8);
+  return (
+    <div className="workflow-template-preview" aria-hidden="true">
+      {nodes.map((node, index) => (
+        <span
+          key={node.node_id}
+          className={`node-${node.node_type}`}
+          style={{
+            left: `${8 + (index % 4) * 22}%`,
+            top: `${18 + Math.floor(index / 4) * 34}%`
+          }}
+        />
+      ))}
+      <i />
+      <i />
+      <i />
+    </div>
+  );
 }
 
 function primaryOutputForNode(node: WorkflowNode): WorkflowPort | null {
