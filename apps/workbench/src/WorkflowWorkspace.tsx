@@ -70,6 +70,7 @@ type NodePickerState = {
 };
 
 type WorkflowViewMode = "library" | "canvas";
+type WorkflowDialogMode = "folder" | "workflow" | null;
 
 type WorkflowFolder = {
   folder_id: string;
@@ -126,11 +127,13 @@ const DEFAULT_VIEWPORT: CanvasViewport = { x: 88, y: 74, zoom: 0.84 };
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 1.25;
 const DEFAULT_COPY_NAME = "Custom DrawAI DAG";
+const DEFAULT_BLANK_WORKFLOW_NAME = "Untitled Workflow";
+const WORKFLOW_TEMPLATE_SCHEMA = "drawai.workflow_template.v1";
 const BUILTIN_WORKFLOW_FOLDER_ID = "builtin";
 const CUSTOM_WORKFLOW_FOLDER_ID = "custom";
 const WORKFLOW_FOLDERS_STORAGE_KEY = "drawai.workflow.folders";
 const DEFAULT_WORKFLOW_FOLDERS: WorkflowFolder[] = [
-  { folder_id: BUILTIN_WORKFLOW_FOLDER_ID, name: "默认分类", builtin: true },
+  { folder_id: BUILTIN_WORKFLOW_FOLDER_ID, name: "DrawAI默认工作流", builtin: true },
   { folder_id: CUSTOM_WORKFLOW_FOLDER_ID, name: "自定义工作流" }
 ];
 const DEFAULT_SAM_PROMPTS: SamPromptConfig[] = [
@@ -269,9 +272,12 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
   const [providers, setProviders] = useState<AgentProviderSpec[]>([]);
   const [workflowView, setWorkflowView] = useState<WorkflowViewMode>("library");
+  const [workflowDialog, setWorkflowDialog] = useState<WorkflowDialogMode>(null);
   const [workflowFolders, setWorkflowFolders] = useState<WorkflowFolder[]>(() => loadWorkflowFolders());
   const [activeWorkflowFolderId, setActiveWorkflowFolderId] = useState(BUILTIN_WORKFLOW_FOLDER_ID);
-  const [newFolderName, setNewFolderName] = useState("");
+  const [folderNameDraft, setFolderNameDraft] = useState("");
+  const [workflowNameDraft, setWorkflowNameDraft] = useState("");
+  const [selectedCopyTemplateId, setSelectedCopyTemplateId] = useState("");
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [draft, setDraft] = useState<WorkflowTemplate | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState("");
@@ -362,7 +368,12 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     () => templates.filter((template) => workflowFolderIdForTemplate(template) === activeWorkflowFolder.folder_id),
     [templates, activeWorkflowFolder.folder_id]
   );
+  const builtinWorkflowTemplates = useMemo(
+    () => templates.filter((template) => workflowFolderIdForTemplate(template) === BUILTIN_WORKFLOW_FOLDER_ID),
+    [templates]
+  );
   const topbarTarget = typeof document !== "undefined" ? document.getElementById("drawai-view-controls") : null;
+  const modalTarget = typeof document !== "undefined" ? document.body : null;
   const topbarPortal =
     topbarTarget && workflowView === "canvas"
       ? createPortal(
@@ -398,8 +409,29 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
           topbarTarget
         )
       : null;
+  const workflowDialogPortal =
+    modalTarget && workflowDialog
+      ? createPortal(
+          <WorkflowLibraryDialog
+            mode={workflowDialog}
+            folderName={folderNameDraft}
+            workflowName={workflowNameDraft}
+            selectedCopyTemplateId={selectedCopyTemplateId}
+            builtinTemplates={builtinWorkflowTemplates}
+            busy={busy}
+            onClose={closeWorkflowDialog}
+            onFolderNameChange={setFolderNameDraft}
+            onWorkflowNameChange={setWorkflowNameDraft}
+            onSelectCopyTemplate={setSelectedCopyTemplateId}
+            onCreateFolder={confirmAddWorkflowFolder}
+            onCopyWorkflow={() => void copyWorkflowFromDialog()}
+            onCreateBlankWorkflow={createBlankWorkflowFromDialog}
+          />,
+          modalTarget
+        )
+      : null;
 
-  async function copySelectedTemplate(sourceId = selectedTemplateId || "default_drawai_dag", preferredName = "") {
+  async function copySelectedTemplate(sourceId = selectedTemplateId || "default_drawai_dag", preferredName = ""): Promise<boolean> {
     const source = templates.find((item) => item.template_id === sourceId) || null;
     const targetName = preferredName.trim() || copiedWorkflowName(source?.name || DEFAULT_COPY_NAME);
     try {
@@ -416,22 +448,22 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
       setWorkflowView("canvas");
       setInspectorOpen(false);
       await loadWorkflowData(response.template.template_id);
+      return true;
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setBusy("");
     }
   }
 
-  function createLocalTemplate() {
-    const base = templates.find((item) => item.template_id === "default_drawai_dag") || draft;
-    if (!base) return;
-    const timestamp = Date.now().toString(36);
+  function createBlankWorkflowFromDialog() {
     const folderId = activeWorkflowFolderId === BUILTIN_WORKFLOW_FOLDER_ID ? CUSTOM_WORKFLOW_FOLDER_ID : activeWorkflowFolderId;
-    const template = cloneTemplate(base);
-    template.template_id = `custom_workflow_${timestamp}`;
-    template.name = "Untitled Workflow";
-    template.defaults = { ...template.defaults, builtin: false, read_only: false, source_template_id: base.template_id, folder_id: folderId };
+    const template = blankWorkflowTemplate(
+      uniqueTemplateId(templates, "custom_workflow"),
+      workflowNameDraft.trim() || DEFAULT_BLANK_WORKFLOW_NAME,
+      folderId
+    );
     setTemplates((current) => [...current.filter((item) => item.template_id !== template.template_id), template]);
     setActiveWorkflowFolderId(folderId);
     setSelectedTemplateId(template.template_id);
@@ -446,6 +478,13 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     setInspectorOpen(false);
     setWorkflowView("canvas");
     setViewport(DEFAULT_VIEWPORT);
+    closeWorkflowDialog();
+  }
+
+  async function copyWorkflowFromDialog() {
+    if (!selectedCopyTemplateId) return;
+    const copied = await copySelectedTemplate(selectedCopyTemplateId, workflowNameDraft);
+    if (copied) closeWorkflowDialog();
   }
 
   async function validateDraft() {
@@ -527,8 +566,26 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     setInspectorOpen(false);
   }
 
-  function addWorkflowFolder() {
-    const name = newFolderName.trim();
+  function openFolderDialog() {
+    setFolderNameDraft("");
+    setWorkflowDialog("folder");
+  }
+
+  function openWorkflowDialog() {
+    setWorkflowNameDraft("");
+    setSelectedCopyTemplateId("");
+    setWorkflowDialog("workflow");
+  }
+
+  function closeWorkflowDialog() {
+    setWorkflowDialog(null);
+    setFolderNameDraft("");
+    setWorkflowNameDraft("");
+    setSelectedCopyTemplateId("");
+  }
+
+  function confirmAddWorkflowFolder() {
+    const name = folderNameDraft.trim();
     if (!name) return;
     const folder: WorkflowFolder = {
       folder_id: uniqueWorkflowFolderId(workflowFolders, name),
@@ -536,7 +593,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     };
     setWorkflowFolders((current) => [...current, folder]);
     setActiveWorkflowFolderId(folder.folder_id);
-    setNewFolderName("");
+    closeWorkflowDialog();
   }
 
   function updateDraft(patch: Partial<WorkflowTemplate>) {
@@ -1032,121 +1089,111 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
 
   if (workflowView === "library") {
     return (
-      <main className="workflow-workspace workflow-library-workspace task-selection-workspace">
-        <section className="batch-rail workflow-folder-rail" aria-label="工作流类型">
-          <div className="board-panel-head">
-            <div>
-              <span>工作流类型</span>
-              <strong>{visibleWorkflowFolders.length} 个类型</strong>
+      <>
+        {workflowDialogPortal}
+        <main className="workflow-workspace workflow-library-workspace task-selection-workspace">
+          <section className="batch-rail workflow-folder-rail" aria-label="工作流类型">
+            <div className="board-panel-head">
+              <div>
+                <span>工作流类型</span>
+                <strong>{visibleWorkflowFolders.length} 个类型</strong>
+              </div>
+              <button type="button" className="task-submit-button workflow-add-button" title="新建工作流类型" aria-label="新建工作流类型" onClick={openFolderDialog}>
+                <PlusIcon />
+              </button>
             </div>
-            <button type="button" className="task-submit-button workflow-add-button" title="新建文件夹" aria-label="新建文件夹" onClick={addWorkflowFolder}>
-              <PlusIcon />
-            </button>
-          </div>
-          <div className="batch-list-modern workflow-folder-list">
-            {visibleWorkflowFolders.map((folder) => (
-              <article
-                key={folder.folder_id}
-                className={`batch-row ${folder.folder_id === activeWorkflowFolder.folder_id ? "active" : ""}`}
-                role="button"
-                tabIndex={0}
-                onClick={() => setActiveWorkflowFolderId(folder.folder_id)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    setActiveWorkflowFolderId(folder.folder_id);
-                  }
-                }}
-              >
-                <div className="batch-row-top">
-                  <span className={`status-pill ${folder.builtin ? "status-completed" : ""}`}>{folder.builtin ? "内置" : "自定义"}</span>
-                  <em>{folder.count} 个</em>
-                </div>
-                <div className="batch-row-main">
-                  <strong>{folder.name}</strong>
-                </div>
-                <div className="batch-row-bottom">
-                  <em>{folder.builtin ? "默认分类" : "本地分类"}</em>
-                </div>
-              </article>
-            ))}
-          </div>
-          <div className="workflow-new-folder">
-            <input
-              value={newFolderName}
-              placeholder="新建文件夹"
-              onChange={(event) => setNewFolderName(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") addWorkflowFolder();
-              }}
-            />
-            <button type="button" className="workflow-add-button" title="新建文件夹" aria-label="新建文件夹" onClick={addWorkflowFolder}>
-              <PlusIcon />
-            </button>
-          </div>
-        </section>
-
-        <section className="case-lane workflow-template-lane">
-          <div className="board-panel-head workflow-template-head">
-            <div>
-              <span>{activeWorkflowFolder.builtin ? "内置工作流" : "工作流"}</span>
-              <strong>{activeWorkflowFolder.name}</strong>
-            </div>
-            <button type="button" className="task-submit-button workflow-add-button" title="新建工作流" aria-label="新建工作流" onClick={createLocalTemplate}>
-              <PlusIcon />
-            </button>
-          </div>
-
-          <div className="task-list workflow-template-list">
-            {libraryTemplates.map((template) => {
-              const stats = workflowNodeStats(template);
-              const builtin = Boolean(template.defaults?.builtin);
-              return (
+            <div className="batch-list-modern workflow-folder-list">
+              {visibleWorkflowFolders.map((folder) => (
                 <article
-                  key={template.template_id}
-                  className={`task-row workflow-template-row ${template.template_id === selectedTemplateId ? "active" : ""} ${builtin ? "readonly" : ""}`}
+                  key={folder.folder_id}
+                  className={`batch-row ${folder.folder_id === activeWorkflowFolder.folder_id ? "active" : ""}`}
                   role="button"
                   tabIndex={0}
-                  onClick={() => openWorkflowCanvas(template.template_id)}
+                  onClick={() => setActiveWorkflowFolderId(folder.folder_id)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
-                      openWorkflowCanvas(template.template_id);
+                      setActiveWorkflowFolderId(folder.folder_id);
                     }
                   }}
                 >
-                  <div className="task-row-top">
-                    <span className={`status-pill ${builtin ? "status-completed" : "status-running"}`}>{builtin ? "内置" : "自定义"}</span>
-                    <em>{template.version ? `v${template.version}` : "draft"}</em>
+                  <div className="batch-row-top">
+                    <span className={`status-pill ${folder.builtin ? "status-completed" : ""}`}>{folder.builtin ? "内置" : "自定义"}</span>
+                    <em>{folder.count} 个</em>
                   </div>
-                  <div className="task-thumb workflow-template-thumb">
-                    <WorkflowTemplatePreview template={template} />
+                  <div className="batch-row-main">
+                    <strong>{folder.name}</strong>
                   </div>
-                  <div className="task-bottom">
-                    <div className="task-info">
-                      <div className="task-main">
-                        <strong>{template.name}</strong>
-                        <span>{template.description || "Workflow DAG"}</span>
-                      </div>
-                      <div className="task-meta">
-                        <em>{template.nodes.length} 节点 · {template.edges.length} 连线 · {stats.agent} Agent</em>
-                      </div>
-                    </div>
+                  <div className="batch-row-bottom">
+                    <em>{folder.builtin ? "内置类型" : "本地分类"}</em>
                   </div>
                 </article>
-              );
-            })}
-            {libraryTemplates.length === 0 && (
-              <div className="workflow-library-empty">
-                <strong>这个分类还没有工作流</strong>
-                <button type="button" className="task-submit-button workflow-add-button" title="新建工作流" aria-label="新建工作流" onClick={createLocalTemplate}>
-                  <PlusIcon />
-                </button>
+              ))}
+            </div>
+          </section>
+
+          <section className="case-lane workflow-template-lane">
+            <div className="board-panel-head workflow-template-head">
+              <div>
+                <span>{activeWorkflowFolder.builtin ? "内置工作流" : "工作流"}</span>
+                <strong>{activeWorkflowFolder.name}</strong>
               </div>
-            )}
-          </div>
-        </section>
-      </main>
+              <button type="button" className="task-submit-button workflow-add-button" title="新建工作流" aria-label="新建工作流" onClick={openWorkflowDialog}>
+                <PlusIcon />
+              </button>
+            </div>
+
+            <div className="task-list workflow-template-list">
+              {libraryTemplates.map((template) => {
+                const stats = workflowNodeStats(template);
+                const builtin = Boolean(template.defaults?.builtin);
+                return (
+                  <article
+                    key={template.template_id}
+                    className={`task-row workflow-template-row ${template.template_id === selectedTemplateId ? "active" : ""} ${builtin ? "readonly" : ""}`}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => openWorkflowCanvas(template.template_id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openWorkflowCanvas(template.template_id);
+                      }
+                    }}
+                  >
+                    <div className="task-row-top">
+                      <span className={`status-pill ${builtin ? "status-completed" : "status-running"}`}>{builtin ? "内置" : "自定义"}</span>
+                      <em>{template.version ? `v${template.version}` : "draft"}</em>
+                    </div>
+                    <div className="task-thumb workflow-template-thumb">
+                      <WorkflowTemplatePreview template={template} />
+                    </div>
+                    <div className="task-bottom">
+                      <div className="task-info">
+                        <div className="task-main">
+                          <strong>{template.name}</strong>
+                          <span>{template.description || "Workflow DAG"}</span>
+                        </div>
+                        <div className="task-meta">
+                          <em>{template.nodes.length} 节点 · {template.edges.length} 连线 · {stats.agent} Agent</em>
+                        </div>
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+              {libraryTemplates.length === 0 && (
+                <div className="workflow-library-empty">
+                  <strong>这个分类还没有工作流</strong>
+                  <button type="button" className="task-submit-button workflow-add-button" title="新建工作流" aria-label="新建工作流" onClick={openWorkflowDialog}>
+                    <PlusIcon />
+                  </button>
+                </div>
+              )}
+            </div>
+          </section>
+        </main>
+      </>
     );
   }
 
@@ -1754,6 +1801,120 @@ function WorkflowConnectionPreview({ drag }: { drag: HandleDragState }) {
   );
 }
 
+function WorkflowLibraryDialog({
+  mode,
+  folderName,
+  workflowName,
+  selectedCopyTemplateId,
+  builtinTemplates,
+  busy,
+  onClose,
+  onFolderNameChange,
+  onWorkflowNameChange,
+  onSelectCopyTemplate,
+  onCreateFolder,
+  onCopyWorkflow,
+  onCreateBlankWorkflow
+}: {
+  mode: Exclude<WorkflowDialogMode, null>;
+  folderName: string;
+  workflowName: string;
+  selectedCopyTemplateId: string;
+  builtinTemplates: WorkflowTemplate[];
+  busy: string;
+  onClose: () => void;
+  onFolderNameChange: (value: string) => void;
+  onWorkflowNameChange: (value: string) => void;
+  onSelectCopyTemplate: (templateId: string) => void;
+  onCreateFolder: () => void;
+  onCopyWorkflow: () => void;
+  onCreateBlankWorkflow: () => void;
+}) {
+  if (mode === "folder") {
+    return (
+      <div className="workflow-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+        <form
+          className="workflow-modal workflow-folder-modal"
+          role="dialog"
+          aria-modal="true"
+          aria-label="新建工作流类型"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onCreateFolder();
+          }}
+        >
+          <div className="workflow-modal-head">
+            <div>
+              <span>工作流类型</span>
+              <strong>新建文件夹</strong>
+            </div>
+            <button type="button" aria-label="关闭" onClick={onClose}>×</button>
+          </div>
+          <label className="workflow-modal-field">
+            <span>名称</span>
+            <input value={folderName} autoFocus placeholder="例如：实验工作流" onChange={(event) => onFolderNameChange(event.target.value)} />
+          </label>
+          <div className="workflow-modal-actions">
+            <button type="button" onClick={onClose}>取消</button>
+            <button type="submit" className="primary" disabled={!folderName.trim()}>创建</button>
+          </div>
+        </form>
+      </div>
+    );
+  }
+
+  return (
+    <div className="workflow-modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <section className="workflow-modal workflow-template-modal" role="dialog" aria-modal="true" aria-label="新建工作流">
+        <div className="workflow-modal-head">
+          <div>
+            <span>工作流</span>
+            <strong>新建工作流</strong>
+          </div>
+          <button type="button" aria-label="关闭" onClick={onClose}>×</button>
+        </div>
+        <label className="workflow-modal-field">
+          <span>名称</span>
+          <input value={workflowName} autoFocus placeholder="留空则使用默认名称" onChange={(event) => onWorkflowNameChange(event.target.value)} />
+        </label>
+        <div className="workflow-template-source-list" aria-label="默认工作流">
+          {builtinTemplates.map((template) => {
+            const stats = workflowNodeStats(template);
+            const selected = selectedCopyTemplateId === template.template_id;
+            return (
+              <button
+                type="button"
+                key={template.template_id}
+                className={selected ? "selected" : ""}
+                aria-pressed={selected}
+                onClick={() => onSelectCopyTemplate(selected ? "" : template.template_id)}
+              >
+                <div className="workflow-template-source-preview">
+                  <WorkflowTemplatePreview template={template} />
+                </div>
+                <div>
+                  <strong>{template.name}</strong>
+                  <span>{template.description || "DrawAI workflow"}</span>
+                  <em>{template.nodes.length} 节点 · {template.edges.length} 连线 · {stats.agent} Agent</em>
+                </div>
+              </button>
+            );
+          })}
+          {builtinTemplates.length === 0 && <p>没有可复制的默认工作流。</p>}
+        </div>
+        <div className="workflow-modal-actions workflow-template-modal-actions">
+          <button type="button" disabled={!selectedCopyTemplateId || busy === "copy"} onClick={onCopyWorkflow}>
+            复制工作流
+          </button>
+          <button type="button" className="primary" onClick={onCreateBlankWorkflow}>
+            新建工作流
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function nodePickerItems(template: WorkflowTemplate, picker: NodePickerState): NodePickerItem[] {
   const source = template.nodes.find((node) => node.node_id === picker.sourceNodeId);
   const sourcePort = source?.outputs.find((portItem) => portItem.port_id === picker.sourcePortId);
@@ -1982,6 +2143,46 @@ function uniqueWorkflowFolderId(folders: WorkflowFolder[], name: string): string
 
 function copiedWorkflowName(name: string): string {
   return `${name.replace(/\s+copy$/i, "").trim() || DEFAULT_COPY_NAME} Copy`;
+}
+
+function blankWorkflowTemplate(templateId: string, name: string, folderId: string): WorkflowTemplate {
+  return {
+    schema: WORKFLOW_TEMPLATE_SCHEMA,
+    template_id: templateId,
+    name,
+    description: "Blank workflow with a source image input.",
+    version: 1,
+    nodes: [
+      {
+        node_id: "input",
+        node_type: "input",
+        title: "Input",
+        inputs: [],
+        outputs: [port("image", "Image", ["image"], "drawai.image.v1", false)],
+        config: {},
+        position: { x: 0, y: 160 },
+        description: "Source image input."
+      }
+    ],
+    edges: [],
+    defaults: {
+      builtin: false,
+      read_only: false,
+      folder_id: folderId
+    }
+  };
+}
+
+function uniqueTemplateId(templates: WorkflowTemplate[], base: string): string {
+  const existing = new Set(templates.map((template) => template.template_id));
+  const seed = `${base}_${Date.now().toString(36)}`;
+  let candidate = seed;
+  let index = 2;
+  while (existing.has(candidate)) {
+    candidate = `${seed}_${index}`;
+    index += 1;
+  }
+  return candidate;
 }
 
 function arrangeWorkflowNodes(template: WorkflowTemplate): WorkflowNode[] {
