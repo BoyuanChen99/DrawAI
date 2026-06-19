@@ -717,10 +717,24 @@
 }
 
 .workflow-port-row span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   color: var(--ink);
   font-size: 12px;
   font-weight: 700;
   overflow-wrap: anywhere;
+}
+
+.workflow-port-row small {
+  flex: 0 0 auto;
+  border-radius: 4px;
+  background: #eef2f7;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 760;
+  line-height: 1;
+  padding: 3px 5px;
 }
 
 .workflow-port-row em {

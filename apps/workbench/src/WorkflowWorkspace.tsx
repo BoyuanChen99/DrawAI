@@ -1711,15 +1711,15 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                     <div className="workflow-agent-output" key={`${output.port_id}-${index}`}>
                       <div className="workflow-output-grid">
                         <label>
-                          <span>端口</span>
+                          <span>输出端口名</span>
                           <input value={output.port_id} disabled={readOnly} onChange={(event) => updateAgentOutput(index, { port_id: event.target.value })} />
                         </label>
                         <label>
-                          <span>类型</span>
+                          <span>数据类型</span>
                           <input value={output.type} disabled={readOnly} onChange={(event) => updateAgentOutput(index, { type: event.target.value })} />
                         </label>
                         <label>
-                          <span>格式</span>
+                          <span>文件格式</span>
                           <select value={output.format_id} disabled={readOnly} onChange={(event) => updateAgentOutputFormat(index, event.target.value)}>
                             {WORKFLOW_FORMAT_OPTIONS.map((option) => (
                               <option value={option.format_id} key={option.format_id}>
@@ -1729,7 +1729,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                           </select>
                         </label>
                         <label>
-                          <span>路径</span>
+                          <span>输出路径</span>
                           <input value={output.path} disabled={readOnly} onChange={(event) => updateAgentOutput(index, { path: event.target.value })} />
                         </label>
                       </div>
@@ -1755,9 +1755,25 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                     onChange={(event) => updateSelectedNodeConfig({ prompt_fragments: event.target.value })}
                   />
                 </label>
-                <button type="button" disabled={busy === "prompt"} onClick={() => void renderPromptForNode(selectedNode)}>
+                <button
+                  type="button"
+                  disabled={busy === "prompt"}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void renderPromptForNode(selectedNode);
+                  }}
+                >
                   预览最终 Prompt
                 </button>
+                {promptPreview && (
+                  <div className="workflow-prompt-preview">
+                    <div>
+                      <span>{promptPreview.provider_id}</span>
+                      <strong>{agentPresetLabel(promptPreview.preset_id)}</strong>
+                    </div>
+                    <pre>{promptPreview.text}</pre>
+                  </div>
+                )}
               </div>
             )}
 
@@ -1790,11 +1806,14 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
 
             <div className="workflow-inspector-section">
               <div className="workflow-section-title">
-                <span>端口</span>
+                <span>连接端口</span>
               </div>
-              {[...selectedNode.inputs, ...selectedNode.outputs].map((portItem) => (
-                <div className="workflow-port-row" key={`${portItem.port_id}-${portItem.required ? "in" : "out"}`}>
-                  <span>{portItem.port_id}</span>
+              {[
+                ...selectedNode.inputs.map((portItem) => ({ portItem, direction: "输入" })),
+                ...selectedNode.outputs.map((portItem) => ({ portItem, direction: "输出" }))
+              ].map(({ portItem, direction }) => (
+                <div className="workflow-port-row" key={`${direction}-${portItem.port_id}`}>
+                  <span><small>{direction}</small>{portItem.port_id}</span>
                   <em>{portItem.types.join(" / ") || "control"}</em>
                 </div>
               ))}
@@ -1804,15 +1823,6 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                 删除节点
               </button>
             </div>
-            {promptPreview && (
-              <div className="workflow-prompt-preview">
-                <div>
-                  <span>{promptPreview.provider_id}</span>
-                  <strong>{agentPresetLabel(promptPreview.preset_id)}</strong>
-                </div>
-                <pre>{promptPreview.text}</pre>
-              </div>
-            )}
           </>
         ) : selectedEdge ? (
           <div className="workflow-edge-inspector">
