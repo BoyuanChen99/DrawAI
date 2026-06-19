@@ -1,4 +1,4 @@
-import { PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { PointerEvent, WheelEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   copyWorkflowTemplate,
   listWorkflowProviders,
@@ -19,6 +19,20 @@ import type {
 
 type DraggingNode = {
   nodeId: string;
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  startX: number;
+  startY: number;
+};
+
+type CanvasViewport = {
+  x: number;
+  y: number;
+  zoom: number;
+};
+
+type CanvasPanState = {
   pointerId: number;
   startClientX: number;
   startClientY: number;
@@ -73,8 +87,11 @@ type AgentOutputConfig = {
   description: string;
 };
 
-const NODE_WIDTH = 204;
-const NODE_HEIGHT = 78;
+const NODE_WIDTH = 236;
+const NODE_HEIGHT = 72;
+const DEFAULT_VIEWPORT: CanvasViewport = { x: 88, y: 74, zoom: 0.84 };
+const MIN_ZOOM = 0.5;
+const MAX_ZOOM = 1.25;
 const DEFAULT_COPY_NAME = "Custom DrawAI DAG";
 
 const NODE_PRESETS: NodePreset[] = [
@@ -209,10 +226,13 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
   const [promptPreview, setPromptPreview] = useState<AgentPromptPreview | null>(null);
   const [copyName, setCopyName] = useState(DEFAULT_COPY_NAME);
   const [dragging, setDragging] = useState<DraggingNode | null>(null);
+  const [canvasPan, setCanvasPan] = useState<CanvasPanState | null>(null);
+  const [viewport, setViewport] = useState<CanvasViewport>(DEFAULT_VIEWPORT);
   const [connecting, setConnecting] = useState<ConnectingPort | null>(null);
   const [handleDrag, setHandleDrag] = useState<HandleDragState | null>(null);
   const [nodePicker, setNodePicker] = useState<NodePickerState | null>(null);
   const [busy, setBusy] = useState("");
+  const viewportRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -241,6 +261,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
       setNodePicker(null);
       setHandleDrag(null);
       setConnecting(null);
+      setViewport(DEFAULT_VIEWPORT);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -263,6 +284,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
   const selectedAgentInputs = useMemo(() => (draft && selectedNode ? workflowInputPreview(draft, selectedNode) : []), [draft, selectedNode]);
   const selectedAgentOutputs = selectedNode ? agentOutputsForNode(selectedNode) : [];
   const pickerItems = useMemo(() => (draft && nodePicker ? nodePickerItems(draft, nodePicker) : []), [draft, nodePicker]);
+  const minimapNodes = useMemo(() => (draft ? workflowMinimapNodes(draft) : []), [draft]);
 
   async function copySelectedTemplate() {
     const sourceId = selectedTemplateId || "default_drawai_dag";
@@ -295,6 +317,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     setNodePicker(null);
     setHandleDrag(null);
     setConnecting(null);
+    setViewport(DEFAULT_VIEWPORT);
   }
 
   async function validateDraft() {
@@ -357,6 +380,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     setConnecting(null);
     setNodePicker(null);
     setHandleDrag(null);
+    setViewport(DEFAULT_VIEWPORT);
   }
 
   function updateDraft(patch: Partial<WorkflowTemplate>) {
@@ -404,6 +428,84 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     setValidation(null);
   }
 
+  function beginCanvasPan(event: PointerEvent<HTMLDivElement>) {
+    const target = event.target;
+    if (
+      target instanceof HTMLElement &&
+      target.closest(".workflow-node, .workflow-node-picker, .workflow-floating-validation, .workflow-zoom-control, .workflow-minimap, button, input, select, textarea")
+    ) {
+      return;
+    }
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setCanvasPan({
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startX: viewport.x,
+      startY: viewport.y
+    });
+  }
+
+  function moveCanvasPan(event: PointerEvent<HTMLDivElement>) {
+    if (!canvasPan || canvasPan.pointerId !== event.pointerId) return;
+    setViewport((current) => ({
+      ...current,
+      x: Math.round(canvasPan.startX + event.clientX - canvasPan.startClientX),
+      y: Math.round(canvasPan.startY + event.clientY - canvasPan.startClientY)
+    }));
+  }
+
+  function endCanvasPan(event: PointerEvent<HTMLDivElement>) {
+    if (canvasPan?.pointerId === event.pointerId) setCanvasPan(null);
+  }
+
+  function handleCanvasWheel(event: WheelEvent<HTMLDivElement>) {
+    event.preventDefault();
+    if (event.ctrlKey || event.metaKey) {
+      setZoomAroundPoint(viewport.zoom * Math.exp(-event.deltaY * 0.003), event.clientX, event.clientY);
+      return;
+    }
+    setViewport((current) => ({
+      ...current,
+      x: Math.round(current.x - event.deltaX),
+      y: Math.round(current.y - event.deltaY)
+    }));
+  }
+
+  function setZoomAroundPoint(nextZoomValue: number, clientX?: number, clientY?: number) {
+    const rect = viewportRef.current?.getBoundingClientRect();
+    setViewport((current) => {
+      const nextZoom = clamp(nextZoomValue, MIN_ZOOM, MAX_ZOOM);
+      if (!rect) return { ...current, zoom: nextZoom };
+      const anchorX = clientX ?? rect.left + rect.width / 2;
+      const anchorY = clientY ?? rect.top + rect.height / 2;
+      const canvasX = (anchorX - rect.left - current.x) / current.zoom;
+      const canvasY = (anchorY - rect.top - current.y) / current.zoom;
+      return {
+        x: Math.round(anchorX - rect.left - canvasX * nextZoom),
+        y: Math.round(anchorY - rect.top - canvasY * nextZoom),
+        zoom: nextZoom
+      };
+    });
+  }
+
+  function zoomCanvas(delta: number) {
+    setZoomAroundPoint(viewport.zoom + delta);
+  }
+
+  function fitWorkflowToView() {
+    if (!draft) return;
+    const rect = viewportRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const bounds = workflowBounds(draft);
+    const nextZoom = clamp(Math.min((rect.width - 220) / bounds.width, (rect.height - 130) / bounds.height, 1), MIN_ZOOM, MAX_ZOOM);
+    setViewport({
+      x: Math.round(rect.width / 2 - (bounds.x + bounds.width / 2) * nextZoom),
+      y: Math.round(rect.height / 2 - (bounds.y + bounds.height / 2) * nextZoom),
+      zoom: nextZoom
+    });
+  }
+
   function beginNodeDrag(event: PointerEvent<HTMLElement>, node: WorkflowNode) {
     if (readOnly) return;
     const target = event.target;
@@ -421,8 +523,8 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
 
   function moveNode(event: PointerEvent<HTMLElement>) {
     if (!dragging || dragging.pointerId !== event.pointerId) return;
-    const nextX = Math.max(0, dragging.startX + event.clientX - dragging.startClientX);
-    const nextY = Math.max(0, dragging.startY + event.clientY - dragging.startClientY);
+    const nextX = Math.max(0, dragging.startX + (event.clientX - dragging.startClientX) / viewport.zoom);
+    const nextY = Math.max(0, dragging.startY + (event.clientY - dragging.startClientY) / viewport.zoom);
     updateNode(dragging.nodeId, { position: { x: Math.round(nextX), y: Math.round(nextY) } });
   }
 
@@ -431,9 +533,12 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
   }
 
   function canvasPointFromClient(clientX: number, clientY: number): { x: number; y: number } {
-    const rect = canvasRef.current?.getBoundingClientRect();
+    const rect = viewportRef.current?.getBoundingClientRect();
     if (!rect) return { x: clientX, y: clientY };
-    return { x: Math.round(clientX - rect.left), y: Math.round(clientY - rect.top) };
+    return {
+      x: Math.round((clientX - rect.left - viewport.x) / viewport.zoom),
+      y: Math.round((clientY - rect.top - viewport.y) / viewport.zoom)
+    };
   }
 
   function outputAnchorFor(node: WorkflowNode): { x: number; y: number } {
@@ -505,7 +610,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     setSelectedEdgeId("");
   }
 
-  function moveOutputHandlePointer(event: PointerEvent<HTMLButtonElement>) {
+  function moveOutputHandlePointer(event: PointerEvent<HTMLElement>) {
     if (!handleDrag || handleDrag.pointerId !== event.pointerId) return;
     const distance = Math.hypot(event.clientX - handleDrag.startClientX, event.clientY - handleDrag.startClientY);
     setHandleDrag({
@@ -515,7 +620,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     });
   }
 
-  function endOutputHandlePointer(event: PointerEvent<HTMLButtonElement>) {
+  function endOutputHandlePointer(event: PointerEvent<HTMLElement>) {
     if (!handleDrag || handleDrag.pointerId !== event.pointerId) return;
     event.stopPropagation();
     const distance = Math.hypot(event.clientX - handleDrag.startClientX, event.clientY - handleDrag.startClientY);
@@ -773,11 +878,35 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
             ))}
           </div>
         )}
-        <div className="workflow-canvas-scroll">
+        <div
+          ref={viewportRef}
+          className={`workflow-canvas-scroll ${canvasPan ? "panning" : ""}`}
+          onPointerDown={beginCanvasPan}
+          onPointerMove={(event) => {
+            moveCanvasPan(event);
+            moveOutputHandlePointer(event);
+          }}
+          onPointerUp={(event) => {
+            endCanvasPan(event);
+            endOutputHandlePointer(event);
+          }}
+          onPointerCancel={(event) => {
+            endCanvasPan(event);
+            if (handleDrag?.pointerId === event.pointerId) {
+              setHandleDrag(null);
+              setConnecting(null);
+            }
+          }}
+          onWheel={handleCanvasWheel}
+        >
           <div
             ref={canvasRef}
             className="workflow-canvas"
-            style={{ width: canvasSize.width, height: canvasSize.height }}
+            style={{
+              width: canvasSize.width,
+              height: canvasSize.height,
+              transform: `translate3d(${viewport.x}px, ${viewport.y}px, 0) scale(${viewport.zoom})`
+            }}
             onClick={(event) => {
               if (event.target === event.currentTarget) {
                 setNodePicker(null);
@@ -798,78 +927,76 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
               />
             )}
             {handleDrag?.active && <WorkflowConnectionPreview drag={handleDrag} />}
-            {draft?.nodes.map((node) => (
-              <article
-                key={node.node_id}
-                className={`workflow-node node-${node.node_type} ${node.node_id === selectedNodeId ? "active" : ""}`}
-                data-node-id={node.node_id}
-                style={{ left: node.position.x || 0, top: node.position.y || 0 }}
-                onClick={() => {
-                  setSelectedNodeId(node.node_id);
-                  setSelectedEdgeId("");
-                  setPromptPreview(null);
-                }}
-                onPointerDown={(event) => beginNodeDrag(event, node)}
-                onPointerMove={moveNode}
-                onPointerUp={endNodeDrag}
-                onPointerCancel={endNodeDrag}
-              >
-                <div className="workflow-node-head">
-                  <span className="workflow-node-icon">{nodeIcon(node)}</span>
-                  <div>
-                    <em>{node.node_type}</em>
-                    <strong>{node.title}</strong>
+            {draft?.nodes.map((node) => {
+              const sourceOutput = primaryOutputForNode(node);
+              return (
+                <article
+                  key={node.node_id}
+                  className={`workflow-node node-${node.node_type} ${node.node_id === selectedNodeId ? "active" : ""}`}
+                  data-node-id={node.node_id}
+                  style={{ left: node.position.x || 0, top: node.position.y || 0 }}
+                  onClick={() => {
+                    setSelectedNodeId(node.node_id);
+                    setSelectedEdgeId("");
+                    setPromptPreview(null);
+                  }}
+                  onPointerDown={(event) => beginNodeDrag(event, node)}
+                  onPointerMove={moveNode}
+                  onPointerUp={endNodeDrag}
+                  onPointerCancel={endNodeDrag}
+                >
+                  <div className="workflow-node-head">
+                    <span className="workflow-node-icon">{nodeIcon(node)}</span>
+                    <div>
+                      <em>{node.node_type}</em>
+                      <strong>{node.title}</strong>
+                    </div>
                   </div>
-                </div>
-                <div className="workflow-node-port-row inputs">
-                  {node.inputs.map((input) => (
-                    <button
-                      type="button"
-                      key={input.port_id}
-                      data-node-id={node.node_id}
-                      data-input-port={input.port_id}
-                      aria-disabled={!connecting}
-                      className={connecting && compatibleTarget(draft, connecting, node, input) ? "compatible" : ""}
-                      title={`${input.label}: ${input.types.join(" / ")}`}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        if (connecting) completeConnection(node.node_id, input.port_id);
-                      }}
-                    >
-                      {input.port_id}
-                    </button>
-                  ))}
-                </div>
-                <p>{nodeOutputSummary(node)}</p>
-                <div className="workflow-node-output-list">
-                  {node.outputs.map((output) => (
-                    <div className="workflow-output-slot" key={output.port_id}>
-                      <span>{output.port_id}</span>
+                  <div className="workflow-node-port-row inputs">
+                    {node.inputs.map((input) => (
                       <button
                         type="button"
-                        className={`workflow-node-plus ${connecting?.nodeId === node.node_id && connecting.portId === output.port_id ? "connecting" : ""}`}
-                        disabled={readOnly}
-                        title="点击添加节点，拖拽连接节点"
-                        onClick={(event) => event.stopPropagation()}
-                        onPointerDown={(event) => beginOutputHandlePointer(event, node, output)}
-                        onPointerMove={moveOutputHandlePointer}
-                        onPointerUp={endOutputHandlePointer}
-                        onPointerCancel={() => {
-                          setHandleDrag(null);
-                          setConnecting(null);
+                        key={input.port_id}
+                        data-node-id={node.node_id}
+                        data-input-port={input.port_id}
+                        aria-disabled={!connecting}
+                        className={connecting && compatibleTarget(draft, connecting, node, input) ? "compatible" : ""}
+                        title={`${input.label}: ${input.types.join(" / ")}`}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (connecting) completeConnection(node.node_id, input.port_id);
                         }}
                       >
-                        +
+                        {input.port_id}
                       </button>
-                    </div>
-                  ))}
-                </div>
-              </article>
-            ))}
+                    ))}
+                  </div>
+                  <p>{nodeOutputSummary(node)}</p>
+                  {sourceOutput && (
+                    <button
+                      type="button"
+                      className={`workflow-node-plus ${connecting?.nodeId === node.node_id && connecting.portId === sourceOutput.port_id ? "connecting" : ""}`}
+                      disabled={readOnly}
+                      title="点击添加节点，拖拽连接节点"
+                      onClick={(event) => event.stopPropagation()}
+                      onPointerDown={(event) => beginOutputHandlePointer(event, node, sourceOutput)}
+                      onPointerMove={moveOutputHandlePointer}
+                      onPointerUp={endOutputHandlePointer}
+                      onPointerCancel={() => {
+                        setHandleDrag(null);
+                        setConnecting(null);
+                      }}
+                    >
+                      +
+                    </button>
+                  )}
+                </article>
+              );
+            })}
             {nodePicker && (
               <div
                 className="workflow-node-picker"
-                style={{ left: nodePicker.x, top: nodePicker.y }}
+                style={{ left: nodePicker.x, top: nodePicker.y, transform: `scale(${1 / viewport.zoom})` }}
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => event.stopPropagation()}
               >
@@ -910,6 +1037,20 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                 取消连线
               </button>
             )}
+          </div>
+          <div className="workflow-minimap" aria-hidden="true">
+            {minimapNodes.map((node) => (
+              <span
+                key={node.nodeId}
+                style={{ left: `${node.x}%`, top: `${node.y}%`, width: `${node.width}%`, height: `${node.height}%` }}
+              />
+            ))}
+          </div>
+          <div className="workflow-zoom-control">
+            <button type="button" title="缩小" onClick={() => zoomCanvas(-0.08)}>−</button>
+            <strong>{Math.round(viewport.zoom * 100)}%</strong>
+            <button type="button" title="放大" onClick={() => zoomCanvas(0.08)}>+</button>
+            <button type="button" title="适配画布" onClick={fitWorkflowToView}>⤢</button>
           </div>
         </div>
       </section>
@@ -1278,6 +1419,10 @@ function nodeIcon(node: WorkflowNode): string {
   return (node.node_type[0] || "N").toUpperCase();
 }
 
+function primaryOutputForNode(node: WorkflowNode): WorkflowPort | null {
+  return node.outputs[0] || null;
+}
+
 function port(
   port_id: string,
   label: string,
@@ -1301,6 +1446,35 @@ function port(
 function compatibleTypes(sourcePort: WorkflowPort, targetPort: WorkflowPort): string[] {
   const targetTypes = new Set(targetPort.types);
   return sourcePort.types.filter((item) => targetTypes.has(item));
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function workflowBounds(template: WorkflowTemplate): { x: number; y: number; width: number; height: number } {
+  if (template.nodes.length === 0) return { x: 0, y: 0, width: 900, height: 520 };
+  const minX = Math.min(...template.nodes.map((node) => node.position.x || 0));
+  const minY = Math.min(...template.nodes.map((node) => node.position.y || 0));
+  const maxX = Math.max(...template.nodes.map((node) => (node.position.x || 0) + NODE_WIDTH));
+  const maxY = Math.max(...template.nodes.map((node) => (node.position.y || 0) + NODE_HEIGHT));
+  return {
+    x: Math.max(0, minX - 48),
+    y: Math.max(0, minY - 48),
+    width: Math.max(260, maxX - minX + 96),
+    height: Math.max(180, maxY - minY + 96)
+  };
+}
+
+function workflowMinimapNodes(template: WorkflowTemplate): Array<{ nodeId: string; x: number; y: number; width: number; height: number }> {
+  const bounds = workflowBounds(template);
+  return template.nodes.map((node) => ({
+    nodeId: node.node_id,
+    x: clamp((((node.position.x || 0) - bounds.x) / bounds.width) * 100, 0, 98),
+    y: clamp((((node.position.y || 0) - bounds.y) / bounds.height) * 100, 0, 96),
+    width: clamp((NODE_WIDTH / bounds.width) * 100, 6, 28),
+    height: clamp((NODE_HEIGHT / bounds.height) * 100, 5, 20)
+  }));
 }
 
 function compatibleTarget(template: WorkflowTemplate | null, connecting: ConnectingPort, targetNode: WorkflowNode, targetPort: WorkflowPort): boolean {
