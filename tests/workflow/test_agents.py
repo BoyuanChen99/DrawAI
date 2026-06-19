@@ -35,16 +35,29 @@ def test_run0_agent_prompt_renders_inputs_and_output_contract() -> None:
                 "description": "Fused boxes from SAM and OCR.",
             },
         ),
-        node_config={"provider_id": "codex_sdk", "reasoning_effort": "high"},
+        node_config={
+            "node_id": "run0_agent",
+            "provider_id": "codex_sdk",
+            "reasoning_effort": "high",
+        },
     )
 
     assert prompt.provider_id == "codex_sdk"
     assert prompt.preset_id == "run0_element_refine"
+    assert "# Run0 Element Refinement" not in prompt.text
+    assert "## Agent Runtime Settings" in prompt.text
+    assert "- Node workdir: nodes/run0_agent/runs/<attempt_id>" in prompt.text
     assert "DrawAI asset post-processing and source analysis task." in prompt.text
     assert "Task 1: refine the connected candidates into minimum independent assets." in prompt.text
+    assert "## Connected Input Files" in prompt.text
     assert "nodes/fusion/runs/001/output/elements.json" in prompt.text
+    assert "input_manifest.json" in prompt.text
+    assert "../../../<path>" in prompt.text
     assert "Fused boxes from SAM and OCR." in prompt.text
+    assert "## Declared Output Files" in prompt.text
     assert "output/elements.json" in prompt.text
+    assert "nodes/run0_agent/runs/<attempt_id>/output/..." in prompt.text
+    assert "node_run.json" in prompt.text
     assert "drawai.element_plans.v1" in prompt.text
     assert "## Constraints" not in prompt.text
     assert "shell_command" not in prompt.text
@@ -67,10 +80,12 @@ def test_svg_agent_prompt_uses_same_agent_contract() -> None:
                 "description": "Renderable crop and no-bg asset packages.",
             },
         ),
-        node_config={"provider_id": "kimi_cli", "model": "kimi-k2"},
+        node_config={"node_id": "svg_agent", "provider_id": "kimi_cli", "model": "kimi-k2"},
     )
 
     assert prompt.provider_id == "kimi_cli"
+    assert "# SVG Generation" not in prompt.text
+    assert "- Node workdir: nodes/svg_agent/runs/<attempt_id>" in prompt.text
     assert "IMAGE VECTORIZATION TASK" in prompt.text
     assert "OVERALL SVG/PPT PROFILE" in prompt.text
     assert prompt.outputs[0]["path"] == "output/semantic.svg"

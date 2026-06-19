@@ -225,7 +225,7 @@ def render_agent_prompt(
     outputs = _configured_outputs(preset, config)
     options = _agent_options(config)
     text = _render_prompt_text(
-        preset,
+        node_id=str(config.get("node_id") or "<agent_node_id>"),
         provider_id=provider_id,
         inputs=selected_inputs,
         outputs=outputs,
@@ -244,8 +244,8 @@ def render_agent_prompt(
 
 
 def _render_prompt_text(
-    preset: AgentPreset,
     *,
+    node_id: str,
     provider_id: str,
     inputs: tuple[Mapping[str, Any], ...],
     outputs: tuple[Mapping[str, Any], ...],
@@ -254,15 +254,28 @@ def _render_prompt_text(
     constraints: tuple[str, ...],
 ) -> str:
     lines = [
-        f"# {preset.title}",
-        "",
-        f"Provider: {provider_id}",
-        "",
-        "## Task",
-        task,
-        "",
-        "## Available Input Files",
+        "## Agent Runtime Settings",
+        f"- Provider: {provider_id}",
+        f"- Node workdir: nodes/{node_id}/runs/<attempt_id>",
     ]
+    for key, value in options.items():
+        lines.append(f"- {key}: {value}")
+
+    lines.extend(
+        [
+            "",
+            "## Task",
+            task,
+            "",
+            "## Connected Input Files",
+            (
+                "The DrawAI harness records these paths relative to the workflow run "
+                "root and writes the same list to input_manifest.json in this node "
+                "workdir. If the Agent process runs from the node workdir, open an "
+                "input path with ../../../<path> to resolve it from the run root."
+            ),
+        ]
+    )
     if inputs:
         for item in inputs:
             source = _source_label(item)
@@ -278,7 +291,18 @@ def _render_prompt_text(
     else:
         lines.append("- No connected input files were provided.")
 
-    lines.extend(["", "## Required Output Files"])
+    lines.extend(
+        [
+            "",
+            "## Declared Output Files",
+            (
+                "Write exactly these files relative to this Agent node workdir. "
+                f"For example, output/... is saved as nodes/{node_id}/runs/"
+                "<attempt_id>/output/... from the workflow run root, and the harness "
+                "records the collected artifact path in node_run.json."
+            ),
+        ]
+    )
     for output in outputs:
         lines.extend(
             [
@@ -294,11 +318,6 @@ def _render_prompt_text(
         lines.extend(["", "## Constraints"])
         for constraint in constraints:
             lines.append(f"- {constraint}")
-
-    if options:
-        lines.extend(["", "## Runtime Options"])
-        for key, value in options.items():
-            lines.append(f"- {key}: {value}")
 
     return "\n".join(lines).strip() + "\n"
 

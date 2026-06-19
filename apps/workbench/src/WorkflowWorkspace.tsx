@@ -1511,7 +1511,6 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                       <WorkflowNodeIcon nodeType={node.node_type} />
                     </span>
                     <div>
-                      <em>{nodeTypeLabel(node.node_type)}</em>
                       <strong>{node.title}</strong>
                     </div>
                   </div>
@@ -1523,18 +1522,16 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                         data-node-id={node.node_id}
                         data-input-port={input.port_id}
                         aria-disabled={!connecting}
+                        aria-label={`${node.title} ${input.label}`}
                         className={connecting && compatibleTarget(draft, connecting, node, input) ? "compatible" : ""}
                         title={`${input.label}: ${input.types.join(" / ")}`}
                         onClick={(event) => {
                           event.stopPropagation();
                           if (connecting) completeConnection(node.node_id, input.port_id);
                         }}
-                      >
-                        {input.port_id}
-                      </button>
+                      />
                     ))}
                   </div>
-                  <p>{nodeOutputSummary(node)}</p>
                   {sourceOutput && (
                     <button
                       type="button"
@@ -2269,15 +2266,6 @@ function defaultAgentProvider(node: WorkflowNode): string {
   return String(node.config.provider_id || "codex_sdk");
 }
 
-function agentPromptTitle(node: WorkflowNode): string {
-  const titles: Record<string, string> = {
-    run0_element_refine: "Run0 Element Refinement",
-    svg_generation: "SVG Generation",
-    custom_agent: "Custom Agent"
-  };
-  return titles[agentPresetId(node)] || node.title || "Agent";
-}
-
 function agentTaskText(node: WorkflowNode): string {
   const raw =
     configText(node.config.task)
@@ -2338,14 +2326,19 @@ function workflowAgentPromptText(node: WorkflowNode, inputs: AgentInputPreview[]
   const constraints = agentConstraints(node);
   const options = agentRuntimeOptionsForNode(node);
   const lines = [
-    `# ${agentPromptTitle(node)}`,
-    "",
-    `Provider: ${providerId}`,
+    "## Agent Runtime Settings",
+    `- Provider: ${providerId}`,
+    `- Node workdir: nodes/${node.node_id}/runs/<attempt_id>`,
+    ...options.map(([key, value]) => `- ${key}: ${value}`),
     "",
     "## Task",
     agentTaskText(node),
     "",
-    "## Available Input Files"
+    "## Connected Input Files",
+    [
+      "The DrawAI harness records these paths relative to the workflow run root and writes the same list to input_manifest.json in this node workdir.",
+      "If the Agent process runs from the node workdir, open an input path with ../../../<path> to resolve it from the run root."
+    ].join(" ")
   ];
 
   if (selectedInputs.length > 0) {
@@ -2362,7 +2355,14 @@ function workflowAgentPromptText(node: WorkflowNode, inputs: AgentInputPreview[]
     lines.push("- No connected input files were provided.");
   }
 
-  lines.push("", "## Required Output Files");
+  lines.push(
+    "",
+    "## Declared Output Files",
+    [
+      "Write exactly these files relative to this Agent node workdir.",
+      `For example, output/... is saved as nodes/${node.node_id}/runs/<attempt_id>/output/... from the workflow run root, and the harness records the collected artifact path in node_run.json.`
+    ].join(" ")
+  );
   outputs.forEach((output) => {
     lines.push(
       `- Path: ${output.path}`,
@@ -2376,11 +2376,6 @@ function workflowAgentPromptText(node: WorkflowNode, inputs: AgentInputPreview[]
   if (constraints.length > 0) {
     lines.push("", "## Constraints");
     constraints.forEach((constraint) => lines.push(`- ${constraint}`));
-  }
-
-  if (options.length > 0) {
-    lines.push("", "## Runtime Options");
-    options.forEach(([key, value]) => lines.push(`- ${key}: ${value}`));
   }
 
   return `${lines.join("\n").trim()}\n`;
@@ -2442,12 +2437,6 @@ function nodeTypeLabel(nodeType: string): string {
     output: "输出"
   };
   return labels[nodeType] || nodeType;
-}
-
-function nodeOutputSummary(node: WorkflowNode): string {
-  const formats = node.outputs.flatMap((item) => item.formats);
-  if (formats.length > 0) return formats.join(" · ");
-  return node.outputs.map((item) => item.types.join("/")).join(" · ") || "control";
 }
 
 function PlusIcon() {
