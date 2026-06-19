@@ -67,6 +67,18 @@ type NodePickerState = {
   query: string;
 };
 
+type WorkflowViewMode = "library" | "canvas";
+
+type WorkflowFolder = {
+  folder_id: string;
+  name: string;
+  builtin?: boolean;
+};
+
+type WorkflowFolderWithCount = WorkflowFolder & {
+  count: number;
+};
+
 type NodePreset = {
   key: string;
   node_type: string;
@@ -93,6 +105,13 @@ const DEFAULT_VIEWPORT: CanvasViewport = { x: 88, y: 74, zoom: 0.84 };
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 1.25;
 const DEFAULT_COPY_NAME = "Custom DrawAI DAG";
+const BUILTIN_WORKFLOW_FOLDER_ID = "builtin";
+const CUSTOM_WORKFLOW_FOLDER_ID = "custom";
+const WORKFLOW_FOLDERS_STORAGE_KEY = "drawai.workflow.folders";
+const DEFAULT_WORKFLOW_FOLDERS: WorkflowFolder[] = [
+  { folder_id: BUILTIN_WORKFLOW_FOLDER_ID, name: "默认分类", builtin: true },
+  { folder_id: CUSTOM_WORKFLOW_FOLDER_ID, name: "自定义工作流" }
+];
 
 const NODE_PRESETS: NodePreset[] = [
   {
@@ -218,13 +237,17 @@ const NODE_PRESETS: NodePreset[] = [
 export default function WorkflowWorkspace({ onError }: { onError: (message: string) => void }) {
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
   const [providers, setProviders] = useState<AgentProviderSpec[]>([]);
+  const [workflowView, setWorkflowView] = useState<WorkflowViewMode>("library");
+  const [workflowFolders, setWorkflowFolders] = useState<WorkflowFolder[]>(() => loadWorkflowFolders());
+  const [activeWorkflowFolderId, setActiveWorkflowFolderId] = useState(BUILTIN_WORKFLOW_FOLDER_ID);
+  const [newFolderName, setNewFolderName] = useState("");
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [draft, setDraft] = useState<WorkflowTemplate | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState("");
   const [selectedEdgeId, setSelectedEdgeId] = useState("");
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [validation, setValidation] = useState<WorkflowValidationResult | null>(null);
   const [promptPreview, setPromptPreview] = useState<AgentPromptPreview | null>(null);
-  const [copyName, setCopyName] = useState(DEFAULT_COPY_NAME);
   const [dragging, setDragging] = useState<DraggingNode | null>(null);
   const [canvasPan, setCanvasPan] = useState<CanvasPanState | null>(null);
   const [viewport, setViewport] = useState<CanvasViewport>(DEFAULT_VIEWPORT);
@@ -238,6 +261,10 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
   useEffect(() => {
     void loadWorkflowData();
   }, []);
+
+  useEffect(() => {
+    saveWorkflowFolders(workflowFolders);
+  }, [workflowFolders]);
 
   async function loadWorkflowData(preferredTemplateId = selectedTemplateId) {
     try {
@@ -261,6 +288,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
       setNodePicker(null);
       setHandleDrag(null);
       setConnecting(null);
+      setInspectorOpen(false);
       setViewport(DEFAULT_VIEWPORT);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -279,18 +307,36 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
   );
   const selectedTemplate = templates.find((template) => template.template_id === selectedTemplateId) || null;
   const readOnly = Boolean(draft?.defaults?.read_only);
+  const canvasHasInspector = Boolean(inspectorOpen && (selectedNode || selectedEdge));
   const canvasSize = useMemo(() => workflowCanvasSize(draft), [draft]);
   const nodeStats = useMemo(() => workflowNodeStats(draft), [draft]);
   const selectedAgentInputs = useMemo(() => (draft && selectedNode ? workflowInputPreview(draft, selectedNode) : []), [draft, selectedNode]);
   const selectedAgentOutputs = selectedNode ? agentOutputsForNode(selectedNode) : [];
   const pickerItems = useMemo(() => (draft && nodePicker ? nodePickerItems(draft, nodePicker) : []), [draft, nodePicker]);
   const minimapNodes = useMemo(() => (draft ? workflowMinimapNodes(draft) : []), [draft]);
+  const visibleWorkflowFolders = useMemo(() => workflowFoldersWithCounts(workflowFolders, templates), [workflowFolders, templates]);
+  const activeWorkflowFolder = visibleWorkflowFolders.find((folder) => folder.folder_id === activeWorkflowFolderId) || visibleWorkflowFolders[0];
+  const libraryTemplates = useMemo(
+    () => templates.filter((template) => workflowFolderIdForTemplate(template) === activeWorkflowFolder.folder_id),
+    [templates, activeWorkflowFolder.folder_id]
+  );
 
-  async function copySelectedTemplate() {
-    const sourceId = selectedTemplateId || "default_drawai_dag";
+  async function copySelectedTemplate(sourceId = selectedTemplateId || "default_drawai_dag", preferredName = "") {
+    const source = templates.find((item) => item.template_id === sourceId) || null;
+    const targetName = preferredName.trim() || copiedWorkflowName(source?.name || DEFAULT_COPY_NAME);
     try {
       setBusy("copy");
-      const response = await copyWorkflowTemplate(sourceId, copyName.trim() || DEFAULT_COPY_NAME);
+      const response = await copyWorkflowTemplate(sourceId, targetName);
+      const folderId = activeWorkflowFolderId === BUILTIN_WORKFLOW_FOLDER_ID ? CUSTOM_WORKFLOW_FOLDER_ID : activeWorkflowFolderId;
+      const template = {
+        ...response.template,
+        defaults: { ...response.template.defaults, folder_id: folderId }
+      };
+      await saveWorkflowTemplate(template);
+      setTemplates((current) => [...current.filter((item) => item.template_id !== template.template_id), template]);
+      setActiveWorkflowFolderId(folderId);
+      setWorkflowView("canvas");
+      setInspectorOpen(false);
       await loadWorkflowData(response.template.template_id);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -303,11 +349,13 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     const base = templates.find((item) => item.template_id === "default_drawai_dag") || draft;
     if (!base) return;
     const timestamp = Date.now().toString(36);
+    const folderId = activeWorkflowFolderId === BUILTIN_WORKFLOW_FOLDER_ID ? CUSTOM_WORKFLOW_FOLDER_ID : activeWorkflowFolderId;
     const template = cloneTemplate(base);
     template.template_id = `custom_workflow_${timestamp}`;
     template.name = "Untitled Workflow";
-    template.defaults = { ...template.defaults, builtin: false, read_only: false, source_template_id: base.template_id };
+    template.defaults = { ...template.defaults, builtin: false, read_only: false, source_template_id: base.template_id, folder_id: folderId };
     setTemplates((current) => [...current.filter((item) => item.template_id !== template.template_id), template]);
+    setActiveWorkflowFolderId(folderId);
     setSelectedTemplateId(template.template_id);
     setDraft(template);
     setSelectedNodeId(defaultSelectedNodeId(template));
@@ -317,6 +365,8 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     setNodePicker(null);
     setHandleDrag(null);
     setConnecting(null);
+    setInspectorOpen(false);
+    setWorkflowView("canvas");
     setViewport(DEFAULT_VIEWPORT);
   }
 
@@ -380,7 +430,35 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     setConnecting(null);
     setNodePicker(null);
     setHandleDrag(null);
+    setInspectorOpen(false);
     setViewport(DEFAULT_VIEWPORT);
+  }
+
+  function openWorkflowCanvas(templateId: string) {
+    selectTemplate(templateId);
+    setWorkflowView("canvas");
+  }
+
+  function returnToWorkflowLibrary() {
+    setWorkflowView("library");
+    setSelectedNodeId("");
+    setSelectedEdgeId("");
+    setNodePicker(null);
+    setConnecting(null);
+    setHandleDrag(null);
+    setInspectorOpen(false);
+  }
+
+  function addWorkflowFolder() {
+    const name = newFolderName.trim();
+    if (!name) return;
+    const folder: WorkflowFolder = {
+      folder_id: uniqueWorkflowFolderId(workflowFolders, name),
+      name
+    };
+    setWorkflowFolders((current) => [...current, folder]);
+    setActiveWorkflowFolderId(folder.folder_id);
+    setNewFolderName("");
   }
 
   function updateDraft(patch: Partial<WorkflowTemplate>) {
@@ -428,6 +506,14 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     setValidation(null);
   }
 
+  function arrangeNodes() {
+    if (!draft || readOnly) return;
+    const arranged = arrangeWorkflowNodes(draft);
+    setDraft({ ...draft, nodes: arranged });
+    setValidation(null);
+    setViewport(DEFAULT_VIEWPORT);
+  }
+
   function beginCanvasPan(event: PointerEvent<HTMLDivElement>) {
     const target = event.target;
     if (
@@ -461,15 +547,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
 
   function handleCanvasWheel(event: WheelEvent<HTMLDivElement>) {
     event.preventDefault();
-    if (event.ctrlKey || event.metaKey) {
-      setZoomAroundPoint(viewport.zoom * Math.exp(-event.deltaY * 0.003), event.clientX, event.clientY);
-      return;
-    }
-    setViewport((current) => ({
-      ...current,
-      x: Math.round(current.x - event.deltaX),
-      y: Math.round(current.y - event.deltaY)
-    }));
+    setZoomAroundPoint(viewport.zoom * Math.exp(-event.deltaY * 0.002), event.clientX, event.clientY);
   }
 
   function setZoomAroundPoint(nextZoomValue: number, clientX?: number, clientY?: number) {
@@ -670,6 +748,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     setDraft({ ...draft, edges: [...draft.edges, edge] });
     setSelectedEdgeId(edge.edge_id);
     setSelectedNodeId("");
+    setInspectorOpen(true);
     setConnecting(null);
     setNodePicker(null);
     setValidation(null);
@@ -736,6 +815,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     setDraft({ ...draft, nodes: [...draft.nodes, node], edges: nextEdges });
     setSelectedNodeId(node.node_id);
     setSelectedEdgeId("");
+    setInspectorOpen(true);
     setNodePicker(null);
     setConnecting(null);
     setValidation(null);
@@ -810,41 +890,114 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     );
   }
 
+  if (workflowView === "library") {
+    return (
+      <main className="workflow-workspace workflow-library-workspace">
+        <aside className="workflow-library-sidebar" aria-label="工作流类型">
+          <div className="workflow-library-sidebar-head">
+            <span>工作流类型</span>
+            <strong>{templates.length}</strong>
+          </div>
+          <div className="workflow-folder-list">
+            {visibleWorkflowFolders.map((folder) => (
+              <button
+                type="button"
+                key={folder.folder_id}
+                className={folder.folder_id === activeWorkflowFolder.folder_id ? "active" : ""}
+                onClick={() => setActiveWorkflowFolderId(folder.folder_id)}
+              >
+                <span>{folder.name}</span>
+                <em>{folder.count}</em>
+              </button>
+            ))}
+          </div>
+          <div className="workflow-new-folder">
+            <input
+              value={newFolderName}
+              placeholder="新建文件夹"
+              onChange={(event) => setNewFolderName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") addWorkflowFolder();
+              }}
+            />
+            <button type="button" title="新建文件夹" onClick={addWorkflowFolder}>+</button>
+          </div>
+        </aside>
+
+        <section className="workflow-library-main">
+          <header className="workflow-library-head">
+            <div>
+              <span>{activeWorkflowFolder.builtin ? "内置工作流" : "工作流"}</span>
+              <strong>{activeWorkflowFolder.name}</strong>
+            </div>
+            <button type="button" className="primary" onClick={createLocalTemplate}>
+              新建工作流
+            </button>
+          </header>
+
+          <div className="workflow-card-grid">
+            {libraryTemplates.map((template) => {
+              const stats = workflowNodeStats(template);
+              const builtin = Boolean(template.defaults?.builtin);
+              return (
+                <button
+                  type="button"
+                  key={template.template_id}
+                  className="workflow-card"
+                  onClick={() => openWorkflowCanvas(template.template_id)}
+                >
+                  <div className="workflow-card-head">
+                    <span>{builtin ? "内置" : "自定义"}</span>
+                    <em>{template.version ? `v${template.version}` : "draft"}</em>
+                  </div>
+                  <strong>{template.name}</strong>
+                  <p>{template.description || "Workflow DAG"}</p>
+                  <dl>
+                    <div><dt>节点</dt><dd>{template.nodes.length}</dd></div>
+                    <div><dt>连线</dt><dd>{template.edges.length}</dd></div>
+                    <div><dt>Agent</dt><dd>{stats.agent}</dd></div>
+                  </dl>
+                </button>
+              );
+            })}
+            {libraryTemplates.length === 0 && (
+              <div className="workflow-library-empty">
+                <strong>这个分类还没有工作流</strong>
+                <button type="button" onClick={createLocalTemplate}>新建工作流</button>
+              </div>
+            )}
+          </div>
+        </section>
+      </main>
+    );
+  }
+
   return (
-    <main className="workflow-workspace">
+    <main className={`workflow-workspace workflow-canvas-workspace ${canvasHasInspector ? "inspector-open" : "inspector-closed"}`}>
       <header className="workflow-topbar">
         <div className="workflow-topbar-main">
-          <label className="workflow-inline-field">
-            <span>Template</span>
-            <select value={selectedTemplateId} onChange={(event) => selectTemplate(event.target.value)}>
-              {templates.map((template) => (
-                <option value={template.template_id} key={template.template_id}>
-                  {template.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="workflow-copy-inline">
-            <span>Copy name</span>
-            <input value={copyName} onChange={(event) => setCopyName(event.target.value)} />
-          </label>
-          <button type="button" disabled={busy === "copy"} onClick={() => void copySelectedTemplate()}>
-            复制内置
+          <button type="button" className="workflow-back-button" onClick={returnToWorkflowLibrary}>
+            ← 返回
           </button>
-          <button type="button" onClick={createLocalTemplate}>
-            新建
-          </button>
+          <div className="workflow-canvas-title">
+            <span>{readOnly ? "内置只读" : "可编辑"}</span>
+            <strong>{selectedTemplate?.name || draft?.name || "Workflow"}</strong>
+          </div>
+        </div>
+        <div className="workflow-topbar-status">
+          {selectedTemplate && <span>{selectedTemplate.template_id}</span>}
+          {validation && <em className={validation.ok ? "ok" : "failed"}>{validation.ok ? "校验通过" : `${validation.errors.length} 个问题`}</em>}
           <button type="button" disabled={!draft || busy === "validate"} onClick={() => void validateDraft()}>
             校验
           </button>
           <button type="button" className="primary" disabled={!draft || readOnly || busy === "save"} onClick={() => void saveDraft()}>
             保存
           </button>
-        </div>
-        <div className="workflow-topbar-status">
-          {selectedTemplate && <span>{selectedTemplate.template_id}</span>}
-          <strong>{readOnly ? "内置只读" : "可编辑"}</strong>
-          {validation && <em className={validation.ok ? "ok" : "failed"}>{validation.ok ? "校验通过" : `${validation.errors.length} 个问题`}</em>}
+          {(selectedNode || selectedEdge) && (
+            <button type="button" onClick={() => setInspectorOpen((current) => !current)}>
+              {canvasHasInspector ? "收起详情" : "详情"}
+            </button>
+          )}
         </div>
       </header>
 
@@ -853,6 +1006,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
           <button type="button" className="active" title="编排">W</button>
           <button type="button" title="选择">↖</button>
           <button type="button" title="移动">✥</button>
+          <button type="button" title="整理节点" onClick={arrangeNodes} disabled={!draft || readOnly}>▦</button>
           <button type="button" title="校验" onClick={() => void validateDraft()} disabled={!draft || busy === "validate"}>✓</button>
           <div className="workflow-rail-stats">
             <span>P {nodeStats.parser}</span>
@@ -870,6 +1024,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                 onClick={() => {
                   if (item.node_id) setSelectedNodeId(item.node_id);
                   if (item.edge_id) setSelectedEdgeId(item.edge_id);
+                  setInspectorOpen(true);
                 }}
               >
                 <span>{item.code}</span>
@@ -922,6 +1077,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                 onSelectEdge={(edgeId) => {
                   setSelectedEdgeId(edgeId);
                   setSelectedNodeId("");
+                  setInspectorOpen(true);
                 }}
                 onOpenEdgeInsert={openEdgePicker}
               />
@@ -939,6 +1095,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                     setSelectedNodeId(node.node_id);
                     setSelectedEdgeId("");
                     setPromptPreview(null);
+                    setInspectorOpen(true);
                   }}
                   onPointerDown={(event) => beginNodeDrag(event, node)}
                   onPointerMove={moveNode}
@@ -1055,12 +1212,16 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
         </div>
       </section>
 
+      {canvasHasInspector && (
       <aside className="workflow-inspector">
         {selectedNode ? (
           <>
             <div className="workflow-panel-head">
-              <span>{selectedNode.node_type}</span>
-              <strong>{selectedNode.title}</strong>
+              <div>
+                <span>{selectedNode.node_type}</span>
+                <strong>{selectedNode.title}</strong>
+              </div>
+              <button type="button" title="关闭详情" onClick={() => setInspectorOpen(false)}>×</button>
             </div>
             <label className="workflow-field">
               <span>Title</span>
@@ -1249,8 +1410,11 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
         ) : selectedEdge ? (
           <div className="workflow-edge-inspector">
             <div className="workflow-panel-head">
-              <span>Edge</span>
-              <strong>{selectedEdge.edge_id}</strong>
+              <div>
+                <span>Edge</span>
+                <strong>{selectedEdge.edge_id}</strong>
+              </div>
+              <button type="button" title="关闭详情" onClick={() => setInspectorOpen(false)}>×</button>
             </div>
             <dl className="workflow-node-meta">
               <div><dt>Source</dt><dd>{selectedEdge.source_node_id}.{selectedEdge.source_port_id}</dd></div>
@@ -1265,6 +1429,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
           <div className="workflow-empty">选择节点或连线</div>
         )}
       </aside>
+      )}
     </main>
   );
 }
@@ -1421,6 +1586,94 @@ function nodeIcon(node: WorkflowNode): string {
 
 function primaryOutputForNode(node: WorkflowNode): WorkflowPort | null {
   return node.outputs[0] || null;
+}
+
+function loadWorkflowFolders(): WorkflowFolder[] {
+  if (typeof window === "undefined") return DEFAULT_WORKFLOW_FOLDERS;
+  const raw = window.localStorage.getItem(WORKFLOW_FOLDERS_STORAGE_KEY);
+  if (!raw) return DEFAULT_WORKFLOW_FOLDERS;
+  const parsed = JSON.parse(raw) as WorkflowFolder[];
+  const custom = parsed.filter((folder) => folder.folder_id !== BUILTIN_WORKFLOW_FOLDER_ID && folder.folder_id !== CUSTOM_WORKFLOW_FOLDER_ID);
+  return [...DEFAULT_WORKFLOW_FOLDERS, ...custom];
+}
+
+function saveWorkflowFolders(folders: WorkflowFolder[]) {
+  if (typeof window === "undefined") return;
+  const custom = folders.filter((folder) => !folder.builtin && folder.folder_id !== CUSTOM_WORKFLOW_FOLDER_ID);
+  window.localStorage.setItem(WORKFLOW_FOLDERS_STORAGE_KEY, JSON.stringify(custom));
+}
+
+function workflowFoldersWithCounts(folders: WorkflowFolder[], templates: WorkflowTemplate[]): WorkflowFolderWithCount[] {
+  const counts = new Map<string, number>();
+  templates.forEach((template) => {
+    const folderId = workflowFolderIdForTemplate(template);
+    counts.set(folderId, (counts.get(folderId) || 0) + 1);
+  });
+  return folders.map((folder) => ({ ...folder, count: counts.get(folder.folder_id) || 0 }));
+}
+
+function workflowFolderIdForTemplate(template: WorkflowTemplate): string {
+  if (template.defaults?.builtin || template.defaults?.read_only) return BUILTIN_WORKFLOW_FOLDER_ID;
+  const folderId = String(template.defaults?.folder_id || "");
+  return folderId || CUSTOM_WORKFLOW_FOLDER_ID;
+}
+
+function uniqueWorkflowFolderId(folders: WorkflowFolder[], name: string): string {
+  const existing = new Set(folders.map((folder) => folder.folder_id));
+  const base = `folder_${name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "workflow"}`;
+  let candidate = base;
+  let index = 2;
+  while (existing.has(candidate)) {
+    candidate = `${base}_${index}`;
+    index += 1;
+  }
+  return candidate;
+}
+
+function copiedWorkflowName(name: string): string {
+  return `${name.replace(/\s+copy$/i, "").trim() || DEFAULT_COPY_NAME} Copy`;
+}
+
+function arrangeWorkflowNodes(template: WorkflowTemplate): WorkflowNode[] {
+  const nodeById = new Map(template.nodes.map((node) => [node.node_id, node]));
+  const incomingCount = new Map(template.nodes.map((node) => [node.node_id, 0]));
+  const outgoing = new Map<string, string[]>();
+  template.edges.forEach((edge) => {
+    if (!nodeById.has(edge.source_node_id) || !nodeById.has(edge.target_node_id)) return;
+    incomingCount.set(edge.target_node_id, (incomingCount.get(edge.target_node_id) || 0) + 1);
+    outgoing.set(edge.source_node_id, [...(outgoing.get(edge.source_node_id) || []), edge.target_node_id]);
+  });
+  const layers = new Map<string, number>();
+  const queue = template.nodes.filter((node) => (incomingCount.get(node.node_id) || 0) === 0).map((node) => node.node_id);
+  template.nodes.forEach((node) => layers.set(node.node_id, queue.includes(node.node_id) ? 0 : 1));
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const nodeId = queue[cursor];
+    const layer = layers.get(nodeId) || 0;
+    (outgoing.get(nodeId) || []).forEach((targetId) => {
+      layers.set(targetId, Math.max(layers.get(targetId) || 0, layer + 1));
+      incomingCount.set(targetId, (incomingCount.get(targetId) || 0) - 1);
+      if ((incomingCount.get(targetId) || 0) === 0) queue.push(targetId);
+    });
+  }
+  const grouped = new Map<number, WorkflowNode[]>();
+  template.nodes.forEach((node) => {
+    const layer = layers.get(node.node_id) || 0;
+    grouped.set(layer, [...(grouped.get(layer) || []), node]);
+  });
+  const sortedLayerKeys = [...grouped.keys()].sort((left, right) => left - right);
+  const positionByNodeId = new Map<string, { x: number; y: number }>();
+  sortedLayerKeys.forEach((layer, layerIndex) => {
+    const nodes = (grouped.get(layer) || []).sort((left, right) => (left.position.y || 0) - (right.position.y || 0));
+    const columnX = 92 + layerIndex * 270;
+    const startY = Math.max(92, 260 - Math.round((nodes.length - 1) * 62));
+    nodes.forEach((node, rowIndex) => {
+      positionByNodeId.set(node.node_id, { x: columnX, y: startY + rowIndex * 124 });
+    });
+  });
+  return template.nodes.map((node) => ({
+    ...node,
+    position: positionByNodeId.get(node.node_id) || node.position
+  }));
 }
 
 function port(
