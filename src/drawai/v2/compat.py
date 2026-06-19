@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from drawai.artifacts import prepare_artifact_paths, write_json
+from drawai.asset_geometry import normalize_asset_geometry
 from drawai.domain.box_ir import BOX_IR_SCHEMA, BOX_IR_VERSION, build_svg_template_ir, validate_box_ir
 
 from .schema import AssetPackage, ElementPlan
@@ -96,17 +97,25 @@ def _box_ir_payload(
                 }
             )
             continue
+        geometry = _box_ir_geometry(
+            element.geometry,
+            bbox_xyxy,
+            image_size=(width, height),
+        )
+        record = {
+            "id": element.element_id,
+            "type": _legacy_box_type(element.element_type),
+            "bbox": bbox_xyxy,
+            "geometry": geometry,
+            "parent_ids": [],
+            "child_ids": [],
+            "source_candidate_ids": list(element.source_candidate_ids),
+            "score": _confidence_score(element.confidence),
+        }
+        if _jsonable(element.geometry) != geometry:
+            record["v2_geometry"] = _jsonable(element.geometry)
         boxes.append(
-            {
-                "id": element.element_id,
-                "type": _legacy_box_type(element.element_type),
-                "bbox": bbox_xyxy,
-                "geometry": _jsonable(element.geometry),
-                "parent_ids": [],
-                "child_ids": [],
-                "source_candidate_ids": list(element.source_candidate_ids),
-                "score": _confidence_score(element.confidence),
-            }
+            record
         )
     return {
         "schema": BOX_IR_SCHEMA,
@@ -143,6 +152,22 @@ def _element_analysis_record(element: ElementPlan) -> dict[str, Any]:
         "geometry": _jsonable(element.geometry),
         "processing_parameters": _jsonable(element.processing_intent.parameters),
         "review_status": element.review_status,
+    }
+
+
+def _box_ir_geometry(
+    geometry: Mapping[str, Any],
+    fallback_bbox: Sequence[float],
+    *,
+    image_size: tuple[int, int],
+) -> dict[str, Any]:
+    normalized = normalize_asset_geometry(geometry, fallback_bbox=fallback_bbox, image_size=image_size)
+    if normalized is not None:
+        return normalized
+    return {
+        "kind": "bbox",
+        "bbox": [float(value) for value in fallback_bbox],
+        "coordinate_system": "figure_image_pixels",
     }
 
 

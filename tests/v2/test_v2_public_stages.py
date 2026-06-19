@@ -7,6 +7,7 @@ from pathlib import Path
 from PIL import Image
 
 from drawai.artifacts import DrawAiArtifactPaths, prepare_artifact_paths
+from drawai.v2.compat import write_box_ir_compat
 from drawai.pipeline import run_drawai_pipeline_from_stage
 from drawai.public_stages import PUBLIC_STAGE_ORDER, run_public_stage
 from drawai.v2.schema import ElementPlan, ProcessingIntent
@@ -415,6 +416,40 @@ def test_refine_splits_unexposed_plans_into_source_elements() -> None:
         ("E002", "agent_refined", 0),
     ]
     assert [plan.element_id for plan in result.source_elements] == ["E001"]
+
+
+def test_box_ir_compat_exports_semantic_geometry_as_bbox(tmp_path: Path) -> None:
+    element = ElementPlan(
+        element_id="E001",
+        source_candidate_ids=("sam3:B001",),
+        element_type="frame",
+        bbox=(10, 20, 30, 40),
+        geometry={"kind": "rounded_rect", "corner_radius_estimate_px": 8},
+        z_order=0,
+        confidence="high",
+        processing_intent=ProcessingIntent(
+            object_type="frame",
+            processing_type="svg_self_draw",
+        ),
+        review_status="agent_refined",
+        created_by_stage="refine_elements",
+        change_reason="Agent recognized a rounded panel.",
+    )
+
+    payload = write_box_ir_compat(
+        tmp_path,
+        (element,),
+        {"normalized_size": [100, 100]},
+    )
+
+    box = payload["boxes"][0]
+    assert box["bbox"] == [10.0, 20.0, 40.0, 60.0]
+    assert box["geometry"] == {
+        "kind": "bbox",
+        "bbox": [10.0, 20.0, 40.0, 60.0],
+        "coordinate_system": "figure_image_pixels",
+    }
+    assert box["v2_geometry"] == {"kind": "rounded_rect", "corner_radius_estimate_px": 8}
 
 
 def test_export_refuses_failed_asset_by_default(tmp_path: Path) -> None:
