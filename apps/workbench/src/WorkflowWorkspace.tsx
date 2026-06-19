@@ -787,7 +787,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
       draft,
       preset,
       nodePicker.insertEdgeId && insertTargetNode
-        ? suggestedInsertedNodePosition(source, insertTargetNode)
+        ? suggestedInsertedNodePosition(draft, source, insertTargetNode)
         : suggestedConnectedNodePosition(draft, source)
     );
     const edge: WorkflowEdge = {
@@ -983,21 +983,23 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
             <span>{readOnly ? "内置只读" : "可编辑"}</span>
             <strong>{selectedTemplate?.name || draft?.name || "Workflow"}</strong>
           </div>
+          <div className="workflow-topbar-actions">
+            <button type="button" disabled={!draft || busy === "validate"} onClick={() => void validateDraft()}>
+              校验
+            </button>
+            <button type="button" className="primary" disabled={!draft || readOnly || busy === "save"} onClick={() => void saveDraft()}>
+              保存
+            </button>
+            {(selectedNode || selectedEdge) && (
+              <button type="button" onClick={() => setInspectorOpen((current) => !current)}>
+                {canvasHasInspector ? "收起详情" : "详情"}
+              </button>
+            )}
+          </div>
         </div>
         <div className="workflow-topbar-status">
           {selectedTemplate && <span>{selectedTemplate.template_id}</span>}
           {validation && <em className={validation.ok ? "ok" : "failed"}>{validation.ok ? "校验通过" : `${validation.errors.length} 个问题`}</em>}
-          <button type="button" disabled={!draft || busy === "validate"} onClick={() => void validateDraft()}>
-            校验
-          </button>
-          <button type="button" className="primary" disabled={!draft || readOnly || busy === "save"} onClick={() => void saveDraft()}>
-            保存
-          </button>
-          {(selectedNode || selectedEdge) && (
-            <button type="button" onClick={() => setInspectorOpen((current) => !current)}>
-              {canvasHasInspector ? "收起详情" : "详情"}
-            </button>
-          )}
         </div>
       </header>
 
@@ -1448,6 +1450,7 @@ function WorkflowEdges({
   onOpenEdgeInsert: (edgeId: string, point: { x: number; y: number }) => void;
 }) {
   const nodeById = new Map(template.nodes.map((node) => [node.node_id, node]));
+  const [hoveredEdgeId, setHoveredEdgeId] = useState("");
   const views = template.edges.flatMap((edge) => {
     const source = nodeById.get(edge.source_node_id);
     const target = nodeById.get(edge.target_node_id);
@@ -1470,6 +1473,8 @@ function WorkflowEdges({
               event.stopPropagation();
               onSelectEdge(edge.edge_id);
             }}
+            onMouseEnter={() => setHoveredEdgeId(edge.edge_id)}
+            onMouseLeave={() => setHoveredEdgeId((current) => (current === edge.edge_id ? "" : current))}
           />
         ))}
       </svg>
@@ -1477,7 +1482,7 @@ function WorkflowEdges({
         <button
           type="button"
           key={`${edge.edge_id}:insert`}
-          className={`workflow-edge-insert ${edge.edge_id === selectedEdgeId ? "visible" : ""}`}
+          className={`workflow-edge-insert ${edge.edge_id === selectedEdgeId || edge.edge_id === hoveredEdgeId ? "visible" : ""}`}
           data-edge-id={edge.edge_id}
           disabled={readOnly}
           style={{ left: midpoint.x, top: midpoint.y }}
@@ -1486,6 +1491,8 @@ function WorkflowEdges({
             event.stopPropagation();
             onOpenEdgeInsert(edge.edge_id, midpoint);
           }}
+          onMouseEnter={() => setHoveredEdgeId(edge.edge_id)}
+          onMouseLeave={() => setHoveredEdgeId((current) => (current === edge.edge_id ? "" : current))}
         >
           +
         </button>
@@ -1813,11 +1820,25 @@ function suggestedConnectedNodePosition(template: WorkflowTemplate, source: Work
   return { x: baseX, y: sourceY + 112 };
 }
 
-function suggestedInsertedNodePosition(source: WorkflowNode, target: WorkflowNode): { x: number; y: number } {
-  return {
-    x: Math.max(0, Math.round(((source.position.x || 0) + (target.position.x || 0)) / 2)),
-    y: Math.max(0, Math.round(((source.position.y || 0) + (target.position.y || 0)) / 2))
-  };
+function suggestedInsertedNodePosition(
+  template: WorkflowTemplate,
+  source: WorkflowNode,
+  target: WorkflowNode
+): { x: number; y: number } {
+  const baseX = Math.max(0, Math.round(((source.position.x || 0) + (target.position.x || 0)) / 2));
+  const baseY = Math.max(0, Math.round(((source.position.y || 0) + (target.position.y || 0)) / 2));
+  // Check if position overlaps with existing nodes and offset if needed
+  const occupied = new Set(
+    template.nodes
+      .filter((n) => n.node_id !== source.node_id && n.node_id !== target.node_id)
+      .map((n) => `${Math.round((n.position.x || 0) / 20)}:${Math.round((n.position.y || 0) / 20)}`)
+  );
+  for (let offset = 0; offset < 12; offset += 1) {
+    const y = Math.max(16, baseY + (offset % 2 === 0 ? 1 : -1) * Math.ceil(offset / 2) * 60);
+    const key = `${Math.round(baseX / 20)}:${Math.round(y / 20)}`;
+    if (!occupied.has(key)) return { x: baseX, y };
+  }
+  return { x: baseX, y: baseY + 60 };
 }
 
 function uniqueNodeId(template: WorkflowTemplate, base: string): string {
