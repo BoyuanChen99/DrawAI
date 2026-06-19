@@ -4,6 +4,15 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from .agent_prompt_defaults import (
+    CUSTOM_AGENT_CONSTRAINTS,
+    CUSTOM_AGENT_TASK,
+    RUN0_ELEMENT_REFINE_CONSTRAINTS,
+    RUN0_ELEMENT_REFINE_TASK,
+    SVG_GENERATION_CONSTRAINTS,
+    SVG_GENERATION_TASK,
+)
+
 AgentProviderKind = Literal["sdk", "cli"]
 
 SUPPORTED_REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
@@ -135,10 +144,7 @@ def run0_agent_preset() -> AgentPreset:
         preset_id="run0_element_refine",
         title="Run0 Element Refinement",
         provider_id="codex_sdk",
-        task=(
-            "Refine element positions, sizes, and object types from connected "
-            "parser or fusion outputs. Preserve the DrawAI element plan format."
-        ),
+        task=RUN0_ELEMENT_REFINE_TASK,
         outputs=(
             AgentOutputDeclaration(
                 port_id="elements",
@@ -149,9 +155,7 @@ def run0_agent_preset() -> AgentPreset:
             ),
         ),
         constraints=(
-            "Use only the connected input files listed in this prompt.",
-            "Keep element ids stable unless an element is split or newly added.",
-            "Write the declared output file exactly once as UTF-8 JSON.",
+            *RUN0_ELEMENT_REFINE_CONSTRAINTS,
         ),
     )
 
@@ -161,10 +165,7 @@ def svg_agent_preset() -> AgentPreset:
         preset_id="svg_generation",
         title="SVG Generation",
         provider_id="codex_sdk",
-        task=(
-            "Generate an editable semantic SVG from connected element plans and "
-            "asset packages. Preserve raster assets only through declared package references."
-        ),
+        task=SVG_GENERATION_TASK,
         outputs=(
             AgentOutputDeclaration(
                 port_id="semantic_svg",
@@ -175,9 +176,7 @@ def svg_agent_preset() -> AgentPreset:
             ),
         ),
         constraints=(
-            "Use SVG primitives and text for editable elements.",
-            "Do not inline unrelated local files or hidden state.",
-            "Write the declared SVG output path exactly.",
+            *SVG_GENERATION_CONSTRAINTS,
         ),
     )
 
@@ -187,10 +186,7 @@ def custom_agent_preset() -> AgentPreset:
         preset_id="custom_agent",
         title="Custom Agent",
         provider_id="codex_sdk",
-        task=(
-            "Use the connected input files as context and produce exactly the "
-            "output files declared by this node configuration."
-        ),
+        task=CUSTOM_AGENT_TASK,
         outputs=(
             AgentOutputDeclaration(
                 port_id="image",
@@ -201,9 +197,7 @@ def custom_agent_preset() -> AgentPreset:
             ),
         ),
         constraints=(
-            "Treat every connected input file as explicit node context.",
-            "Honor the configured output declarations over the preset defaults.",
-            "Write only the declared output paths inside this node work directory.",
+            *CUSTOM_AGENT_CONSTRAINTS,
         ),
     )
 

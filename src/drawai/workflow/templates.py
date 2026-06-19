@@ -7,6 +7,14 @@ from pathlib import Path
 from typing import Any, Literal, Mapping
 
 from ..prompt_plan import DEFAULT_SAM3_PROMPTS
+from .agent_prompt_defaults import (
+    CUSTOM_AGENT_CONSTRAINTS,
+    CUSTOM_AGENT_TASK,
+    RUN0_ELEMENT_REFINE_CONSTRAINTS,
+    RUN0_ELEMENT_REFINE_TASK,
+    SVG_GENERATION_CONSTRAINTS,
+    SVG_GENERATION_TASK,
+)
 from .schema import (
     WORKFLOW_TEMPLATE_SCHEMA,
     WorkflowEdge,
@@ -110,15 +118,8 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                 config={
                     "preset_id": "run0_element_refine",
                     "provider_id": "codex_sdk",
-                    "task": (
-                        "Refine element positions, sizes, and object types from connected "
-                        "parser or fusion outputs. Preserve the DrawAI element plan format."
-                    ),
-                    "constraints": [
-                        "Use only the connected input files listed in this prompt.",
-                        "Keep element ids stable unless an element is split or newly added.",
-                        "Write the declared output file exactly once as UTF-8 JSON.",
-                    ],
+                    "task": RUN0_ELEMENT_REFINE_TASK,
+                    "constraints": list(RUN0_ELEMENT_REFINE_CONSTRAINTS),
                     "outputs": [
                         {
                             "port_id": "elements",
@@ -208,16 +209,8 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                 config={
                     "preset_id": "svg_generation",
                     "provider_id": "codex_sdk",
-                    "task": (
-                        "Generate an editable semantic SVG from connected element plans "
-                        "and asset packages. Preserve raster assets only through declared "
-                        "package references."
-                    ),
-                    "constraints": [
-                        "Use SVG primitives and text for editable elements.",
-                        "Do not inline unrelated local files or hidden state.",
-                        "Write the declared SVG output path exactly.",
-                    ],
+                    "task": SVG_GENERATION_TASK,
+                    "constraints": list(SVG_GENERATION_CONSTRAINTS),
                     "outputs": [
                         {
                             "port_id": "semantic_svg",
@@ -424,6 +417,7 @@ def _node_from_dict(payload: object, field_name: str) -> WorkflowNode:
     data = _mapping(payload, field_name)
     node_type = _string(data.get("node_type"), f"{field_name}.node_type")
     config = dict(_mapping(data.get("config", {}), f"{field_name}.config"))
+    config = _normalized_node_config(node_type, config)
     title = _normalized_node_title(
         node_type,
         _string(data.get("title"), f"{field_name}.title"),
@@ -445,6 +439,68 @@ def _node_from_dict(payload: object, field_name: str) -> WorkflowNode:
         position=_number_mapping(data.get("position", {}), f"{field_name}.position"),
         description=_string(data.get("description", ""), f"{field_name}.description"),
     )
+
+
+_LEGACY_AGENT_TASK_TEXTS: dict[str, set[str]] = {
+    "run0_element_refine": {
+        "Refine element bbox, size, and type. Preserve IDs unless merge/delete is declared.",
+        "Refine element positions, types, and processing intent.",
+        "Refine element positions, sizes, and object types from connected parser or fusion outputs. Preserve the DrawAI element plan format.",
+    },
+    "svg_generation": {
+        "Generate an editable SVG using connected element plans and confirmed assets.",
+        "Generate editable semantic SVG from element plans and asset packages.",
+        "Generate an editable semantic SVG from connected element plans and asset packages. Preserve raster assets only through declared package references.",
+    },
+    "custom_agent": {
+        "Use the connected files as context and write the declared outputs exactly.",
+        "Use the connected input files as context and produce exactly the output files declared by this node configuration.",
+    },
+}
+
+_AGENT_TASK_DEFAULTS = {
+    "run0_element_refine": RUN0_ELEMENT_REFINE_TASK,
+    "svg_generation": SVG_GENERATION_TASK,
+    "custom_agent": CUSTOM_AGENT_TASK,
+}
+
+_AGENT_CONSTRAINT_DEFAULTS = {
+    "run0_element_refine": RUN0_ELEMENT_REFINE_CONSTRAINTS,
+    "svg_generation": SVG_GENERATION_CONSTRAINTS,
+    "custom_agent": CUSTOM_AGENT_CONSTRAINTS,
+}
+
+
+def _normalized_node_config(node_type: str, config: dict[str, Any]) -> dict[str, Any]:
+    if node_type != "agent":
+        return config
+    preset_id = str(config.get("preset_id") or "")
+    default_task = _AGENT_TASK_DEFAULTS.get(preset_id)
+    if default_task is None:
+        return config
+    normalized = dict(config)
+    raw_task = _config_text(
+        normalized.get("task")
+        or normalized.get("prompt_role")
+        or normalized.get("prompt_fragments")
+        or normalized.get("user_prompt")
+    )
+    if not raw_task or raw_task in _LEGACY_AGENT_TASK_TEXTS.get(preset_id, set()):
+        normalized["task"] = default_task
+        normalized.pop("prompt_role", None)
+        normalized.pop("prompt_fragments", None)
+    raw_constraints = normalized.get("constraints")
+    if raw_constraints in (None, "", []):
+        normalized["constraints"] = list(_AGENT_CONSTRAINT_DEFAULTS[preset_id])
+    return normalized
+
+
+def _config_text(value: object) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, list | tuple):
+        return "\n\n".join(item.strip() for item in value if isinstance(item, str)).strip()
+    return ""
 
 
 def _normalized_node_title(

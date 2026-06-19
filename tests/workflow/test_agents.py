@@ -40,6 +40,8 @@ def test_run0_agent_prompt_renders_inputs_and_output_contract() -> None:
 
     assert prompt.provider_id == "codex_sdk"
     assert prompt.preset_id == "run0_element_refine"
+    assert "DrawAI asset post-processing and source analysis task." in prompt.text
+    assert "Task 1: refine the connected candidates into minimum independent assets." in prompt.text
     assert "nodes/fusion/runs/001/output/elements.json" in prompt.text
     assert "Fused boxes from SAM and OCR." in prompt.text
     assert "output/elements.json" in prompt.text
@@ -69,6 +71,8 @@ def test_svg_agent_prompt_uses_same_agent_contract() -> None:
     )
 
     assert prompt.provider_id == "kimi_cli"
+    assert "IMAGE VECTORIZATION TASK" in prompt.text
+    assert "OVERALL SVG/PPT PROFILE" in prompt.text
     assert prompt.outputs[0]["path"] == "output/semantic.svg"
     assert prompt.outputs[0]["format_id"] == "drawai.semantic_svg.v1"
     assert "nodes/asset_processors/runs/001/output/asset_packages.json" in prompt.text

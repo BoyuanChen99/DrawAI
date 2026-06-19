@@ -87,10 +87,13 @@ def test_asset_refine_and_svg_are_agent_node_presets() -> None:
     assert nodes["svg_agent"].config["provider_id"] == "codex_sdk"
     assert nodes["run0_agent"].config["preset_id"] == "run0_element_refine"
     assert nodes["svg_agent"].config["preset_id"] == "svg_generation"
-    assert "Refine element positions" in nodes["run0_agent"].config["task"]
+    assert "DrawAI asset post-processing and source analysis task." in nodes["run0_agent"].config["task"]
+    assert "Task 2: repeat a bounded visualization/refinement loop" in nodes["run0_agent"].config["task"]
     assert nodes["run0_agent"].config["constraints"]
     assert nodes["run0_agent"].config["outputs"][0]["format_id"] == "drawai.element_plans.v1"
-    assert "Generate an editable semantic SVG" in nodes["svg_agent"].config["task"]
+    assert "IMAGE VECTORIZATION TASK" in nodes["svg_agent"].config["task"]
+    assert "REFINE LOOP / MAX 3 ROUNDS" in nodes["svg_agent"].config["task"]
+    assert "OVERALL SVG/PPT PROFILE" in nodes["svg_agent"].config["task"]
     assert nodes["svg_agent"].config["constraints"]
     assert nodes["svg_agent"].config["outputs"][0]["format_id"] == "drawai.semantic_svg.v1"
 
@@ -158,6 +161,31 @@ def test_load_workflow_template_normalizes_legacy_asset_refine_title(tmp_path: P
     nodes = {node.node_id: node for node in loaded.nodes}
 
     assert nodes["run0_agent"].title == "Asset Refine Agent"
+
+
+def test_load_workflow_template_upgrades_legacy_agent_default_prompts(tmp_path: Path) -> None:
+    copied = copy_builtin_template("default_drawai_dag", name="Legacy Prompt DAG")
+    payload = copied.to_dict()
+    for node in payload["nodes"]:
+        if node["node_id"] == "run0_agent":
+            node["config"]["task"] = "Refine element bbox, size, and type. Preserve IDs unless merge/delete is declared."
+            node["config"]["constraints"] = []
+        if node["node_id"] == "svg_agent":
+            node["config"]["prompt_fragments"] = "Generate an editable SVG using connected element plans and confirmed assets."
+            node["config"].pop("task", None)
+            node["config"].pop("constraints", None)
+    path = user_workflow_template_path(tmp_path, copied.template_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = load_workflow_template(path)
+    nodes = {node.node_id: node for node in loaded.nodes}
+
+    assert "DrawAI asset post-processing and source analysis task." in nodes["run0_agent"].config["task"]
+    assert nodes["run0_agent"].config["constraints"]
+    assert "IMAGE VECTORIZATION TASK" in nodes["svg_agent"].config["task"]
+    assert "prompt_fragments" not in nodes["svg_agent"].config
+    assert nodes["svg_agent"].config["constraints"]
 
 
 def test_save_workflow_template_rejects_invalid_template(tmp_path: Path) -> None:

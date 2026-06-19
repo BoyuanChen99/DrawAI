@@ -141,24 +141,121 @@ const DEFAULT_WORKFLOW_FOLDERS: WorkflowFolder[] = [
   { folder_id: CUSTOM_WORKFLOW_FOLDER_ID, name: "自定义工作流" }
 ];
 const AGENT_DEFAULT_TASKS: Record<string, string> = {
-  run0_element_refine: "Refine element positions, sizes, and object types from connected parser or fusion outputs. Preserve the DrawAI element plan format.",
-  svg_generation: "Generate an editable semantic SVG from connected element plans and asset packages. Preserve raster assets only through declared package references.",
-  custom_agent: "Use the connected input files as context and produce exactly the output files declared by this node configuration."
+  run0_element_refine: `DrawAI asset post-processing and source analysis task.
+
+We are performing an image vectorization task: a bitmap image will eventually be transformed into an editable representation. The whole process has three parts:
+- Asset parsing: divide the image into independent assets. Each asset may be text, an icon, table, frame, arrow, and so on.
+- Asset post-processing: refine the pre-parsed assets.
+- Editable reconstruction: combine assets and finish the final visual result.
+
+Some assets should become editable forms, such as text, frames, arrows, and simple vector graphics. Some assets should instead be cropped from the original image and pasted back into their original positions. The parser/OCR/fusion outputs are evidence, not truth. Execute the second stage, asset post-processing, and produce the refined element/source analysis that later asset materialization and SVG generation will consume.
+
+Task 1: refine the connected candidates into minimum independent assets.
+Each output element should be the smallest independent visual part, such as one icon, image, frame, arrow, text line, chart mark, chart block, or diagram component.
+- Split a candidate when one box contains multiple independent parts.
+- Add a new element when an asset is visible in the original image but not covered by any current candidate.
+- Adjust the bbox when the current position is wrong or misses part of a component.
+- Remove or merge a candidate only when it is clearly duplicate, noise, or wholly represented by another retained element.
+- Preserve traceability through source_candidate_ids. Use stable IDs for split or added elements.
+- Bboxes must be visual extents in image pixels. For straight lines/dividers, give at least 1 pixel of thickness.
+- For geometry_kind="mask", use mask_preview PNGs and the mask preview sheet as visual evidence. Do not adjust or resize the mask region; preserve its bbox/geometry when keeping it.
+
+Task 2: run a bounded visualization/refinement loop, at most 3 iterations.
+1. Write reports/element_analysis_codex/refine_iteration_<N>.json.
+2. Run assets_visualization.py with the original image and that iteration JSON.
+3. Inspect reports/element_analysis_codex/assets_visualization_iteration_<N>.png.
+4. Correct assets, splits/merges, removals, and bbox coordinates.
+5. Save reports/element_analysis_codex/refined_assets_final.json.
+
+Task 3: classify every final retained element into exactly one source category.
+- svg_self_draw: editable SVG primitives/text/paths for text, arrows, boxes, lines, charts, simple diagrams, and simple icons.
+- crop: precise source-image crop with local background preserved for screenshots, photos, dense textures, heatmaps, complex small raster icons, or background-coupled details.
+- crop_nobg: crop after background removal/transparent subject extraction when foreground should sit over reconstructed SVG background.
+
+Important coverage rules:
+- Treat SAM/OCR/current asset plan as evidence, not truth.
+- Do not skip candidates. Every original candidate must be represented by retained output elements or removed/merged records.
+- The type field must be a concrete DrawAI element type: text, icon, picture, table, chart, diagram, arrow, frame, grid, symbol, content_box, or unknown.
+- New IDs are allowed only for split or added refined elements.
+- If uncertain, choose the most faithful final-source strategy and mark confidence low or medium.
+
+Final JSON schema: drawai.codex_element_analysis.v1. Include strategy_summary, refinement_summary, refinement_iterations, category counts, refinement_action counts, retained elements, optional removal records, and notes. Also write reports/element_analysis_codex/analysis_notes.md. The JSON file is the source of truth.`,
+  svg_generation: `IMAGE VECTORIZATION TASK
+Goal: convert one bitmap figure into an editable, PPT-stable SVG.
+
+OVERALL DRAWAI PIPELINE
+1. Asset parsing: split the bitmap figure into independent visual assets.
+2. Asset post-processing: refine assets, adjust bboxes, split/merge elements, add missing elements, and decide svg_self_draw/crop/crop_nobg source strategy.
+3. Image editabilization: reconstruct the whole figure as editable SVG/PPT by combining SVG primitives/text with allowed raster crop assets.
+
+The current Agent node executes stage 3 only. Do not redo stage 1 or stage 2. Use their outputs as evidence, especially refined element/source analysis and the asset manifest. Create one complete first-pass SVG, then refine it for up to 3 rounds inside the same Agent run.
+
+Primary reading order:
+1. Original/current reference image and refined element/source analysis.
+2. Asset manifest and native_backfill_request before inserting any raster href.
+3. OCR only when text details need help.
+4. SVG template IR or layout IR only as fallback hints.
+
+SOURCE POLICY
+- svg_self_draw: editable SVG primitives/text for text, formulas, arrows, frames, tables, axes, borders, simple charts, simple icons, and simple diagram components.
+- crop: exact local crop image for screenshots, photos, dense raster texture, heatmaps, complex small icons, or details unsuitable for faithful SVG redraw.
+- crop_nobg: no-background crop image when a foreground object should sit over reconstructed editable SVG background.
+- Use refined source labels as the default; override only when visible evidence and current render show another strategy is more faithful.
+- Insert only hrefs listed in asset_manifest or native_backfill_request.
+- Do not use raster images to cover text, arrows, panels, tables, formulas, axes, or structure that should remain editable.
+
+RUN1 / COMPLETE FIRST PASS
+- Write semantic_0.svg.
+- It must be a complete whole-figure SVG, not a placeholder map, skeleton, gray-box map, or list of asset boxes.
+- Cover the whole canvas.
+- Use SVG/text for svg_self_draw elements.
+- Use manifest image hrefs for crop/crop_nobg elements when available.
+- Preserve refined bboxes unless visible evidence shows they need adjustment.
+- Render/validate semantic_0.svg to rendered_0.png and validation_report_0.json.
+- Record Run1 in iteration_log.md and iteration_log.jsonl.
+
+REFINE LOOP / MAX 3 ROUNDS
+At each round, render the latest SVG, compare against the original image, inspect whole figure first then local regions, and fix the highest-impact issues. Consider layout mismatch, text mismatch, connector/arrow mismatch, shape/table/axis mismatch, asset source mismatch, editability regression, PPT stability issues, and validator issues.
+
+Round outputs:
+- Round 1 writes semantic_1.svg, rendered_1.png, validation_report_1.json.
+- Round 2 writes semantic_2.svg, rendered_2.png, validation_report_2.json.
+- Round 3 writes semantic_3.svg, rendered_3.png, validation_report_3.json.
+
+Stop before 3 rounds only when the render is close enough, editable structures remain editable, crop/crop_nobg regions use allowed sources, validation is ok, and another round is unlikely to help.
+
+FINALIZATION
+- Choose the latest acceptable SVG as final.
+- Write semantic.svg and the declared SVG output.
+- Render/validate semantic.svg to rendered.png and validation_report_final.json.
+- Write iteration_log.md and iteration_log.jsonl.
+
+OVERALL SVG/PPT PROFILE
+Target DrawAI Scientific SVG Profile v1 for editable PPT conversion. Use rect, circle/ellipse, line/polyline/path, polygon, text/tspan, g, and simple defs/markers/gradients. Use image only for explicit manifest raster assets. Do not output CSS style blocks, filters, masks, clipPath, foreignObject, textPath, pattern fills, base64 images, external image URLs, absolute paths, symbol, or use. Prefer direct presentation attributes. Preserve editable text/formulas with text/tspan and Unicode math/superscript/subscript. Mark non-editable raster assets data-pb-editable="false" and editable vectors/text data-pb-editable="true".`,
+  custom_agent: `Use the connected input files as context and produce exactly the output files declared by this node configuration.
+
+This is a configurable DrawAI Agent node. The node editor controls the task, input inclusion, input descriptions, output declarations, provider, model/profile/reasoning settings, timeout, and runtime constraints. Read the connected files listed in the prompt, follow the declared output formats, and write only the declared outputs.`
 };
 const AGENT_DEFAULT_CONSTRAINTS: Record<string, string[]> = {
   run0_element_refine: [
-    "Use only the connected input files listed in this prompt.",
-    "Keep element ids stable unless an element is split or newly added.",
-    "Write the declared output file exactly once as UTF-8 JSON."
+    "Use only the connected input files listed in this prompt and files under the current DrawAI case/workspace root.",
+    "Do not render final SVG/PPT and do not modify repository code. This node only refines/classifies assets.",
+    "Do not use MCP tools, apps, web search, memories, skills, hooks, or multi-agent delegation.",
+    "Do not print full request JSON to the terminal or logs; start from compact candidate tables and read exact details only when needed.",
+    "Every source candidate must be represented by retained output elements or explicit removed/merged records.",
+    "Write the declared output files exactly, in UTF-8 JSON or markdown according to the output declaration."
   ],
   svg_generation: [
-    "Use SVG primitives and text for editable elements.",
-    "Do not inline unrelated local files or hidden state.",
-    "Write the declared SVG output path exactly."
+    "Use only connected files and files under the current DrawAI workspace/case root.",
+    "Do not redo parsing or asset-source analysis; consume the connected refined elements and asset manifest as evidence.",
+    "Do not use MCP tools, apps, web search, memories, skills, hooks, or multi-agent delegation.",
+    "Do not invent image hrefs, external URLs, file:// URLs, absolute paths, or base64 images.",
+    "Do not rasterize panels, arrows, text, formulas, grids, tables, axes, or whole diagram structure.",
+    "Write the declared SVG/render/log outputs exactly and keep the final chat response short."
   ],
   custom_agent: [
     "Treat every connected input file as explicit node context.",
-    "Honor the configured output declarations over the node defaults.",
+    "Honor the configured output declarations over node defaults.",
     "Write only the declared output paths inside this node work directory."
   ]
 };
