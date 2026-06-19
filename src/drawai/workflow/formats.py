@@ -19,6 +19,7 @@ from drawai.v2.schema import (
     validate_element_candidate,
     validate_element_plan,
 )
+from drawai.v2.refine import codex_analysis_to_v2_element_plans, codex_analysis_to_v2_removal_records
 
 
 FormatValidator = Callable[[Path], tuple[str, ...]]
@@ -58,7 +59,10 @@ def default_format_registry() -> dict[str, FormatSpec]:
             media_type="image/*",
             artifact_type="image",
             validator=_validate_image,
-            description="Openable raster image used as workflow input or Agent output.",
+            description=(
+                "Openable raster image file, usually PNG/JPEG/WebP. Agent nodes should treat image inputs as visual "
+                "evidence and only rewrite an image when an image output is explicitly declared."
+            ),
         ),
         "drawai.element_candidates.v1": FormatSpec(
             format_id="drawai.element_candidates.v1",
@@ -66,7 +70,11 @@ def default_format_registry() -> dict[str, FormatSpec]:
             media_type="application/json",
             artifact_type="element_candidates",
             validator=_validate_element_candidates,
-            description="Unified candidate elements from parsers or Agent nodes.",
+            description=(
+                "UTF-8 JSON object with a candidates array, or a JSON array of element candidate objects. Each "
+                "candidate should include candidate_id, source_parser, element_type, bbox [x,y,width,height], "
+                "geometry, confidence, optional text, evidence_files, provenance, and raw_ref."
+            ),
         ),
         "drawai.element_plans.v1": FormatSpec(
             format_id="drawai.element_plans.v1",
@@ -74,7 +82,24 @@ def default_format_registry() -> dict[str, FormatSpec]:
             media_type="application/json",
             artifact_type="element_plans",
             validator=_validate_element_plans,
-            description="Final or intermediate element plans consumed by asset planning.",
+            description=(
+                "UTF-8 JSON object with an elements array, or a JSON array of element plan objects. Each element "
+                "contains element_id, source_candidate_ids, element_type, bbox [x,y,width,height], geometry, z_order, "
+                "confidence, processing_intent, review_status, created_by_stage, and change_reason."
+            ),
+        ),
+        "drawai.codex_element_analysis.v1": FormatSpec(
+            format_id="drawai.codex_element_analysis.v1",
+            label="Element Analysis",
+            media_type="application/json",
+            artifact_type="element_analysis",
+            validator=_validate_element_analysis,
+            description=(
+                "UTF-8 JSON object with schema drawai.codex_element_analysis.v1 and an elements array. Retained "
+                "elements use box_id or element_id, source_candidate_ids, bbox as [x1,y1,x2,y2], category "
+                "svg_self_draw|crop|crop_nobg, type, confidence, reason, evidence, current_pipeline_method, and "
+                "recommended_asset_source. Removed or merged candidates may appear in removal_records."
+            ),
         ),
         "drawai.asset_package.v1": FormatSpec(
             format_id="drawai.asset_package.v1",
@@ -82,7 +107,10 @@ def default_format_registry() -> dict[str, FormatSpec]:
             media_type="application/json",
             artifact_type="asset_package",
             validator=_validate_asset_package,
-            description="Single-element asset package.",
+            description=(
+                "UTF-8 JSON object for one DrawAI asset package. It includes asset_id, element_id, processor_type, "
+                "status, files, metadata, processor_runs, active_result, editable_payload, and optional failure."
+            ),
         ),
         "drawai.asset_packages.v1": FormatSpec(
             format_id="drawai.asset_packages.v1",
@@ -90,7 +118,10 @@ def default_format_registry() -> dict[str, FormatSpec]:
             media_type="application/json",
             artifact_type="asset_packages",
             validator=_validate_asset_packages,
-            description="Collection of single-element asset packages.",
+            description=(
+                "UTF-8 JSON object with an asset_packages array, or a JSON array of asset package objects. It is the "
+                "collection consumed by SVG generation for local crop/no-background assets."
+            ),
         ),
         "drawai.semantic_svg.v1": FormatSpec(
             format_id="drawai.semantic_svg.v1",
@@ -98,7 +129,7 @@ def default_format_registry() -> dict[str, FormatSpec]:
             media_type="image/svg+xml",
             artifact_type="semantic_svg",
             validator=_validate_semantic_svg,
-            description="Editable SVG with an SVG root element.",
+            description="SVG XML file whose document root is <svg>; intended to follow the DrawAI editable SVG/PPT profile.",
         ),
         "drawai.pptx.v1": FormatSpec(
             format_id="drawai.pptx.v1",
@@ -106,7 +137,7 @@ def default_format_registry() -> dict[str, FormatSpec]:
             media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
             artifact_type="pptx",
             validator=_validate_pptx,
-            description="PowerPoint Open XML presentation package.",
+            description="Valid zipped PowerPoint Open XML package containing [Content_Types].xml and ppt/presentation.xml.",
         ),
         "drawai.final_outputs.v1": FormatSpec(
             format_id="drawai.final_outputs.v1",
@@ -114,9 +145,16 @@ def default_format_registry() -> dict[str, FormatSpec]:
             media_type="application/json",
             artifact_type="final_outputs",
             validator=_validate_final_outputs,
-            description="Output-node manifest of visible deliverables.",
+            description="UTF-8 JSON object with an outputs array generated by an output node.",
         ),
     }
+
+
+def default_format_contract_descriptions(
+    *,
+    registry: Mapping[str, FormatSpec] | None = None,
+) -> dict[str, str]:
+    return {format_id: spec.description for format_id, spec in (registry or default_format_registry()).items()}
 
 
 def validate_format_file(
@@ -196,6 +234,18 @@ def _validate_element_plans(path: Path) -> tuple[str, ...]:
         except Exception as exc:
             validation_errors.append(f"elements[{index}]: {exc}")
     return tuple(validation_errors)
+
+
+def _validate_element_analysis(path: Path) -> tuple[str, ...]:
+    payload, errors = _read_json_object(path)
+    if errors:
+        return errors
+    try:
+        codex_analysis_to_v2_element_plans(payload)
+        codex_analysis_to_v2_removal_records(payload)
+    except Exception as exc:
+        return (str(exc),)
+    return ()
 
 
 def _validate_asset_package(path: Path) -> tuple[str, ...]:

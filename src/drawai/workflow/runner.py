@@ -170,13 +170,30 @@ class WorkflowRunner:
                 )
             except Exception as exc:  # Node boundary: persist failure and keep downstream state explicit.
                 error = f"{type(exc).__name__}: {exc}"
-                finish_node_run_failed(record, inputs=inputs, error=error)
+                finish_node_run_failed(
+                    record,
+                    inputs=inputs,
+                    error=error,
+                    prompt_path=_exception_metadata_path(exc, "prompt_path", root),
+                    stdout_path=_exception_metadata_path(exc, "stdout_path", root),
+                    stderr_path=_exception_metadata_path(exc, "stderr_path", root),
+                    exit_code=_exception_exit_code(exc),
+                )
                 node_status[node.node_id] = "failed"
                 failed_node_ids.append(node.node_id)
                 summaries.append(_summary(record, "failed", error=error))
                 continue
 
-            finish_node_run_ok(record, inputs=inputs, outputs=outputs)
+            run_metadata = _node_run_metadata(outputs)
+            finish_node_run_ok(
+                record,
+                inputs=inputs,
+                outputs=outputs,
+                prompt_path=run_metadata["prompt_path"],
+                stdout_path=run_metadata["stdout_path"],
+                stderr_path=run_metadata["stderr_path"],
+                exit_code=run_metadata["exit_code"],
+            )
             for port_id, port_outputs in _outputs_by_port(outputs).items():
                 outputs_by_port[(node.node_id, port_id)] = port_outputs
             if node.node_type == "output":
@@ -376,6 +393,40 @@ def _outputs_by_port(
     for output in outputs:
         grouped[str(output["port_id"])].append(output)
     return {port_id: tuple(items) for port_id, items in grouped.items()}
+
+
+def _node_run_metadata(outputs: tuple[Mapping[str, Any], ...]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "prompt_path": "",
+        "stdout_path": "",
+        "stderr_path": "",
+        "exit_code": 0,
+    }
+    for output in outputs:
+        for field_name in ("prompt_path", "stdout_path", "stderr_path"):
+            value = output.get(field_name)
+            if isinstance(value, str) and value and not metadata[field_name]:
+                metadata[field_name] = value
+        exit_code = output.get("exit_code")
+        if isinstance(exit_code, int):
+            metadata["exit_code"] = exit_code
+    return metadata
+
+
+def _exception_metadata_path(exc: Exception, field_name: str, root: Path) -> str:
+    value = getattr(exc, field_name, None)
+    if value is None:
+        return ""
+    path = Path(value).expanduser().resolve(strict=False)
+    try:
+        return path.relative_to(root.resolve(strict=False)).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _exception_exit_code(exc: Exception) -> int | None:
+    value = getattr(exc, "exit_code", None)
+    return value if isinstance(value, int) else None
 
 
 def _read_final_outputs(

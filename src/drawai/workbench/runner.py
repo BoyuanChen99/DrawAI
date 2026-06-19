@@ -6,6 +6,7 @@ import shutil
 import threading
 import time
 from collections.abc import Callable
+from collections.abc import Mapping
 from contextlib import ExitStack, contextmanager
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -14,10 +15,22 @@ from typing import Any, Iterator, Literal
 
 import yaml
 
-from drawai.artifacts import DrawAiArtifactPaths, prepare_artifact_paths
+from drawai.artifacts import DrawAiArtifactPaths, prepare_artifact_paths, write_json
 from drawai.config import load_drawai_config
 from drawai.pipeline import run_drawai_pipeline_from_stage
 from drawai.rmbg_client import RemoteRmbgClient
+from drawai.v2.packages import write_element_plan
+from drawai.v2.refine import codex_analysis_to_v2_element_plans
+from drawai.v2.schema import RUN_PACKAGE_SCHEMA, AssetPackage, ElementPlan, utc_now
+from drawai.workflow.agent_execution import (
+    AgentExecutionRequest,
+    AgentExecutionResult,
+    execute_agent_prompt,
+)
+from drawai.workflow.agents import agent_preset_by_id, render_agent_prompt
+from drawai.workflow.runner import NodeRunContext, WorkflowRunner
+from drawai.workflow.schema import WorkflowEdge, WorkflowTemplate
+from drawai.workflow.templates import load_workflow_template_by_id
 
 from .assets import (
     approve_asset_plan,
@@ -30,6 +43,7 @@ from .models import CaseRecord, WorkbenchSettings
 from .store import WorkbenchStore
 
 StageExecutor = Callable[[CaseRecord, str], None]
+AgentExecutor = Callable[[AgentExecutionRequest], AgentExecutionResult]
 RerunStage = Literal[
     "analysis",
     "asset_analyze",
@@ -84,10 +98,12 @@ class WorkbenchRunner:
         settings: WorkbenchSettings,
         *,
         stage_executor: StageExecutor | None = None,
+        agent_executor: AgentExecutor | None = None,
     ) -> None:
         self.store = store
         self.settings = settings
         self.stage_executor = stage_executor
+        self.agent_executor = agent_executor or execute_agent_prompt
         self.executor = ThreadPoolExecutor(max_workers=max(1, settings.max_concurrent_cases))
         self._futures: set[Future[Any]] = set()
         self._futures_lock = threading.Lock()
@@ -100,6 +116,9 @@ class WorkbenchRunner:
             "codex": {"limit": max(1, settings.codex_concurrency), "queued": 0, "running": 0},
             "rmbg": {"limit": max(1, settings.rmbg_concurrency), "queued": 0, "running": 0},
             "export": {"limit": max(1, settings.export_concurrency), "queued": 0, "running": 0},
+            "agent_provider:codex_sdk": {"limit": max(1, settings.codex_concurrency), "queued": 0, "running": 0},
+            "agent_provider:codex_cli": {"limit": max(1, settings.codex_concurrency), "queued": 0, "running": 0},
+            "agent_provider:kimi_cli": {"limit": 2, "queued": 0, "running": 0},
         }
         self._resource_locks = {
             "sam3": threading.Semaphore(max(1, settings.sam_concurrency)),
@@ -107,6 +126,9 @@ class WorkbenchRunner:
             "codex": threading.Semaphore(max(1, settings.codex_concurrency)),
             "rmbg": threading.Semaphore(max(1, settings.rmbg_concurrency)),
             "export": threading.Semaphore(max(1, settings.export_concurrency)),
+            "agent_provider:codex_sdk": threading.Semaphore(max(1, settings.codex_concurrency)),
+            "agent_provider:codex_cli": threading.Semaphore(max(1, settings.codex_concurrency)),
+            "agent_provider:kimi_cli": threading.Semaphore(2),
         }
         self._mark_interrupted_running_cases()
 
@@ -200,6 +222,10 @@ class WorkbenchRunner:
 
     @contextmanager
     def _resource_slot(self, resource: str) -> Iterator[None]:
+        if resource not in self._resource_locks:
+            self._resource_locks[resource] = threading.Semaphore(1)
+            with self._resource_activity_lock:
+                self._resource_activity[resource] = {"limit": 1, "queued": 0, "running": 0}
         lock = self._resource_locks[resource]
         self._change_resource_activity(resource, queued=1)
         lock.acquire()
@@ -253,7 +279,7 @@ class WorkbenchRunner:
 
     def _run_case_with_limit(self, case_id: str, batch_limit: threading.Semaphore) -> None:
         with batch_limit:
-            self._run_analysis(case_id)
+            self._run_workflow_case(case_id)
 
     def _refresh_case_runtime_config(self, case: CaseRecord) -> CaseRecord:
         batch = self.store.get_batch(case.batch_id)
@@ -269,6 +295,238 @@ class WorkbenchRunner:
         )
         self.store.update_case_config_path(case.case_id, config_path)
         return self.store.get_case(case.case_id)
+
+    def _run_workflow_case(self, case_id: str) -> None:
+        case = self._refresh_case_runtime_config(self.store.get_case(case_id))
+        batch = self.store.get_batch(case.batch_id)
+        try:
+            template = load_workflow_template_by_id(self.store.workspace, batch.workflow_template_id)
+            review_template = _workflow_until_first_human_review(template)
+            run_template = template if batch.auto_run_svg_after_analysis or review_template is None else review_template
+            stage_state: dict[str, bool] = {}
+            runner = WorkflowRunner(
+                run_template,
+                handlers={
+                    "input": lambda context, inputs: self._run_workflow_input_node(case, context, inputs, stage_state),
+                    "parser": lambda context, inputs: self._run_workflow_parser_node(case, context, inputs, stage_state),
+                    "fusion": lambda context, inputs: self._run_workflow_fusion_node(case, context, inputs, stage_state),
+                    "agent": lambda context, inputs: self._run_workflow_agent_node(case, context, inputs, stage_state),
+                    "processor": lambda context, inputs: self._run_workflow_processor_node(case, context, inputs, stage_state),
+                    "human_review": lambda context, inputs: self._run_workflow_review_node(
+                        case,
+                        context,
+                        inputs,
+                        auto_approve=batch.auto_run_svg_after_analysis,
+                    ),
+                    "export": lambda context, inputs: self._run_workflow_export_node(case, context, inputs, stage_state),
+                },
+            )
+            result = runner.run(case.run_root)
+            if not result.ok:
+                failed = ", ".join(result.failed_node_ids or result.blocked_node_ids)
+                detail = _workflow_failure_detail(result)
+                raise RuntimeError(f"Workflow DAG failed: {failed}{': ' + detail if detail else ''}")
+            self._register_standard_artifacts(case_id)
+            updated = self.store.get_case(case_id)
+            if batch.auto_run_svg_after_analysis or review_template is None:
+                self.store.update_case_status(case_id, status="completed", phase="reconstruction", stage="completed")
+            else:
+                self.store.update_case_status(
+                    case_id,
+                    status="assets_review",
+                    phase=updated.phase or "analysis",
+                    stage=_first_human_review_node_id(template) or "assets_review",
+                    stale_from_stage="compose_svg",
+                )
+            self._refresh_batch_status(case.batch_id)
+        except Exception as exc:  # noqa: BLE001 - background job boundary records failures.
+            current = self.store.get_case(case_id)
+            self.store.update_case_status(
+                case_id,
+                status="failed",
+                phase=current.phase,
+                stage=current.stage,
+                error_message=f"{type(exc).__name__}: {exc}",
+            )
+            self._refresh_batch_status(case.batch_id)
+
+    def _run_workflow_input_node(
+        self,
+        case: CaseRecord,
+        context: NodeRunContext,
+        _inputs: tuple[Mapping[str, Any], ...],
+        stage_state: dict[str, bool],
+    ) -> tuple[Mapping[str, Any], ...]:
+        self._ensure_workflow_stage(case, "prepare", stage_state)
+        paths = prepare_artifact_paths(case.run_root)
+        source = paths.figure_image if paths.figure_image.exists() else Path(case.source_image_path)
+        output_path = _copy_workflow_file(source, context.output_dir / f"image{source.suffix or '.png'}")
+        return (_workflow_output(context, "image", output_path, "image", "drawai.image.v1"),)
+
+    def _run_workflow_parser_node(
+        self,
+        case: CaseRecord,
+        context: NodeRunContext,
+        _inputs: tuple[Mapping[str, Any], ...],
+        stage_state: dict[str, bool],
+    ) -> tuple[Mapping[str, Any], ...]:
+        self._ensure_workflow_stage(case, "parse_elements", stage_state)
+        paths = prepare_artifact_paths(case.run_root)
+        parser_id = str(context.node.config.get("parser_id") or "")
+        if parser_id == "sam3_structure_parser":
+            source = paths.v2_parser_outputs_dir / "sam3_candidates.json"
+        elif parser_id == "ocr_text_parser":
+            source = paths.v2_parser_outputs_dir / "ocr_candidates.json"
+        else:
+            raise ValueError(f"unsupported parser node: {parser_id or context.node.node_id}")
+        if not source.exists():
+            source = paths.v2_parser_outputs_dir / "element_candidates.json"
+        output_path = _copy_workflow_json(source, context.output_dir / "candidates.json")
+        return (_workflow_output(context, "candidates", output_path, "element_candidates", "drawai.element_candidates.v1"),)
+
+    def _run_workflow_fusion_node(
+        self,
+        case: CaseRecord,
+        context: NodeRunContext,
+        _inputs: tuple[Mapping[str, Any], ...],
+        stage_state: dict[str, bool],
+    ) -> tuple[Mapping[str, Any], ...]:
+        self._ensure_workflow_stage(case, "fuse_elements", stage_state)
+        paths = prepare_artifact_paths(case.run_root)
+        output_path = _copy_workflow_json(paths.run_package_json, context.output_dir / "elements.json")
+        return (_workflow_output(context, "elements", output_path, "element_plans", "drawai.element_plans.v1"),)
+
+    def _run_workflow_agent_node(
+        self,
+        case: CaseRecord,
+        context: NodeRunContext,
+        inputs: tuple[Mapping[str, Any], ...],
+        stage_state: dict[str, bool],
+    ) -> tuple[Mapping[str, Any], ...]:
+        preset_id = str(context.node.config.get("preset_id") or "custom_agent")
+        node_config = {**dict(context.node.config), "node_id": context.node.node_id}
+        prompt = render_agent_prompt(
+            agent_preset_by_id(preset_id),
+            inputs=inputs,
+            node_config=node_config,
+            runtime_context={
+                "workflow_run_root": context.run_root,
+                "node_workdir": context.record.workdir,
+                "repo_root": _repo_root(),
+                "attempt_id": context.record.attempt_id,
+                "input_manifest": context.record.workdir / "input_manifest.json",
+            },
+        )
+        resource = f"agent_provider:{prompt.provider_id}"
+        with self._resource_slot(resource):
+            result = self.agent_executor(
+                AgentExecutionRequest(
+                    prompt=prompt,
+                    workdir=context.record.workdir,
+                    run_root=context.run_root,
+                    node_id=context.node.node_id,
+                    node_type=context.node.node_type,
+                )
+            )
+        outputs: list[dict[str, Any]] = []
+        for declared in prompt.outputs:
+            output_path = context.record.workdir / str(declared["path"])
+            outputs.append(
+                _workflow_output(
+                    context,
+                    str(declared["port_id"]),
+                    output_path,
+                    str(declared["type"]),
+                    str(declared["format_id"]),
+                    deliverable=_node_output_port_is_deliverable(context, str(declared["port_id"])),
+                    prompt_path=result.prompt_path,
+                    stdout_path=result.stdout_path,
+                    stderr_path=result.stderr_path,
+                    trace_path=result.trace_path,
+                    session_log_path=result.session_log_path,
+                    execution_manifest_path=result.execution_manifest_path,
+                    exit_code=result.exit_code,
+                )
+            )
+        return tuple(outputs)
+
+    def _run_workflow_processor_node(
+        self,
+        case: CaseRecord,
+        context: NodeRunContext,
+        inputs: tuple[Mapping[str, Any], ...],
+        stage_state: dict[str, bool],
+    ) -> tuple[Mapping[str, Any], ...]:
+        processor_id = str(context.node.config.get("processor_id") or "")
+        paths = prepare_artifact_paths(case.run_root)
+        if processor_id == "asset_planner":
+            analysis_source = _first_input_path(case.run_root, inputs)
+            _copy_workflow_json(
+                analysis_source,
+                paths.element_analysis_json,
+            )
+            draft = draft_from_run0_analysis(case.run_root, case_id=case.case_id)
+            write_asset_draft(case.run_root, draft)
+            analysis = json.loads(paths.element_analysis_json.read_text(encoding="utf-8"))
+            if not isinstance(analysis, Mapping):
+                raise ValueError("Run0 Agent output must be a JSON object")
+            plans = codex_analysis_to_v2_element_plans(analysis)
+            _write_workflow_run_package(case, plans, last_stage="plan_assets")
+            output_path = _copy_workflow_json(paths.run_package_json, context.output_dir / "elements.json")
+            return (_workflow_output(context, "elements", output_path, "element_plans", "drawai.element_plans.v1"),)
+        if processor_id == "asset_processors":
+            if not stage_state.get("process_assets"):
+                self._run_stage(case.case_id, "process_assets")
+                stage_state["process_assets"] = True
+            output_path = _copy_workflow_json(paths.run_package_json, context.output_dir / "asset_packages.json")
+            return (_workflow_output(context, "asset_packages", output_path, "asset_packages", "drawai.asset_packages.v1"),)
+        raise ValueError(f"unsupported processor node: {processor_id or context.node.node_id}")
+
+    def _run_workflow_review_node(
+        self,
+        case: CaseRecord,
+        context: NodeRunContext,
+        inputs: tuple[Mapping[str, Any], ...],
+        *,
+        auto_approve: bool,
+    ) -> tuple[Mapping[str, Any], ...]:
+        if auto_approve:
+            approve_asset_plan(case.run_root, read_asset_draft(case.run_root))
+        source = _first_input_path(case.run_root, inputs)
+        output_path = _copy_workflow_json(source, context.output_dir / "confirmed_asset_packages.json")
+        return (_workflow_output(context, "asset_packages", output_path, "asset_packages", "drawai.asset_packages.v1"),)
+
+    def _run_workflow_export_node(
+        self,
+        case: CaseRecord,
+        context: NodeRunContext,
+        inputs: tuple[Mapping[str, Any], ...],
+        stage_state: dict[str, bool],
+    ) -> tuple[Mapping[str, Any], ...]:
+        exporter_id = str(context.node.config.get("exporter_id") or "")
+        if exporter_id != "svg_to_ppt":
+            raise ValueError(f"unsupported export node: {exporter_id or context.node.node_id}")
+        paths = prepare_artifact_paths(case.run_root)
+        svg_source = _first_input_path(case.run_root, inputs)
+        _copy_workflow_file(svg_source, paths.semantic_svg)
+        if not stage_state.get("export"):
+            self._run_stage(case.case_id, "export")
+            stage_state["export"] = True
+        pptx_path = paths.root / "svg_to_ppt" / "semantic.svg_to_ppt.pptx"
+        output_path = _copy_workflow_file(pptx_path, context.output_dir / "semantic.svg_to_ppt.pptx")
+        return (_workflow_output(context, "pptx", output_path, "pptx", "drawai.pptx.v1", deliverable=True),)
+
+    def _ensure_workflow_stage(
+        self,
+        case: CaseRecord,
+        stage: str,
+        stage_state: dict[str, bool],
+    ) -> None:
+        for required in _workflow_stage_chain(stage):
+            if stage_state.get(required):
+                continue
+            self._run_stage(case.case_id, required)
+            stage_state[required] = True
 
     def _run_analysis(self, case_id: str) -> None:
         case = self._refresh_case_runtime_config(self.store.get_case(case_id))
@@ -552,6 +810,19 @@ def _idle_wait_remaining(deadline: float | None) -> float | None:
     return deadline - time.monotonic()
 
 
+def _workflow_failure_detail(result: Any) -> str:
+    for summary in getattr(result, "node_runs", ()):
+        error = getattr(summary, "error", "")
+        status = getattr(summary, "status", "")
+        if status == "failed" and error:
+            return str(error)
+    for summary in getattr(result, "node_runs", ()):
+        error = getattr(summary, "error", "")
+        if error:
+            return str(error)
+    return ""
+
+
 def _has_external_refinement_analysis(paths: DrawAiArtifactPaths) -> bool:
     if not paths.element_analysis_json.is_file():
         return False
@@ -634,6 +905,212 @@ def _pipeline_failure_message(summary: dict[str, Any]) -> str:
         if isinstance(message, str) and message.strip():
             return message.strip()
     return ""
+
+
+def _workflow_until_first_human_review(template: WorkflowTemplate) -> WorkflowTemplate | None:
+    review_node_id = _first_human_review_node_id(template)
+    if not review_node_id:
+        return None
+    upstream_ids = _upstream_node_ids(template, review_node_id)
+    nodes = tuple(node for node in template.nodes if node.node_id in upstream_ids)
+    edges = tuple(
+        edge
+        for edge in template.edges
+        if edge.source_node_id in upstream_ids and edge.target_node_id in upstream_ids
+    )
+    return WorkflowTemplate(
+        template_id=template.template_id,
+        name=template.name,
+        description=template.description,
+        version=template.version,
+        schema=template.schema,
+        defaults=template.defaults,
+        nodes=nodes,
+        edges=edges,
+    )
+
+
+def _first_human_review_node_id(template: WorkflowTemplate) -> str:
+    node = next((item for item in template.nodes if item.node_type == "human_review"), None)
+    return node.node_id if node is not None else ""
+
+
+def _upstream_node_ids(template: WorkflowTemplate, node_id: str) -> set[str]:
+    incoming: dict[str, list[WorkflowEdge]] = {}
+    for edge in template.edges:
+        incoming.setdefault(edge.target_node_id, []).append(edge)
+    seen: set[str] = set()
+
+    def visit(current_id: str) -> None:
+        if current_id in seen:
+            return
+        seen.add(current_id)
+        for edge in incoming.get(current_id, ()):
+            visit(edge.source_node_id)
+
+    visit(node_id)
+    return seen
+
+
+def _workflow_stage_chain(stage: str) -> tuple[str, ...]:
+    chains = {
+        "prepare": ("prepare",),
+        "parse_elements": ("prepare", "parse_elements"),
+        "fuse_elements": ("prepare", "parse_elements", "fuse_elements"),
+        "refine_elements": ("prepare", "parse_elements", "fuse_elements", "refine_elements"),
+        "plan_assets": ("prepare", "parse_elements", "fuse_elements", "refine_elements", "plan_assets"),
+        "process_assets": (
+            "prepare",
+            "parse_elements",
+            "fuse_elements",
+            "refine_elements",
+            "plan_assets",
+            "process_assets",
+        ),
+        "compose_svg": (
+            "prepare",
+            "parse_elements",
+            "fuse_elements",
+            "refine_elements",
+            "plan_assets",
+            "process_assets",
+            "compose_svg",
+        ),
+        "export": (
+            "prepare",
+            "parse_elements",
+            "fuse_elements",
+            "refine_elements",
+            "plan_assets",
+            "process_assets",
+            "compose_svg",
+            "export",
+        ),
+    }
+    if stage not in chains:
+        raise ValueError(f"unsupported workflow-backed stage: {stage}")
+    return chains[stage]
+
+
+def _copy_workflow_json(source: str | Path, target: str | Path) -> Path:
+    source_path = Path(source).expanduser().resolve(strict=False)
+    if not source_path.is_file():
+        raise FileNotFoundError(f"workflow JSON artifact does not exist: {source_path}")
+    payload = json.loads(source_path.read_text(encoding="utf-8"))
+    target_path = Path(target).expanduser().resolve(strict=False)
+    write_json(target_path, payload)
+    return target_path
+
+
+def _copy_workflow_file(source: str | Path, target: str | Path) -> Path:
+    source_path = Path(source).expanduser().resolve(strict=False)
+    if not source_path.is_file():
+        raise FileNotFoundError(f"workflow artifact does not exist: {source_path}")
+    target_path = Path(target).expanduser().resolve(strict=False)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_path, target_path)
+    return target_path
+
+
+def _write_workflow_run_package(
+    case: CaseRecord,
+    plans: tuple[ElementPlan, ...],
+    *,
+    last_stage: str,
+) -> Path:
+    root = Path(case.run_root).expanduser().resolve()
+    paths = prepare_artifact_paths(root)
+    source_metadata = json.loads(paths.source_metadata.read_text(encoding="utf-8"))
+    if not isinstance(source_metadata, Mapping):
+        raise ValueError("source_metadata.json must be a JSON object")
+    width = float(source_metadata.get("width") or 0)
+    height = float(source_metadata.get("height") or 0)
+    if width <= 0 or height <= 0:
+        raise ValueError("source metadata must contain positive width and height")
+    for plan in plans:
+        write_element_plan(root, plan)
+    pending_packages = tuple(
+        AssetPackage.empty(
+            asset_id=f"A{index:03d}",
+            element_id=plan.element_id,
+            processor_type=plan.processing_intent.processing_type,
+        )
+        for index, plan in enumerate(plans, start=1)
+    )
+    payload = {
+        "schema": RUN_PACKAGE_SCHEMA,
+        "run_id": case.case_id,
+        "root": str(root),
+        "source_image": str(paths.figure_image),
+        "canvas": {"width": width, "height": height},
+        "created_at": utc_now(),
+        "metadata": {"last_stage": last_stage, "v2_enabled": True},
+        "elements": [plan.to_dict() for plan in plans],
+        "asset_packages": [package.to_dict() for package in pending_packages],
+    }
+    write_json(paths.run_package_json, payload)
+    return paths.run_package_json
+
+
+def _node_output_port_is_deliverable(context: NodeRunContext, port_id: str) -> bool:
+    for port in context.node.outputs:
+        if port.port_id == port_id:
+            return "deliverable" in port.description.lower()
+    return False
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _workflow_output(
+    context: NodeRunContext,
+    port_id: str,
+    path: str | Path,
+    artifact_type: str,
+    format_id: str,
+    *,
+    deliverable: bool = False,
+    prompt_path: str | Path | None = None,
+    stdout_path: str | Path | None = None,
+    stderr_path: str | Path | None = None,
+    trace_path: str | Path | None = None,
+    session_log_path: str | Path | None = None,
+    execution_manifest_path: str | Path | None = None,
+    exit_code: int = 0,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "port_id": port_id,
+        "path": context.relative_path(path),
+        "format_id": format_id,
+        "type": artifact_type,
+    }
+    if deliverable:
+        payload["deliverable"] = True
+    if prompt_path is not None:
+        payload["prompt_path"] = context.relative_path(prompt_path)
+    if stdout_path is not None:
+        payload["stdout_path"] = context.relative_path(stdout_path)
+    if stderr_path is not None:
+        payload["stderr_path"] = context.relative_path(stderr_path)
+    if trace_path is not None:
+        payload["trace_path"] = context.relative_path(trace_path)
+    if session_log_path is not None:
+        payload["session_log_path"] = context.relative_path(session_log_path)
+    if execution_manifest_path is not None:
+        payload["execution_manifest_path"] = context.relative_path(execution_manifest_path)
+    payload["exit_code"] = int(exit_code)
+    return payload
+
+
+def _first_input_path(run_root: str | Path, inputs: tuple[Mapping[str, Any], ...]) -> Path:
+    if not inputs:
+        raise ValueError("workflow review node requires an input artifact")
+    path = inputs[0].get("path")
+    if not isinstance(path, str) or not path:
+        raise ValueError("workflow input artifact path is missing")
+    path_obj = Path(path)
+    return path_obj if path_obj.is_absolute() else Path(run_root) / path_obj
 
 
 def create_case_config(

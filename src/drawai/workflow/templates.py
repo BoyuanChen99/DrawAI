@@ -109,10 +109,10 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                 inputs=(_input("elements", "Element Plans", ("element_plans",)),),
                 outputs=(
                     _output(
-                        "elements",
-                        "Element Plans",
-                        ("element_plans",),
-                        formats=("drawai.element_plans.v1",),
+                        "analysis",
+                        "Element Analysis",
+                        ("element_analysis",),
+                        formats=("drawai.codex_element_analysis.v1",),
                     ),
                 ),
                 config={
@@ -122,11 +122,11 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                     "constraints": list(RUN0_ELEMENT_REFINE_CONSTRAINTS),
                     "outputs": [
                         {
-                            "port_id": "elements",
-                            "path": "output/elements.json",
-                            "format_id": "drawai.element_plans.v1",
-                            "type": "element_plans",
-                            "description": "Refined element plans in the standard DrawAI v1 element plan JSON format.",
+                            "port_id": "analysis",
+                            "path": "output/element_analysis.json",
+                            "format_id": "drawai.codex_element_analysis.v1",
+                            "type": "element_analysis",
+                            "description": "Run0 refined asset/source analysis in the standard DrawAI Codex element analysis JSON format.",
                         }
                     ],
                 },
@@ -136,7 +136,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                 node_id="asset_planner",
                 node_type="processor",
                 title="Asset Planner",
-                inputs=(_input("elements", "Element Plans", ("element_plans",)),),
+                inputs=(_input("analysis", "Element Analysis", ("element_analysis",)),),
                 outputs=(
                     _output(
                         "elements",
@@ -270,7 +270,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
             _edge("sam_parser", "candidates", "fusion", "candidates"),
             _edge("ocr_parser", "candidates", "fusion", "candidates"),
             _edge("fusion", "elements", "run0_agent", "elements"),
-            _edge("run0_agent", "elements", "asset_planner", "elements"),
+            _edge("run0_agent", "analysis", "asset_planner", "analysis"),
             _edge("asset_planner", "elements", "asset_processors", "elements"),
             _edge("asset_planner", "elements", "svg_agent", "elements"),
             _edge("asset_processors", "asset_packages", "asset_confirm", "asset_packages"),

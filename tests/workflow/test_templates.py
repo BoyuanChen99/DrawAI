@@ -90,7 +90,9 @@ def test_asset_refine_and_svg_are_agent_node_presets() -> None:
     assert "DrawAI asset post-processing and source analysis task." in nodes["run0_agent"].config["task"]
     assert "Task 2: repeat a bounded visualization/refinement loop" in nodes["run0_agent"].config["task"]
     assert nodes["run0_agent"].config["constraints"]
-    assert nodes["run0_agent"].config["outputs"][0]["format_id"] == "drawai.element_plans.v1"
+    assert nodes["run0_agent"].config["outputs"][0]["format_id"] == "drawai.codex_element_analysis.v1"
+    assert nodes["run0_agent"].outputs[0].types == ("element_analysis",)
+    assert nodes["asset_planner"].inputs[0].types == ("element_analysis",)
     assert "IMAGE VECTORIZATION TASK" in nodes["svg_agent"].config["task"]
     assert "REFINE LOOP / MAX 3 ROUNDS" in nodes["svg_agent"].config["task"]
     assert "OVERALL SVG/PPT PROFILE" in nodes["svg_agent"].config["task"]

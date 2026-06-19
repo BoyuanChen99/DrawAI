@@ -1,0 +1,489 @@
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import time
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from drawai.codex_cli import resolve_codex_executable
+from drawai.codex_python_sdk_svg import (
+    _archive_codex_session_logs,
+    _codex_sdk_env,
+    _load_openai_codex_sdk,
+    _normalize_codex_model_name,
+    _normalize_codex_reasoning_effort,
+    _run_thread_with_timeout,
+    controlled_codex_config_overrides,
+    _isolated_codex_home,
+)
+
+from .agents import AgentPrompt
+
+
+@dataclass(frozen=True)
+class AgentExecutionRequest:
+    prompt: AgentPrompt
+    workdir: Path
+    run_root: Path
+    node_id: str
+    node_type: str
+
+
+@dataclass(frozen=True)
+class AgentExecutionResult:
+    provider_id: str
+    prompt_path: Path
+    stdout_path: Path | None = None
+    stderr_path: Path | None = None
+    trace_path: Path | None = None
+    session_log_path: Path | None = None
+    execution_manifest_path: Path | None = None
+    exit_code: int = 0
+
+
+class AgentExecutionError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        prompt_path: Path | None = None,
+        stdout_path: Path | None = None,
+        stderr_path: Path | None = None,
+        exit_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.prompt_path = prompt_path
+        self.stdout_path = stdout_path
+        self.stderr_path = stderr_path
+        self.exit_code = exit_code
+
+
+def execute_agent_prompt(request: AgentExecutionRequest) -> AgentExecutionResult:
+    provider_id = request.prompt.provider_id
+    request.workdir.mkdir(parents=True, exist_ok=True)
+    prompt_path = request.workdir / "prompt.md"
+    prompt_path.write_text(request.prompt.text, encoding="utf-8")
+    if provider_id == "codex_sdk":
+        result = _execute_codex_sdk_agent(request, prompt_path=prompt_path)
+    elif provider_id == "codex_cli":
+        result = _execute_codex_cli_agent(request, prompt_path=prompt_path)
+    elif provider_id == "kimi_cli":
+        result = _execute_kimi_cli_agent(request, prompt_path=prompt_path)
+    else:
+        raise AgentExecutionError(
+            f"unsupported Agent provider: {provider_id}",
+            prompt_path=prompt_path,
+        )
+    _require_declared_outputs(request)
+    manifest_path = _write_execution_manifest(request, result)
+    return AgentExecutionResult(
+        provider_id=result.provider_id,
+        prompt_path=result.prompt_path,
+        stdout_path=result.stdout_path,
+        stderr_path=result.stderr_path,
+        trace_path=result.trace_path,
+        session_log_path=result.session_log_path,
+        execution_manifest_path=manifest_path,
+        exit_code=result.exit_code,
+    )
+
+
+def _execute_codex_sdk_agent(
+    request: AgentExecutionRequest,
+    *,
+    prompt_path: Path,
+) -> AgentExecutionResult:
+    sdk = _load_openai_codex_sdk()
+    options = dict(request.prompt.options)
+    model_name = _normalize_codex_model_name(options.get("model"))
+    reasoning_effort = _codex_sdk_reasoning_effort(options.get("reasoning_effort"))
+    timeout_seconds = _timeout_seconds(options)
+    trace_path = request.workdir / "codex_sdk_trace.jsonl"
+    stdout_path = request.workdir / "codex_sdk_final_response.txt"
+    stderr_path = request.workdir / "codex_sdk_error.txt"
+    session_log_path = request.workdir / "codex_session_log"
+    started_at = time.monotonic()
+    result: Any | None = None
+    try:
+        with _isolated_codex_home(request.workdir) as prepared_codex_home:
+            with sdk.Codex(
+                sdk.CodexConfig(
+                    cwd=str(request.workdir),
+                    config_overrides=controlled_codex_config_overrides(),
+                    env=_codex_sdk_env(prepared_codex_home.codex_home),
+                )
+            ) as codex:
+                thread = codex.thread_start(
+                    approval_mode=sdk.ApprovalMode.deny_all,
+                    config={"model_reasoning_effort": reasoning_effort},
+                    cwd=str(request.workdir),
+                    developer_instructions=_developer_instructions(request),
+                    ephemeral=True,
+                    model=model_name,
+                    sandbox=sdk.Sandbox.full_access,
+                )
+                codex_inputs: list[Any] = [sdk.TextInput(request.prompt.text)]
+                codex_inputs.extend(
+                    sdk.LocalImageInput(path=str(path))
+                    for path in _image_input_paths(request)
+                )
+                _append_trace(
+                    trace_path,
+                    {
+                        "type": "agent_request",
+                        "provider_id": "codex_sdk",
+                        "node_id": request.node_id,
+                        "cwd": str(request.workdir),
+                        "prompt_path": str(prompt_path),
+                        "input_paths": [str(path) for path in _input_paths(request)],
+                        "declared_outputs": list(request.prompt.outputs),
+                        "model": model_name or "codex-default",
+                        "reasoning_effort": reasoning_effort,
+                        "timeout_seconds": timeout_seconds,
+                    },
+                )
+                result = _run_thread_with_timeout(
+                    thread,
+                    codex_inputs,
+                    timeout_seconds=timeout_seconds,
+                    approval_mode=sdk.ApprovalMode.deny_all,
+                    cwd=str(request.workdir),
+                    effort=reasoning_effort,
+                    model=model_name,
+                    sandbox=sdk.Sandbox.full_access,
+                )
+                stdout_path.write_text(str(getattr(result, "final_response", "") or ""), encoding="utf-8")
+            archive = _archive_codex_session_logs(
+                prepared_codex_home.codex_home,
+                session_log_path,
+                task_name=f"drawai.workflow.agent.{request.node_id}.codex_sdk",
+                sdk_turn_result=result,
+            )
+    except Exception as exc:
+        stderr_path.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
+        raise AgentExecutionError(
+            f"Codex SDK Agent run failed: {exc}",
+            prompt_path=prompt_path,
+            stdout_path=stdout_path if stdout_path.exists() else None,
+            stderr_path=stderr_path,
+            exit_code=1,
+        ) from exc
+    _append_trace(
+        trace_path,
+        {
+            "type": "agent_response",
+            "provider_id": "codex_sdk",
+            "node_id": request.node_id,
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+            "session_log_archive": archive,
+            "output_paths": [str(request.workdir / str(output["path"])) for output in request.prompt.outputs],
+        },
+    )
+    return AgentExecutionResult(
+        provider_id="codex_sdk",
+        prompt_path=prompt_path,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path if stderr_path.exists() else None,
+        trace_path=trace_path,
+        session_log_path=session_log_path,
+    )
+
+
+def _execute_codex_cli_agent(
+    request: AgentExecutionRequest,
+    *,
+    prompt_path: Path,
+) -> AgentExecutionResult:
+    executable = resolve_codex_executable()
+    if executable is None:
+        raise AgentExecutionError("codex executable was not found", prompt_path=prompt_path)
+    options = dict(request.prompt.options)
+    command = [
+        str(executable),
+        "exec",
+        "--ignore-user-config",
+        "--skip-git-repo-check",
+        "--json",
+        "-C",
+        str(request.workdir),
+        "-s",
+        "danger-full-access",
+        "-o",
+        str(request.workdir / "codex_cli_last_message.txt"),
+        *(_codex_image_args(request)),
+        *(_codex_cli_config_args(options)),
+    ]
+    model = _normalize_codex_model_name(options.get("model"))
+    if model is not None:
+        command.extend(["-m", model])
+    command.append("-")
+    return _execute_subprocess_agent(
+        request,
+        prompt_path=prompt_path,
+        provider_id="codex_cli",
+        command=command,
+        stdout_name="codex_cli_events.jsonl",
+        stderr_name="codex_cli_stderr.txt",
+    )
+
+
+def _execute_kimi_cli_agent(
+    request: AgentExecutionRequest,
+    *,
+    prompt_path: Path,
+) -> AgentExecutionResult:
+    executable = shutil.which("kimi")
+    if executable is None:
+        raise AgentExecutionError("kimi executable was not found", prompt_path=prompt_path)
+    options = dict(request.prompt.options)
+    command = [
+        executable,
+        "--work-dir",
+        str(request.workdir),
+        "--print",
+        "--input-format",
+        "text",
+        "--output-format",
+        "stream-json",
+    ]
+    model = str(options.get("model") or "").strip()
+    if model:
+        command.extend(["--model", model])
+    result = _execute_subprocess_agent(
+        request,
+        prompt_path=prompt_path,
+        provider_id="kimi_cli",
+        command=command,
+        stdout_name="kimi_events.jsonl",
+        stderr_name="kimi_stderr.txt",
+    )
+    export_path = request.workdir / "kimi_session.zip"
+    export_command = [executable, "export", "--output", str(export_path), "--yes"]
+    completed = subprocess.run(
+        export_command,
+        cwd=str(request.workdir),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+        timeout=120,
+    )
+    session_log_path = export_path if completed.returncode == 0 and export_path.is_file() else None
+    return AgentExecutionResult(
+        provider_id=result.provider_id,
+        prompt_path=result.prompt_path,
+        stdout_path=result.stdout_path,
+        stderr_path=result.stderr_path,
+        trace_path=result.trace_path,
+        session_log_path=session_log_path,
+        exit_code=result.exit_code,
+    )
+
+
+def _execute_subprocess_agent(
+    request: AgentExecutionRequest,
+    *,
+    prompt_path: Path,
+    provider_id: str,
+    command: Sequence[str],
+    stdout_name: str,
+    stderr_name: str,
+) -> AgentExecutionResult:
+    stdout_path = request.workdir / stdout_name
+    stderr_path = request.workdir / stderr_name
+    trace_path = request.workdir / f"{provider_id}_trace.jsonl"
+    timeout_seconds = _timeout_seconds(request.prompt.options)
+    env = os.environ.copy()
+    started_at = time.monotonic()
+    _append_trace(
+        trace_path,
+        {
+            "type": "agent_request",
+            "provider_id": provider_id,
+            "node_id": request.node_id,
+            "cwd": str(request.workdir),
+            "prompt_path": str(prompt_path),
+            "command": _redact_command(command),
+            "input_paths": [str(path) for path in _input_paths(request)],
+            "declared_outputs": list(request.prompt.outputs),
+            "timeout_seconds": timeout_seconds,
+        },
+    )
+    with stdout_path.open("w", encoding="utf-8") as stdout_handle, stderr_path.open("w", encoding="utf-8") as stderr_handle:
+        completed = subprocess.run(
+            list(command),
+            input=request.prompt.text,
+            text=True,
+            cwd=str(request.workdir),
+            env=env,
+            stdout=stdout_handle,
+            stderr=stderr_handle,
+            timeout=timeout_seconds,
+            check=False,
+        )
+    _append_trace(
+        trace_path,
+        {
+            "type": "agent_response",
+            "provider_id": provider_id,
+            "node_id": request.node_id,
+            "returncode": completed.returncode,
+            "duration_ms": int((time.monotonic() - started_at) * 1000),
+            "output_paths": [str(request.workdir / str(output["path"])) for output in request.prompt.outputs],
+        },
+    )
+    if completed.returncode != 0:
+        stderr_tail = stderr_path.read_text(encoding="utf-8")[-2000:] if stderr_path.exists() else ""
+        raise AgentExecutionError(
+            f"{provider_id} Agent run failed with returncode={completed.returncode}: {stderr_tail}",
+            prompt_path=prompt_path,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            exit_code=completed.returncode,
+        )
+    return AgentExecutionResult(
+        provider_id=provider_id,
+        prompt_path=prompt_path,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        trace_path=trace_path,
+        exit_code=completed.returncode,
+    )
+
+
+def _write_execution_manifest(
+    request: AgentExecutionRequest,
+    result: AgentExecutionResult,
+) -> Path:
+    path = request.workdir / "agent_execution.json"
+    _write_json(
+        path,
+        {
+            "schema": "drawai.workflow_agent_execution.v1",
+            "node_id": request.node_id,
+            "provider_id": result.provider_id,
+            "cwd": str(request.workdir),
+            "prompt_path": _relative_or_absolute(result.prompt_path, request.run_root),
+            "stdout_path": _relative_or_absolute(result.stdout_path, request.run_root),
+            "stderr_path": _relative_or_absolute(result.stderr_path, request.run_root),
+            "trace_path": _relative_or_absolute(result.trace_path, request.run_root),
+            "session_log_path": _relative_or_absolute(result.session_log_path, request.run_root),
+            "declared_outputs": list(request.prompt.outputs),
+            "actual_outputs": [
+                _relative_or_absolute(request.workdir / str(output["path"]), request.run_root)
+                for output in request.prompt.outputs
+            ],
+            "exit_code": result.exit_code,
+        },
+    )
+    return path
+
+
+def _require_declared_outputs(request: AgentExecutionRequest) -> None:
+    missing: list[str] = []
+    for output in request.prompt.outputs:
+        output_path = request.workdir / str(output["path"])
+        if not output_path.is_file():
+            missing.append(str(output_path))
+    if missing:
+        raise AgentExecutionError(
+            "Agent did not write declared output files: " + ", ".join(missing),
+            prompt_path=request.workdir / "prompt.md",
+        )
+
+
+def _developer_instructions(request: AgentExecutionRequest) -> str:
+    return (
+        "You are a DrawAI file-backed Agent node. Run inside the current node workdir, "
+        "read only the files declared by the prompt unless the prompt explicitly allows additional files, "
+        "and write the declared output files exactly. Do not use web search, external apps, hooks, memories, "
+        "or multi-agent delegation."
+    )
+
+
+def _timeout_seconds(options: Mapping[str, Any]) -> float:
+    raw = options.get("timeout_seconds", 600)
+    timeout = float(raw)
+    if timeout <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    return timeout
+
+
+def _input_paths(request: AgentExecutionRequest) -> tuple[Path, ...]:
+    paths: list[Path] = []
+    for item in request.prompt.inputs:
+        path = item.get("path")
+        if isinstance(path, str) and path:
+            path_obj = Path(path)
+            paths.append(path_obj if path_obj.is_absolute() else request.run_root / path_obj)
+    return tuple(paths)
+
+
+def _image_input_paths(request: AgentExecutionRequest) -> tuple[Path, ...]:
+    return tuple(
+        path
+        for path, item in zip(_input_paths(request), request.prompt.inputs, strict=False)
+        if str(item.get("type") or "") == "image" and path.is_file()
+    )
+
+
+def _codex_image_args(request: AgentExecutionRequest) -> list[str]:
+    args: list[str] = []
+    for image_path in _image_input_paths(request):
+        args.extend(["-i", str(image_path)])
+    return args
+
+
+def _codex_cli_config_args(options: Mapping[str, Any]) -> list[str]:
+    raw_effort = options.get("reasoning_effort")
+    reasoning_effort = _normalize_codex_reasoning_effort(raw_effort)
+    args: list[str] = []
+    for override in controlled_codex_config_overrides([f'model_reasoning_effort="{reasoning_effort}"']):
+        args.extend(["-c", override])
+    return args
+
+
+def _codex_sdk_reasoning_effort(value: Any) -> str:
+    reasoning_effort = _normalize_codex_reasoning_effort(value)
+    if reasoning_effort == "minimal":
+        return "low"
+    return reasoning_effort
+
+
+def _append_trace(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _relative_or_absolute(path: Path | None, root: Path) -> str:
+    if path is None:
+        return ""
+    resolved = path.expanduser().resolve(strict=False)
+    try:
+        return resolved.relative_to(root.expanduser().resolve(strict=False)).as_posix()
+    except ValueError:
+        return str(resolved)
+
+
+def _redact_command(command: Sequence[str]) -> list[str]:
+    redacted: list[str] = []
+    skip_next = False
+    for item in command:
+        if skip_next:
+            redacted.append(item)
+            skip_next = False
+            continue
+        redacted.append(str(item))
+        if item in {"-i", "-C", "-o", "-m", "-s", "-c", "--model", "--work-dir", "--output"}:
+            skip_next = True
+    return redacted

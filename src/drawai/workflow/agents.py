@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from .agent_prompt_defaults import (
@@ -12,6 +14,7 @@ from .agent_prompt_defaults import (
     SVG_GENERATION_CONSTRAINTS,
     SVG_GENERATION_TASK,
 )
+from .formats import default_format_contract_descriptions
 
 AgentProviderKind = Literal["sdk", "cli"]
 
@@ -25,6 +28,32 @@ DANGEROUS_AGENT_CONFIG_KEYS = (
     "shell_command",
 )
 
+TYPE_CONTRACTS = {
+    "image": "Raster image file. Use it as visual evidence; do not rewrite it unless this node declares an image output.",
+    "element_candidates": (
+        "Parser candidate elements before fusion/refinement. JSON contains candidates with candidate_id, "
+        "source_parser, element_type, bbox [x, y, width, height], geometry, confidence, optional text, evidence_files, provenance, and raw_ref."
+    ),
+    "element_plans": (
+        "Refined/planned DrawAI elements. JSON contains elements with element_id, source_candidate_ids, element_type, "
+        "bbox [x, y, width, height], geometry, z_order, confidence low|medium|high, processing_intent "
+        "{object_type, processing_type, parameters}, review_status, created_by_stage, and change_reason."
+    ),
+    "element_analysis": (
+        "Run0 asset/source analysis JSON. JSON contains schema drawai.codex_element_analysis.v1, case_dir, "
+        "source, strategy_summary, refinement_summary, categories, refinement_actions, elements, optional "
+        "removal_records, and notes. Each retained element uses box_id or element_id, source_candidate_ids, "
+        "refinement_action, category svg_self_draw|crop|crop_nobg, confidence, visual_role, reason, evidence, "
+        "bbox [x1, y1, x2, y2], type, current_pipeline_method, and recommended_asset_source."
+    ),
+    "asset_packages": (
+        "Processed asset package collection. JSON contains asset_packages with asset_id, element_id, processor_type, "
+        "status pending|running|ok|failed|unsupported, files, metadata, processor_runs, all_results, active_result, editable_payload, and failure."
+    ),
+    "semantic_svg": "Editable SVG file with an <svg> root following the DrawAI semantic SVG/PPT profile.",
+    "pptx": "PowerPoint Open XML .pptx package.",
+    "final_outputs": "Output-node manifest listing collected deliverables and optional mirrored paths.",
+}
 
 @dataclass(frozen=True)
 class AgentProviderSpec:
@@ -69,6 +98,24 @@ class AgentOutputDeclaration:
 
 
 @dataclass(frozen=True)
+class AgentScriptSpec:
+    script_id: str
+    path: str
+    description: str
+    usage: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        payload = {
+            "script_id": self.script_id,
+            "path": self.path,
+            "description": self.description,
+        }
+        if self.usage:
+            payload["usage"] = self.usage
+        return payload
+
+
+@dataclass(frozen=True)
 class AgentPreset:
     preset_id: str
     title: str
@@ -76,6 +123,7 @@ class AgentPreset:
     task: str
     outputs: tuple[AgentOutputDeclaration, ...]
     constraints: tuple[str, ...] = ()
+    scripts: tuple[AgentScriptSpec, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -85,6 +133,7 @@ class AgentPreset:
             "task": self.task,
             "outputs": [output.to_dict() for output in self.outputs],
             "constraints": list(self.constraints),
+            "scripts": [script.to_dict() for script in self.scripts],
         }
 
 
@@ -147,15 +196,26 @@ def run0_agent_preset() -> AgentPreset:
         task=RUN0_ELEMENT_REFINE_TASK,
         outputs=(
             AgentOutputDeclaration(
-                port_id="elements",
-                path="output/elements.json",
-                format_id="drawai.element_plans.v1",
-                type="element_plans",
-                description="Refined element plans in the standard DrawAI v1 element plan JSON format.",
+                port_id="analysis",
+                path="output/element_analysis.json",
+                format_id="drawai.codex_element_analysis.v1",
+                type="element_analysis",
+                description="Run0 refined asset/source analysis in the standard DrawAI Codex element analysis JSON format.",
             ),
         ),
         constraints=(
             *RUN0_ELEMENT_REFINE_CONSTRAINTS,
+        ),
+        scripts=(
+            AgentScriptSpec(
+                script_id="assets_visualization",
+                path="scripts/assets_visualization.py",
+                description="Renders asset-refinement bbox JSON over the source image for Run0 visual QA iterations.",
+                usage=(
+                    "python {script} --image <image> --json <iteration_json> --output <png> "
+                    "--summary-output <summary_json> --color-mode action --label-mode id_type"
+                ),
+            ),
         ),
     )
 
@@ -217,13 +277,16 @@ def render_agent_prompt(
     *,
     inputs: Sequence[Mapping[str, Any]],
     node_config: Mapping[str, Any] | None = None,
+    runtime_context: Mapping[str, Any] | None = None,
 ) -> AgentPrompt:
     config = dict(node_config or {})
     _validate_agent_config(config)
+    runtime = _runtime_context(runtime_context)
     provider_id = str(config.get("provider_id") or preset.provider_id)
     selected_inputs = _selected_inputs(inputs, config)
     outputs = _configured_outputs(preset, config)
     options = _agent_options(config)
+    scripts = _configured_scripts(preset, config, runtime)
     text = _render_prompt_text(
         node_id=str(config.get("node_id") or "<agent_node_id>"),
         provider_id=provider_id,
@@ -232,6 +295,8 @@ def render_agent_prompt(
         options=options,
         task=_agent_task(preset, config),
         constraints=_agent_constraints(preset, config),
+        scripts=scripts,
+        runtime_context=runtime,
     )
     return AgentPrompt(
         preset_id=preset.preset_id,
@@ -252,11 +317,22 @@ def _render_prompt_text(
     options: Mapping[str, Any],
     task: str,
     constraints: tuple[str, ...],
+    scripts: tuple[Mapping[str, Any], ...],
+    runtime_context: Mapping[str, str],
 ) -> str:
+    workflow_run_root = runtime_context.get("workflow_run_root") or "<workflow_run_root>"
+    node_workdir = runtime_context.get("node_workdir") or f"{workflow_run_root}/nodes/{node_id}/runs/<attempt_id>"
+    repo_root = runtime_context.get("repo_root") or "<repository_root>"
+    input_manifest = runtime_context.get("input_manifest") or "input_manifest.json"
     lines = [
         "## Agent Runtime Settings",
         f"- Provider: {provider_id}",
-        f"- Node workdir: nodes/{node_id}/runs/<attempt_id>",
+        f"- Workflow run root: {workflow_run_root}",
+        f"- Current node workdir: {node_workdir}",
+        f"- Agent process cwd: {node_workdir}",
+        f"- Repository root: {repo_root}",
+        f"- Input manifest path: {input_manifest}",
+        "- Node run manifest path: node_run.json",
     ]
     for key, value in options.items():
         lines.append(f"- {key}: {value}")
@@ -269,10 +345,9 @@ def _render_prompt_text(
             "",
             "## Connected Input Files",
             (
-                "The DrawAI harness records these paths relative to the workflow run "
-                "root and writes the same list to input_manifest.json in this node "
-                "workdir. If the Agent process runs from the node workdir, open an "
-                "input path with ../../../<path> to resolve it from the run root."
+                "The DrawAI harness records every connected input in input_manifest.json "
+                "inside the current node workdir. Use the node-workdir-relative path "
+                "when opening files from the Agent process."
             ),
         ]
     )
@@ -281,10 +356,12 @@ def _render_prompt_text(
             source = _source_label(item)
             lines.extend(
                 [
-                    f"- Path: {item['path']}",
+                    f"- Source: {source}",
                     f"  Format: {item.get('format_id') or 'unspecified'}",
                     f"  Type: {item.get('type') or 'unspecified'}",
-                    f"  Source: {source}",
+                    f"  Run-root path: {item['path']}",
+                    f"  Absolute path: {_input_absolute_path(item['path'], runtime_context)}",
+                    f"  From Agent cwd: {_input_path_from_node_workdir(item['path'], runtime_context)}",
                     f"  Description: {item.get('description') or 'No description supplied.'}",
                 ]
             )
@@ -296,22 +373,62 @@ def _render_prompt_text(
             "",
             "## Declared Output Files",
             (
-                "Write exactly these files relative to this Agent node workdir. "
-                f"For example, output/... is saved as nodes/{node_id}/runs/"
-                "<attempt_id>/output/... from the workflow run root, and the harness "
-                "records the collected artifact path in node_run.json."
+                "Write exactly these files relative to the Agent process cwd. The "
+                "harness resolves and records them in node_run.json after the run."
             ),
         ]
     )
     for output in outputs:
         lines.extend(
             [
-                f"- Path: {output['path']}",
+                f"- Port: {output['port_id']}",
                 f"  Format: {output['format_id']}",
                 f"  Type: {output['type']}",
-                f"  Port: {output['port_id']}",
+                f"  Write path from Agent cwd: {output['path']}",
+                f"  Final run-root path: {_output_path_from_run_root(node_id, output['path'], runtime_context)}",
+                f"  Final absolute path: {_output_absolute_path(node_id, output['path'], runtime_context)}",
                 f"  Description: {output['description']}",
             ]
+        )
+
+    if scripts:
+        lines.extend(
+            [
+                "",
+                "## Built-in Script Files",
+                (
+                    "These scripts are explicitly available to this Agent node. Use them only when they help produce "
+                    "the declared outputs, and keep all generated files inside the current node workdir unless an "
+                    "output declaration says otherwise."
+                ),
+            ]
+        )
+        for script in scripts:
+            usage = str(script.get("usage") or "").replace("{script}", str(script.get("from_agent_cwd") or script.get("path") or ""))
+            lines.extend(
+                [
+                    f"- Script: {script['script_id']}",
+                    f"  Repository path: {script['path']}",
+                    f"  From Agent cwd: {script['from_agent_cwd']}",
+                    f"  Description: {script['description']}",
+                ]
+            )
+            if usage:
+                lines.append(f"  Usage: {usage}")
+
+    lines.extend(["", "## Type And Format Contracts"])
+    format_contracts = default_format_contract_descriptions()
+    for type_name in _ordered_unique(
+        [str(item.get("type") or "") for item in inputs]
+        + [str(output.get("type") or "") for output in outputs]
+    ):
+        lines.append(f"- Type `{type_name}`: {TYPE_CONTRACTS.get(type_name, 'No built-in type description is registered. Follow the node description and connected file contents.')}")
+    for format_id in _ordered_unique(
+        [str(item.get("format_id") or "") for item in inputs]
+        + [str(output.get("format_id") or "") for output in outputs]
+    ):
+        lines.append(
+            f"- Format `{format_id}`: {format_contracts.get(format_id, 'No built-in format description is registered. Follow the node declaration and validate the file before returning.')}"
         )
 
     if constraints:
@@ -320,6 +437,84 @@ def _render_prompt_text(
             lines.append(f"- {constraint}")
 
     return "\n".join(lines).strip() + "\n"
+
+
+def _input_path_from_node_workdir(path: object, runtime_context: Mapping[str, str] | None = None) -> str:
+    path_value = str(path or "")
+    if not path_value:
+        return ""
+    if path_value.startswith("/"):
+        return path_value
+    runtime = runtime_context or {}
+    node_workdir = runtime.get("node_workdir")
+    workflow_run_root = runtime.get("workflow_run_root")
+    if node_workdir and workflow_run_root:
+        return _relative_from_node_workdir(Path(workflow_run_root) / path_value, Path(node_workdir))
+    return f"../../../{path_value.lstrip('./')}"
+
+
+def _input_absolute_path(path: object, runtime_context: Mapping[str, str] | None = None) -> str:
+    path_value = str(path or "")
+    if not path_value:
+        return ""
+    if path_value.startswith("/"):
+        return path_value
+    runtime = runtime_context or {}
+    workflow_run_root = runtime.get("workflow_run_root")
+    if workflow_run_root and not workflow_run_root.startswith("<"):
+        return (Path(workflow_run_root) / path_value).expanduser().resolve(strict=False).as_posix()
+    return f"<workflow_run_root>/{path_value.lstrip('./')}"
+
+
+def _output_path_from_run_root(
+    node_id: str,
+    path: object,
+    runtime_context: Mapping[str, str] | None = None,
+) -> str:
+    path_value = str(path or "")
+    if not path_value:
+        return ""
+    if path_value.startswith("/"):
+        return path_value
+    runtime = runtime_context or {}
+    attempt_id = runtime.get("attempt_id") or "<attempt_id>"
+    return f"nodes/{node_id}/runs/{attempt_id}/{path_value.lstrip('./')}"
+
+
+def _output_absolute_path(
+    node_id: str,
+    path: object,
+    runtime_context: Mapping[str, str] | None = None,
+) -> str:
+    path_value = str(path or "")
+    if not path_value:
+        return ""
+    if path_value.startswith("/"):
+        return path_value
+    runtime = runtime_context or {}
+    node_workdir = runtime.get("node_workdir")
+    if node_workdir and not node_workdir.startswith("<"):
+        return (Path(node_workdir) / path_value).expanduser().resolve(strict=False).as_posix()
+    return f"<workflow_run_root>/{_output_path_from_run_root(node_id, path_value, runtime_context)}"
+
+
+def _relative_from_node_workdir(path: Path, node_workdir: Path) -> str:
+    return os.path.relpath(
+        Path(path).expanduser().resolve(strict=False),
+        node_workdir.expanduser().resolve(strict=False),
+    )
+
+
+def _ordered_unique(values: Sequence[str]) -> tuple[str, ...]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        clean = value.strip()
+        if not clean or clean in seen:
+            continue
+        ordered.append(clean)
+        seen.add(clean)
+    return tuple(ordered)
 
 
 def _selected_inputs(
@@ -369,6 +564,68 @@ def _configured_outputs(
     return tuple(outputs)
 
 
+def _configured_scripts(
+    preset: AgentPreset,
+    config: Mapping[str, Any],
+    runtime_context: Mapping[str, str],
+) -> tuple[Mapping[str, Any], ...]:
+    raw_scripts = config.get("scripts")
+    if raw_scripts is None:
+        scripts: list[Mapping[str, Any]] = [script.to_dict() for script in preset.scripts]
+    else:
+        if not isinstance(raw_scripts, list | tuple):
+            raise ValueError("Agent scripts must be an array")
+        scripts = []
+        for index, raw_script in enumerate(raw_scripts):
+            if not isinstance(raw_script, Mapping):
+                raise ValueError(f"Agent scripts[{index}] must be an object")
+            scripts.append(raw_script)
+
+    normalized: list[Mapping[str, Any]] = []
+    for index, script in enumerate(scripts):
+        script_id = _required_string(script.get("script_id") or script.get("id"), f"scripts[{index}].script_id")
+        path = _required_string(script.get("path"), f"scripts[{index}].path")
+        description = _required_string(script.get("description"), f"scripts[{index}].description")
+        usage = str(script.get("usage") or "")
+        resolved_path = _script_path_for_prompt(path, runtime_context)
+        node_workdir = runtime_context.get("node_workdir")
+        from_agent_cwd = (
+            _relative_from_node_workdir(Path(resolved_path), Path(node_workdir))
+            if node_workdir and Path(resolved_path).is_absolute()
+            else resolved_path
+        )
+        normalized.append(
+            {
+                "script_id": script_id,
+                "path": resolved_path,
+                "description": description,
+                "usage": usage,
+                "from_agent_cwd": from_agent_cwd,
+            }
+        )
+    return tuple(normalized)
+
+
+def _script_path_for_prompt(path: str, runtime_context: Mapping[str, str]) -> str:
+    path_obj = Path(path)
+    if path_obj.is_absolute():
+        return path_obj.as_posix()
+    repo_root = runtime_context.get("repo_root")
+    if repo_root and not repo_root.startswith("<"):
+        return (Path(repo_root) / path_obj).expanduser().resolve(strict=False).as_posix()
+    return path_obj.as_posix()
+
+
+def _runtime_context(runtime_context: Mapping[str, Any] | None) -> Mapping[str, str]:
+    raw = dict(runtime_context or {})
+    normalized: dict[str, str] = {}
+    for key in ("workflow_run_root", "node_workdir", "repo_root", "attempt_id", "input_manifest"):
+        value = raw.get(key)
+        if value not in (None, ""):
+            normalized[key] = str(value)
+    return normalized
+
+
 def _validate_agent_config(config: Mapping[str, Any]) -> None:
     for key in DANGEROUS_AGENT_CONFIG_KEYS:
         if key in config:
@@ -412,7 +669,9 @@ def _agent_task(preset: AgentPreset, config: Mapping[str, Any]) -> str:
 
 def _agent_constraints(preset: AgentPreset, config: Mapping[str, Any]) -> tuple[str, ...]:
     raw = config.get("constraints")
-    if raw in (None, ""):
+    if raw is None:
+        return tuple(preset.constraints)
+    if raw == "":
         return ()
     if isinstance(raw, str):
         return tuple(line.strip() for line in raw.splitlines() if line.strip())

@@ -46,20 +46,30 @@ def test_run0_agent_prompt_renders_inputs_and_output_contract() -> None:
     assert prompt.preset_id == "run0_element_refine"
     assert "# Run0 Element Refinement" not in prompt.text
     assert "## Agent Runtime Settings" in prompt.text
-    assert "- Node workdir: nodes/run0_agent/runs/<attempt_id>" in prompt.text
+    assert "- Workflow run root: <workflow_run_root>" in prompt.text
+    assert "- Current node workdir: <workflow_run_root>/nodes/run0_agent/runs/<attempt_id>" in prompt.text
     assert "DrawAI asset post-processing and source analysis task." in prompt.text
     assert "Task 1: refine the connected candidates into minimum independent assets." in prompt.text
     assert "## Connected Input Files" in prompt.text
     assert "nodes/fusion/runs/001/output/elements.json" in prompt.text
     assert "input_manifest.json" in prompt.text
-    assert "../../../<path>" in prompt.text
+    assert "Absolute path: <workflow_run_root>/nodes/fusion/runs/001/output/elements.json" in prompt.text
+    assert "From Agent cwd: ../../../nodes/fusion/runs/001/output/elements.json" in prompt.text
     assert "Fused boxes from SAM and OCR." in prompt.text
     assert "## Declared Output Files" in prompt.text
-    assert "output/elements.json" in prompt.text
-    assert "nodes/run0_agent/runs/<attempt_id>/output/..." in prompt.text
+    assert "output/element_analysis.json" in prompt.text
+    assert "nodes/run0_agent/runs/<attempt_id>/output/element_analysis.json" in prompt.text
+    assert "Final absolute path: <workflow_run_root>/nodes/run0_agent/runs/<attempt_id>/output/element_analysis.json" in prompt.text
+    assert "## Built-in Script Files" in prompt.text
+    assert "assets_visualization.py" in prompt.text
     assert "node_run.json" in prompt.text
-    assert "drawai.element_plans.v1" in prompt.text
-    assert "## Constraints" not in prompt.text
+    assert "## Type And Format Contracts" in prompt.text
+    assert "Type `element_plans`" in prompt.text
+    assert "Type `element_analysis`" in prompt.text
+    assert "Format `drawai.element_plans.v1`" in prompt.text
+    assert "Format `drawai.codex_element_analysis.v1`" in prompt.text
+    assert "## Constraints" in prompt.text
+    assert "Do not use MCP tools, apps, web search, memories, skills, hooks, or multi-agent delegation." in prompt.text
     assert "shell_command" not in prompt.text
 
 
@@ -85,7 +95,7 @@ def test_svg_agent_prompt_uses_same_agent_contract() -> None:
 
     assert prompt.provider_id == "kimi_cli"
     assert "# SVG Generation" not in prompt.text
-    assert "- Node workdir: nodes/svg_agent/runs/<attempt_id>" in prompt.text
+    assert "- Current node workdir: <workflow_run_root>/nodes/svg_agent/runs/<attempt_id>" in prompt.text
     assert "IMAGE VECTORIZATION TASK" in prompt.text
     assert "OVERALL SVG/PPT PROFILE" in prompt.text
     assert prompt.outputs[0]["path"] == "output/semantic.svg"
@@ -220,7 +230,7 @@ def test_agent_prompt_keeps_legacy_prompt_fragments_as_task() -> None:
     )
 
     assert "Legacy task text stays visible." in prompt.text
-    assert "## Constraints" not in prompt.text
+    assert "Treat every connected input file as explicit node context." in prompt.text
 
 
 def test_agent_config_rejects_arbitrary_command_override() -> None:

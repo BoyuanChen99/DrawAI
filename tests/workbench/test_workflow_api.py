@@ -77,8 +77,10 @@ def test_workbench_workflow_agent_prompt_preview_uses_connected_inputs(tmp_path:
     payload = response.json()["prompt"]
     assert payload["provider_id"] == "kimi_cli"
     assert "# Run0 Element Refinement" not in payload["text"]
-    assert "nodes/run0_agent/runs/<attempt_id>" in payload["text"]
+    assert "<workflow_run_root>/nodes/run0_agent/runs/<attempt_id>" in payload["text"]
     assert "input_manifest.json" in payload["text"]
+    assert "From Agent cwd: ../../../nodes/fusion/runs/001/output/elements.json" in payload["text"]
+    assert "Type `element_plans`" in payload["text"]
     assert "Refine the connected element plans from the current node settings." in payload["text"]
     assert "Return the declared JSON output only." in payload["text"]
     assert "Fused element plans." in payload["text"]
