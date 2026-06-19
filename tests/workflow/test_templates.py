@@ -84,6 +84,8 @@ def test_asset_refine_and_svg_are_agent_node_presets() -> None:
     assert nodes["svg_agent"].node_type == "agent"
     assert nodes["run0_agent"].title == "Asset Refine Agent"
     assert nodes["run0_agent"].config["provider_id"] == "codex_sdk"
+    assert nodes["run0_agent"].config["reasoning_effort"] == "high"
+    assert nodes["run0_agent"].config["timeout_seconds"] == 900
     assert nodes["svg_agent"].config["provider_id"] == "codex_sdk"
     assert nodes["run0_agent"].config["preset_id"] == "run0_element_refine"
     assert nodes["svg_agent"].config["preset_id"] == "svg_generation"
@@ -91,6 +93,9 @@ def test_asset_refine_and_svg_are_agent_node_presets() -> None:
     assert "Task 2: repeat a bounded visualization/refinement loop" in nodes["run0_agent"].config["task"]
     assert nodes["run0_agent"].config["constraints"]
     assert nodes["run0_agent"].config["outputs"][0]["format_id"] == "drawai.codex_element_analysis.v1"
+    assert [port.port_id for port in nodes["run0_agent"].inputs] == ["image", "elements"]
+    assert nodes["run0_agent"].inputs[0].types == ("image",)
+    assert nodes["run0_agent"].inputs[1].types == ("element_plans",)
     assert nodes["run0_agent"].outputs[0].types == ("element_analysis",)
     assert nodes["asset_planner"].inputs[0].types == ("element_analysis",)
     assert "IMAGE VECTORIZATION TASK" in nodes["svg_agent"].config["task"]
@@ -110,6 +115,17 @@ def test_default_template_routes_svg_and_pptx_into_output() -> None:
 
     assert ("svg_agent", "semantic_svg", "output", "deliverables") in output_edges
     assert ("svg_to_ppt", "pptx", "output", "deliverables") in output_edges
+
+
+def test_default_template_routes_original_image_into_asset_refine_agent() -> None:
+    template = default_drawai_workflow_template()
+    edges = {
+        (edge.source_node_id, edge.source_port_id, edge.target_node_id, edge.target_port_id)
+        for edge in template.edges
+    }
+
+    assert ("input", "image", "run0_agent", "image") in edges
+    assert ("fusion", "elements", "run0_agent", "elements") in edges
 
 
 def test_workflow_template_paths_are_under_ignored_workbench_dir(tmp_path: Path) -> None:

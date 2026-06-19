@@ -27,6 +27,14 @@ def test_run0_agent_prompt_renders_inputs_and_output_contract() -> None:
         run0_agent_preset(),
         inputs=(
             {
+                "path": "nodes/input/runs/001/output/image.png",
+                "format_id": "drawai.image.v1",
+                "type": "image",
+                "source_node_id": "input",
+                "source_port_id": "image",
+                "description": "Original source image.",
+            },
+            {
                 "path": "nodes/fusion/runs/001/output/elements.json",
                 "format_id": "drawai.element_plans.v1",
                 "type": "element_plans",
@@ -51,6 +59,8 @@ def test_run0_agent_prompt_renders_inputs_and_output_contract() -> None:
     assert "DrawAI asset post-processing and source analysis task." in prompt.text
     assert "Task 1: refine the connected candidates into minimum independent assets." in prompt.text
     assert "## Connected Input Files" in prompt.text
+    assert "nodes/input/runs/001/output/image.png" in prompt.text
+    assert "Original source image." in prompt.text
     assert "nodes/fusion/runs/001/output/elements.json" in prompt.text
     assert "input_manifest.json" in prompt.text
     assert "Absolute path: <workflow_run_root>/nodes/fusion/runs/001/output/elements.json" in prompt.text
@@ -64,8 +74,10 @@ def test_run0_agent_prompt_renders_inputs_and_output_contract() -> None:
     assert "assets_visualization.py" in prompt.text
     assert "node_run.json" in prompt.text
     assert "## Type And Format Contracts" in prompt.text
+    assert "Type `image`" in prompt.text
     assert "Type `element_plans`" in prompt.text
     assert "Type `element_analysis`" in prompt.text
+    assert "Format `drawai.image.v1`" in prompt.text
     assert "Format `drawai.element_plans.v1`" in prompt.text
     assert "Format `drawai.codex_element_analysis.v1`" in prompt.text
     assert "## Constraints" in prompt.text
@@ -239,4 +251,40 @@ def test_agent_config_rejects_arbitrary_command_override() -> None:
             run0_agent_preset(),
             inputs=(),
             node_config={"shell_command": "rm -rf /"},
+        )
+
+
+def test_agent_output_paths_must_stay_inside_node_workdir() -> None:
+    with pytest.raises(ValueError, match="relative to the Agent node workdir"):
+        render_agent_prompt(
+            custom_agent_preset(),
+            inputs=(),
+            node_config={
+                "outputs": [
+                    {
+                        "port_id": "image",
+                        "path": "/tmp/image.png",
+                        "format_id": "drawai.image.v1",
+                        "type": "image",
+                        "description": "Image.",
+                    }
+                ]
+            },
+        )
+
+    with pytest.raises(ValueError, match="inside the Agent node workdir"):
+        render_agent_prompt(
+            custom_agent_preset(),
+            inputs=(),
+            node_config={
+                "outputs": [
+                    {
+                        "port_id": "image",
+                        "path": "../image.png",
+                        "format_id": "drawai.image.v1",
+                        "type": "image",
+                        "description": "Image.",
+                    }
+                ]
+            },
         )

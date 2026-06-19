@@ -1023,10 +1023,7 @@ def _write_workflow_run_package(
     source_metadata = json.loads(paths.source_metadata.read_text(encoding="utf-8"))
     if not isinstance(source_metadata, Mapping):
         raise ValueError("source_metadata.json must be a JSON object")
-    width = float(source_metadata.get("width") or 0)
-    height = float(source_metadata.get("height") or 0)
-    if width <= 0 or height <= 0:
-        raise ValueError("source metadata must contain positive width and height")
+    width, height = _source_metadata_canvas_size(source_metadata)
     for plan in plans:
         write_element_plan(root, plan)
     pending_packages = tuple(
@@ -1050,6 +1047,24 @@ def _write_workflow_run_package(
     }
     write_json(paths.run_package_json, payload)
     return paths.run_package_json
+
+
+def _source_metadata_canvas_size(source_metadata: Mapping[str, Any]) -> tuple[float, float]:
+    raw_size = source_metadata.get("normalized_size")
+    if isinstance(raw_size, list | tuple) and len(raw_size) >= 2:
+        width = float(raw_size[0])
+        height = float(raw_size[1])
+    else:
+        canvas = source_metadata.get("canvas")
+        if isinstance(canvas, Mapping):
+            width = float(canvas.get("width") or 0)
+            height = float(canvas.get("height") or 0)
+        else:
+            width = float(source_metadata.get("width") or 0)
+            height = float(source_metadata.get("height") or 0)
+    if width <= 0 or height <= 0:
+        raise ValueError("source metadata must contain normalized_size [width, height] or positive width/height")
+    return width, height
 
 
 def _node_output_port_is_deliverable(context: NodeRunContext, port_id: str) -> bool:

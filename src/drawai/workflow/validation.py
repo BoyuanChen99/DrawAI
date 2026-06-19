@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
+from typing import Any
 
+from .agents import agent_preset_by_id
 from .schema import (
     WorkflowEdge,
     WorkflowNode,
@@ -80,6 +83,8 @@ def validate_workflow_template(template: WorkflowTemplate) -> WorkflowValidation
         adjacency[source_node.node_id].append(target_node.node_id)
 
     for node in template.nodes:
+        if node.node_type == "agent":
+            errors.extend(_validate_agent_outputs(node))
         for input_port in node.inputs:
             incoming = incoming_by_target_port.get((node.node_id, input_port.port_id), [])
             if input_port.required and not incoming:
@@ -123,6 +128,80 @@ def validate_workflow_template(template: WorkflowTemplate) -> WorkflowValidation
         )
 
     return WorkflowValidationResult(ok=not errors, errors=tuple(errors))
+
+
+def _validate_agent_outputs(node: WorkflowNode) -> list[WorkflowValidationError]:
+    errors: list[WorkflowValidationError] = []
+    output_ports = {port.port_id: port for port in node.outputs}
+    try:
+        declarations = _agent_output_declarations(node)
+    except ValueError as exc:
+        return [
+            WorkflowValidationError(
+                "agent_output_invalid",
+                str(exc),
+                node_id=node.node_id,
+            )
+        ]
+    for index, declaration in enumerate(declarations):
+        port_id = str(declaration.get("port_id") or "")
+        output_type = str(declaration.get("type") or "")
+        format_id = str(declaration.get("format_id") or "")
+        port = output_ports.get(port_id)
+        if port is None:
+            errors.append(
+                WorkflowValidationError(
+                    "agent_output_unknown_port",
+                    "Agent declared output references an unknown node output port.",
+                    node_id=node.node_id,
+                    details={"index": index, "port_id": port_id},
+                )
+            )
+            continue
+        if output_type not in port.types:
+            errors.append(
+                WorkflowValidationError(
+                    "agent_output_incompatible_type",
+                    "Agent declared output type is not allowed by the node output port.",
+                    node_id=node.node_id,
+                    details={
+                        "index": index,
+                        "port_id": port_id,
+                        "type": output_type,
+                        "allowed_types": port.types,
+                    },
+                )
+            )
+        if port.formats and format_id not in port.formats:
+            errors.append(
+                WorkflowValidationError(
+                    "agent_output_incompatible_format",
+                    "Agent declared output format is not allowed by the node output port.",
+                    node_id=node.node_id,
+                    details={
+                        "index": index,
+                        "port_id": port_id,
+                        "format_id": format_id,
+                        "allowed_formats": port.formats,
+                    },
+                )
+            )
+    return errors
+
+
+def _agent_output_declarations(node: WorkflowNode) -> tuple[Mapping[str, Any], ...]:
+    raw_outputs = node.config.get("outputs", node.config.get("output_declarations"))
+    if raw_outputs is None:
+        preset_id = str(node.config.get("preset_id") or "custom_agent")
+        return tuple(output.to_dict() for output in agent_preset_by_id(preset_id).outputs)
+    if not isinstance(raw_outputs, list | tuple):
+        raise ValueError("Agent outputs must be an array")
+    declarations: list[Mapping[str, Any]] = []
+    for index, raw_output in enumerate(raw_outputs):
+        if not isinstance(raw_output, Mapping):
+            raise ValueError(f"Agent outputs[{index}] must be an object")
+        declarations.append(raw_output)
+    return tuple(declarations)
 
 
 def _find_port(ports: tuple[WorkflowPort, ...], port_id: str) -> WorkflowPort | None:

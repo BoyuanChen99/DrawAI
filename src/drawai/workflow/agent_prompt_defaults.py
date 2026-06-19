@@ -64,7 +64,7 @@ The final JSON must use schema drawai.codex_element_analysis.v1 and contain:
 Also write a concise markdown audit note to reports/element_analysis_codex/analysis_notes.md. The JSON file is the source of truth."""
 
 RUN0_ELEMENT_REFINE_CONSTRAINTS = (
-    "Use only the connected input files listed in this prompt and files under the current DrawAI case/workspace root.",
+    "Use only the connected input files listed in this prompt and explicitly declared built-in script files.",
     "Do not render final SVG/PPT and do not modify repository code. This node only refines/classifies assets.",
     "Do not use MCP tools, apps, web search, memories, skills, hooks, or multi-agent delegation.",
     "Do not print full request JSON to the terminal or logs; start from compact candidate tables and read exact details only when needed.",
@@ -204,7 +204,7 @@ FINAL CHECK BEFORE ENDING THIS RUN
 - Keep the final chat response short; files are the source of truth."""
 
 SVG_GENERATION_CONSTRAINTS = (
-    "Use only connected files and files under the current DrawAI workspace/case root.",
+    "Use only connected input files listed in this prompt and explicitly declared built-in script files.",
     "Do not redo parsing or asset-source analysis; consume the connected refined elements and asset manifest as evidence.",
     "Do not use MCP tools, apps, web search, memories, skills, hooks, or multi-agent delegation.",
     "Do not invent image hrefs, external URLs, file:// URLs, absolute paths, or base64 images.",

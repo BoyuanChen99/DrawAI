@@ -4,6 +4,7 @@ import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from posixpath import normpath
 from typing import Any, Literal
 
 from .agent_prompt_defaults import (
@@ -349,7 +350,9 @@ def _render_prompt_text(
             (
                 "The DrawAI harness records every connected input in input_manifest.json "
                 "inside the current node workdir. Use the node-workdir-relative path "
-                "when opening files from the Agent process."
+                "when opening files from the Agent process. First read input_manifest.json, "
+                "then open the listed files needed for this node; the Format and Type contracts "
+                "below describe how to interpret each file."
             ),
         ]
     )
@@ -565,21 +568,26 @@ def _configured_outputs(
 ) -> tuple[Mapping[str, Any], ...]:
     raw_outputs = config.get("outputs", config.get("output_declarations"))
     if raw_outputs is None:
-        return tuple(output.to_dict() for output in preset.outputs)
+        outputs = tuple(output.to_dict() for output in preset.outputs)
+        for index, output in enumerate(outputs):
+            _validate_relative_output_path(str(output["path"]), f"outputs[{index}].path")
+        return outputs
     if not isinstance(raw_outputs, list | tuple):
         raise ValueError("Agent outputs must be an array")
     outputs: list[Mapping[str, Any]] = []
     for index, raw_output in enumerate(raw_outputs):
         if not isinstance(raw_output, Mapping):
             raise ValueError(f"Agent outputs[{index}] must be an object")
+        output_path = _required_string(
+            raw_output.get("path"), f"outputs[{index}].path"
+        )
+        _validate_relative_output_path(output_path, f"outputs[{index}].path")
         outputs.append(
             {
                 "port_id": _required_string(
                     raw_output.get("port_id"), f"outputs[{index}].port_id"
                 ),
-                "path": _required_string(
-                    raw_output.get("path"), f"outputs[{index}].path"
-                ),
+                "path": output_path,
                 "format_id": _required_string(
                     raw_output.get("format_id"), f"outputs[{index}].format_id"
                 ),
@@ -781,3 +789,11 @@ def _required_string(value: object, field_name: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{field_name} must be a non-empty string")
     return value
+
+
+def _validate_relative_output_path(value: str, field_name: str) -> None:
+    if Path(value).is_absolute():
+        raise ValueError(f"{field_name} must be relative to the Agent node workdir")
+    normalized = normpath(value.replace("\\", "/"))
+    if normalized in {"", ".", ".."} or normalized.startswith("../"):
+        raise ValueError(f"{field_name} must stay inside the Agent node workdir")

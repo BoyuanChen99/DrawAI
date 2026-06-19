@@ -239,7 +239,7 @@ This is a configurable DrawAI Agent node. The node editor controls the task, inp
 };
 const AGENT_DEFAULT_CONSTRAINTS: Record<string, string[]> = {
   run0_element_refine: [
-    "Use only the connected input files listed in this prompt and files under the current DrawAI case/workspace root.",
+    "Use only the connected input files listed in this prompt and explicitly declared built-in script files.",
     "Do not render final SVG/PPT and do not modify repository code. This node only refines/classifies assets.",
     "Do not use MCP tools, apps, web search, memories, skills, hooks, or multi-agent delegation.",
     "Do not print full request JSON to the terminal or logs; start from compact candidate tables and read exact details only when needed.",
@@ -247,7 +247,7 @@ const AGENT_DEFAULT_CONSTRAINTS: Record<string, string[]> = {
     "Write the declared output files exactly, in UTF-8 JSON or markdown according to the output declaration."
   ],
   svg_generation: [
-    "Use only connected files and files under the current DrawAI workspace/case root.",
+    "Use only connected input files listed in this prompt and explicitly declared built-in script files.",
     "Do not redo parsing or asset-source analysis; consume the connected refined elements and asset manifest as evidence.",
     "Do not use MCP tools, apps, web search, memories, skills, hooks, or multi-agent delegation.",
     "Do not invent image hrefs, external URLs, file:// URLs, absolute paths, or base64 images.",
@@ -384,11 +384,16 @@ const NODE_PRESETS: NodePreset[] = [
     title: "Asset Refine Agent",
     icon: "A",
     description: "Agent node that refines element plans.",
-    inputs: [port("elements", "Element Plans", ["element_plans"], "drawai.element_plans.v1")],
+    inputs: [
+      port("image", "Image", ["image"], "drawai.image.v1"),
+      port("elements", "Element Plans", ["element_plans"], "drawai.element_plans.v1")
+    ],
     outputs: [port("analysis", "Element Analysis", ["element_analysis"], "drawai.codex_element_analysis.v1", false)],
     config: {
       preset_id: "run0_element_refine",
       provider_id: "codex_sdk",
+      reasoning_effort: "high",
+      timeout_seconds: 900,
       task: AGENT_DEFAULT_TASKS.run0_element_refine,
       constraints: AGENT_DEFAULT_CONSTRAINTS.run0_element_refine,
       scripts: [

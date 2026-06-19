@@ -24,7 +24,13 @@ from drawai.workflow.agent_execution import AgentExecutionRequest, AgentExecutio
 import drawai.workbench.api as workbench_api
 from drawai.workbench.api import create_app
 from drawai.workbench.models import WorkbenchSettings
-from drawai.workbench.runner import WorkbenchRunner, _archive_fs_path, _pipeline_failure_message, create_case_config
+from drawai.workbench.runner import (
+    WorkbenchRunner,
+    _archive_fs_path,
+    _pipeline_failure_message,
+    _source_metadata_canvas_size,
+    create_case_config,
+)
 from drawai.workbench.store import WorkbenchStore
 
 
@@ -682,6 +688,11 @@ def test_runner_parse_elements_uses_ocr_resource_lane(tmp_path: Path) -> None:
     ocr_activity = runner.resource_activity()["ocr"]
     assert ocr_activity["queued"] == 0
     assert ocr_activity["running"] == 0
+
+
+def test_workflow_canvas_size_uses_v2_normalized_source_metadata() -> None:
+    assert _source_metadata_canvas_size({"normalized_size": [2048, 1449]}) == (2048.0, 1449.0)
+    assert _source_metadata_canvas_size({"width": 24, "height": 12}) == (24.0, 12.0)
 
 
 def test_runner_marks_interrupted_running_case_failed_on_startup(tmp_path: Path) -> None:

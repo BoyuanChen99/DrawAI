@@ -106,7 +106,10 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                 node_id="run0_agent",
                 node_type="agent",
                 title="Asset Refine Agent",
-                inputs=(_input("elements", "Element Plans", ("element_plans",)),),
+                inputs=(
+                    _input("image", "Image", ("image",), formats=("drawai.image.v1",)),
+                    _input("elements", "Element Plans", ("element_plans",)),
+                ),
                 outputs=(
                     _output(
                         "analysis",
@@ -118,6 +121,8 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                 config={
                     "preset_id": "run0_element_refine",
                     "provider_id": "codex_sdk",
+                    "reasoning_effort": "high",
+                    "timeout_seconds": 900,
                     "task": RUN0_ELEMENT_REFINE_TASK,
                     "constraints": list(RUN0_ELEMENT_REFINE_CONSTRAINTS),
                     "outputs": [
@@ -269,6 +274,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
             _edge("input", "image", "ocr_parser", "image"),
             _edge("sam_parser", "candidates", "fusion", "candidates"),
             _edge("ocr_parser", "candidates", "fusion", "candidates"),
+            _edge("input", "image", "run0_agent", "image"),
             _edge("fusion", "elements", "run0_agent", "elements"),
             _edge("run0_agent", "analysis", "asset_planner", "analysis"),
             _edge("asset_planner", "elements", "asset_processors", "elements"),
@@ -492,6 +498,9 @@ def _normalized_node_config(node_type: str, config: dict[str, Any]) -> dict[str,
     raw_constraints = normalized.get("constraints")
     if raw_constraints in (None, "", []):
         normalized["constraints"] = list(_AGENT_CONSTRAINT_DEFAULTS[preset_id])
+    if preset_id == "run0_element_refine":
+        normalized.setdefault("reasoning_effort", "high")
+        normalized.setdefault("timeout_seconds", 900)
     return normalized
 
 

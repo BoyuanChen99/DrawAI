@@ -721,7 +721,7 @@ def test_invoke_codex_python_sdk_records_generic_sdk_errors(monkeypatch, tmp_pat
     assert archive_events[0]["archive"]["archive_dir"] == str(archive_dir)
 
 
-def test_invoke_codex_python_sdk_uses_host_home_for_auth(monkeypatch, tmp_path):
+def test_invoke_codex_python_sdk_copies_auth_to_isolated_home(monkeypatch, tmp_path):
     seen_config = {}
 
     class FakeResult:
@@ -737,6 +737,8 @@ def test_invoke_codex_python_sdk_uses_host_home_for_auth(monkeypatch, tmp_path):
     class FakeCodex:
         def __init__(self, config):
             seen_config.update(config)
+            codex_home = Path(config["env"]["CODEX_HOME"])
+            seen_config["auth_text"] = (codex_home / "auth.json").read_text(encoding="utf-8")
 
         def __enter__(self):
             return self
@@ -756,7 +758,11 @@ def test_invoke_codex_python_sdk_uses_host_home_for_auth(monkeypatch, tmp_path):
         LocalImageInput=lambda path: ("image", path),
     )
     monkeypatch.setitem(sys.modules, "openai_codex", fake_openai_codex)
-    monkeypatch.setenv("DRAWAI_HOST_HOME", str(tmp_path / "real_home"))
+    host_home = tmp_path / "real_home"
+    host_codex_home = host_home / ".codex"
+    host_codex_home.mkdir(parents=True)
+    (host_codex_home / "auth.json").write_text('{"auth_mode":"test"}', encoding="utf-8")
+    monkeypatch.setenv("DRAWAI_HOST_HOME", str(host_home))
     image_path = tmp_path / "input.png"
     image_path.write_bytes(b"fake image bytes")
 
@@ -769,8 +775,10 @@ def test_invoke_codex_python_sdk_uses_host_home_for_auth(monkeypatch, tmp_path):
         isolated_cwd=tmp_path / "isolated",
     )
 
-    assert seen_config["env"]["HOME"] == str(tmp_path / "real_home")
-    assert seen_config["env"]["CODEX_HOME"] != str(tmp_path / "real_home" / ".codex")
+    assert seen_config["auth_text"] == '{"auth_mode":"test"}'
+    assert seen_config["env"]["HOME"] != str(host_home)
+    assert seen_config["env"]["CODEX_HOME"] != str(host_codex_home)
+    assert seen_config["env"]["HOME"] == str(Path(seen_config["env"]["CODEX_HOME"]).parent)
 
 
 def test_codex_python_sdk_connectivity_probe_runs_low_effort_turn(monkeypatch, tmp_path):
@@ -814,7 +822,8 @@ def test_codex_python_sdk_connectivity_probe_runs_low_effort_turn(monkeypatch, t
 
     assert detail == "Codex SDK responded with 2 chars"
     assert seen["config"]["env"]["OPENAI_API_KEY"] == "sk-test"
-    assert seen["config"]["env"]["HOME"] == str(tmp_path / "home")
+    assert seen["config"]["env"]["HOME"] == str(Path(seen["config"]["env"]["CODEX_HOME"]).parent)
+    assert seen["config"]["env"]["HOME"] != str(tmp_path / "home")
     assert seen["thread_start_kwargs"]["config"] == {"model_reasoning_effort": "low"}
     assert seen["thread_start_kwargs"]["model"] == "fake-model"
     assert seen["thread_start_kwargs"]["sandbox"] == "full_access"

@@ -25,6 +25,20 @@ def _port(
     )
 
 
+def _agent_outputs(port_id: str, type_name: str) -> dict[str, object]:
+    return {
+        "outputs": [
+            {
+                "port_id": port_id,
+                "path": f"output/{port_id}.json",
+                "format_id": "drawai.custom_json.v1",
+                "type": type_name,
+                "description": "Test output.",
+            }
+        ]
+    }
+
+
 def test_valid_workflow_accepts_type_compatible_edges() -> None:
     template = WorkflowTemplate(
         template_id="tpl_valid",
@@ -42,6 +56,7 @@ def test_valid_workflow_accepts_type_compatible_edges() -> None:
                 title="Agent",
                 inputs=(_port("in", ("image",), cardinality="single"),),
                 outputs=(_port("out", ("element_candidates",), required=False),),
+                config=_agent_outputs("out", "element_candidates"),
             ),
             WorkflowNode(
                 node_id="fusion",
@@ -153,6 +168,8 @@ def test_rejects_multiple_same_type_sources_for_single_input() -> None:
                 node_type="agent",
                 title="Agent",
                 inputs=(_port("in", ("element_candidates",), cardinality="single"),),
+                outputs=(_port("out", ("element_candidates",), required=False),),
+                config=_agent_outputs("out", "element_candidates"),
             ),
         ),
         edges=(
@@ -226,6 +243,31 @@ def test_allows_multiple_sources_for_many_input() -> None:
     assert result.ok
 
 
+def test_rejects_agent_declared_output_that_does_not_match_node_port() -> None:
+    template = WorkflowTemplate(
+        template_id="tpl_bad_agent_output",
+        name="Bad Agent Output",
+        nodes=(
+            WorkflowNode(
+                node_id="agent",
+                node_type="agent",
+                title="Agent",
+                inputs=(),
+                outputs=(_port("elements", ("element_plans",), required=False),),
+                config={
+                    "preset_id": "run0_element_refine",
+                },
+            ),
+        ),
+        edges=(),
+    )
+
+    result = validate_workflow_template(template)
+
+    assert not result.ok
+    assert any(error.code == "agent_output_unknown_port" for error in result.errors)
+
+
 def test_rejects_cycles() -> None:
     template = WorkflowTemplate(
         template_id="tpl_cycle",
@@ -237,6 +279,7 @@ def test_rejects_cycles() -> None:
                 title="A",
                 inputs=(_port("in", ("json",), required=False),),
                 outputs=(_port("out", ("json",), required=False),),
+                config=_agent_outputs("out", "json"),
             ),
             WorkflowNode(
                 node_id="b",
@@ -244,6 +287,7 @@ def test_rejects_cycles() -> None:
                 title="B",
                 inputs=(_port("in", ("json",), required=False),),
                 outputs=(_port("out", ("json",), required=False),),
+                config=_agent_outputs("out", "json"),
             ),
         ),
         edges=(

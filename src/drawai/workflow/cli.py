@@ -6,7 +6,9 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
+from .agent_execution import AgentExecutionRequest, execute_agent_prompt
 from .agents import agent_preset_by_id, default_agent_provider_registry, render_agent_prompt
+from .node_runs import write_input_manifest
 from .templates import (
     copy_builtin_template_to_workspace,
     list_workflow_templates,
@@ -48,6 +50,15 @@ def workflow_cli(argv: Sequence[str] | None = None) -> int:
     inspect.add_argument("node_id", help="Node id.")
     inspect.add_argument("--attempt", help="Attempt id. Defaults to the latest numeric run.")
 
+    run_agent = subparsers.add_parser("run-agent", help="Run one file-backed Agent node.")
+    run_agent.add_argument("preset_id", help="Agent preset id.")
+    run_agent.add_argument("--run-root", type=Path, required=True, help="Workflow run root used to resolve relative input paths.")
+    run_agent.add_argument("--workdir", type=Path, required=True, help="Agent node work directory. Prompt, logs, and outputs are written here.")
+    run_agent.add_argument("--input-manifest", type=Path, required=True, help="Input manifest JSON with an inputs array.")
+    run_agent.add_argument("--config", type=Path, help="Agent node config JSON.")
+    run_agent.add_argument("--provider", help="Provider override, for example codex_sdk, codex_cli, or kimi_cli.")
+    run_agent.add_argument("--node-id", default="agent", help="Node id for prompt/log metadata.")
+
     args = parser.parse_args(argv)
     try:
         if args.command == "templates":
@@ -62,6 +73,8 @@ def workflow_cli(argv: Sequence[str] | None = None) -> int:
             return _prompt_command(args)
         if args.command == "inspect-node-run":
             return _inspect_node_run_command(args)
+        if args.command == "run-agent":
+            return _run_agent_command(args)
     except Exception as exc:  # CLI boundary.
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
@@ -134,6 +147,55 @@ def _prompt_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _run_agent_command(args: argparse.Namespace) -> int:
+    run_root = args.run_root.expanduser().resolve(strict=False)
+    workdir = args.workdir.expanduser().resolve(strict=False)
+    config = _read_json_object(args.config) if args.config else {}
+    if args.provider:
+        config["provider_id"] = args.provider
+    config["node_id"] = args.node_id
+    manifest = _read_json_object(args.input_manifest)
+    inputs = manifest.get("inputs", [])
+    if not isinstance(inputs, list):
+        raise ValueError("input manifest inputs must be an array")
+    workdir.mkdir(parents=True, exist_ok=True)
+    write_input_manifest(workdir, inputs=tuple(item for item in inputs if isinstance(item, dict)))
+    prompt = render_agent_prompt(
+        agent_preset_by_id(args.preset_id),
+        inputs=tuple(item for item in inputs if isinstance(item, dict)),
+        node_config=config,
+        runtime_context={
+            "workflow_run_root": run_root,
+            "node_workdir": workdir,
+            "repo_root": Path(__file__).resolve().parents[3],
+            "attempt_id": workdir.name,
+            "input_manifest": workdir / "input_manifest.json",
+        },
+    )
+    result = execute_agent_prompt(
+        AgentExecutionRequest(
+            prompt=prompt,
+            workdir=workdir,
+            run_root=run_root,
+            node_id=args.node_id,
+            node_type="agent",
+        )
+    )
+    _print_json(
+        {
+            "provider_id": result.provider_id,
+            "prompt_path": _relative_or_absolute(result.prompt_path, run_root),
+            "stdout_path": _relative_or_absolute(result.stdout_path, run_root),
+            "stderr_path": _relative_or_absolute(result.stderr_path, run_root),
+            "trace_path": _relative_or_absolute(result.trace_path, run_root),
+            "session_log_path": _relative_or_absolute(result.session_log_path, run_root),
+            "execution_manifest_path": _relative_or_absolute(result.execution_manifest_path, run_root),
+            "exit_code": result.exit_code,
+        }
+    )
+    return 0
+
+
 def _inspect_node_run_command(args: argparse.Namespace) -> int:
     run_root = args.run_root.expanduser().resolve(strict=False)
     runs_dir = run_root / "nodes" / args.node_id / "runs"
@@ -157,6 +219,16 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ValueError(f"JSON file must contain an object: {path}")
     return payload
+
+
+def _relative_or_absolute(path: Path | None, root: Path) -> str:
+    if path is None:
+        return ""
+    resolved = path.expanduser().resolve(strict=False)
+    try:
+        return resolved.relative_to(root.expanduser().resolve(strict=False)).as_posix()
+    except ValueError:
+        return str(resolved)
 
 
 def _print_json(payload: Any) -> None:
