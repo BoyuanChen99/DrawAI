@@ -103,6 +103,11 @@ type AgentOutputConfig = {
 
 const NODE_WIDTH = 236;
 const NODE_HEIGHT = 72;
+const NODE_COLUMN_SPACING = 540;
+const NODE_ROW_SPACING = 248;
+const NODE_DEFAULT_GRID_X = 460;
+const NODE_DEFAULT_GRID_Y = 300;
+const NODE_INSERT_COLLISION_STEP = 120;
 const DEFAULT_VIEWPORT: CanvasViewport = { x: 88, y: 74, zoom: 0.84 };
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 1.25;
@@ -858,36 +863,40 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     const insertTargetPort = insertTargetNode?.inputs.find((portItem) => portItem.port_id === nodePicker.targetPortId);
     const sourceOutput = bestOutputForTarget(preset, insertTargetPort);
     if (nodePicker.insertEdgeId && (!insertTargetNode || !insertTargetPort || !sourceOutput)) return;
-    const node = buildWorkflowNode(
-      draft,
-      preset,
+    const insertionLayout =
       nodePicker.insertEdgeId && insertTargetNode
-        ? suggestedInsertedNodePosition(draft, source, insertTargetNode)
-        : suggestedConnectedNodePosition(draft, source)
+        ? workflowInsertionLayout(draft, source, insertTargetNode)
+        : null;
+    const workingDraft = insertionLayout ? { ...draft, nodes: insertionLayout.nodes } : draft;
+    const insertTarget = insertionLayout?.target || insertTargetNode;
+    const node = buildWorkflowNode(
+      workingDraft,
+      preset,
+      insertionLayout ? insertionLayout.position : suggestedConnectedNodePosition(workingDraft, source)
     );
     const edge: WorkflowEdge = {
-      edge_id: uniqueEdgeId(draft, `${source.node_id}:${sourcePort.port_id}->${node.node_id}:${targetPort.port_id}`),
+      edge_id: uniqueEdgeId(workingDraft, `${source.node_id}:${sourcePort.port_id}->${node.node_id}:${targetPort.port_id}`),
       source_node_id: source.node_id,
       source_port_id: sourcePort.port_id,
       target_node_id: node.node_id,
       target_port_id: targetPort.port_id,
       enabled_types: compatibleTypes(sourcePort, targetPort)
     };
-    const nextEdges = nodePicker.insertEdgeId && insertTargetNode && insertTargetPort && sourceOutput
+    const nextEdges = nodePicker.insertEdgeId && insertTarget && insertTargetPort && sourceOutput
       ? [
-          ...draft.edges.filter((item) => item.edge_id !== nodePicker.insertEdgeId),
+          ...workingDraft.edges.filter((item) => item.edge_id !== nodePicker.insertEdgeId),
           edge,
           {
-            edge_id: uniqueEdgeId(draft, `${node.node_id}:${sourceOutput.port_id}->${insertTargetNode.node_id}:${insertTargetPort.port_id}`),
+            edge_id: uniqueEdgeId(workingDraft, `${node.node_id}:${sourceOutput.port_id}->${insertTarget.node_id}:${insertTargetPort.port_id}`),
             source_node_id: node.node_id,
             source_port_id: sourceOutput.port_id,
-            target_node_id: insertTargetNode.node_id,
+            target_node_id: insertTarget.node_id,
             target_port_id: insertTargetPort.port_id,
             enabled_types: compatibleTypes(sourceOutput, insertTargetPort)
           }
         ]
-      : [...draft.edges, edge];
-    setDraft({ ...draft, nodes: [...draft.nodes, node], edges: nextEdges });
+      : [...workingDraft.edges, edge];
+    setDraft({ ...workingDraft, nodes: [...workingDraft.nodes, node], edges: nextEdges });
     setSelectedNodeId(node.node_id);
     setSelectedEdgeId("");
     setInspectorOpen(true);
@@ -1556,17 +1565,19 @@ function WorkflowEdges({
     <>
       <svg className="workflow-edges" aria-hidden="true">
         {views.map(({ edge, d }) => (
-          <path
-            key={edge.edge_id}
-            className={edge.edge_id === selectedEdgeId ? "selected" : ""}
-            d={d}
-            onClick={(event) => {
-              event.stopPropagation();
-              onSelectEdge(edge.edge_id);
-            }}
-            onMouseEnter={() => setHoveredEdgeId(edge.edge_id)}
-            onMouseLeave={() => setHoveredEdgeId((current) => (current === edge.edge_id ? "" : current))}
-          />
+          <g key={edge.edge_id}>
+            <path
+              className="workflow-edge-hit"
+              d={d}
+              onClick={(event) => {
+                event.stopPropagation();
+                onSelectEdge(edge.edge_id);
+              }}
+              onMouseEnter={() => setHoveredEdgeId(edge.edge_id)}
+              onMouseLeave={() => setHoveredEdgeId((current) => (current === edge.edge_id ? "" : current))}
+            />
+            <path className={`workflow-edge-line ${edge.edge_id === selectedEdgeId ? "selected" : ""}`} d={d} />
+          </g>
         ))}
       </svg>
       {views.map(({ edge, midpoint }) => (
@@ -1585,7 +1596,7 @@ function WorkflowEdges({
           onMouseEnter={() => setHoveredEdgeId(edge.edge_id)}
           onMouseLeave={() => setHoveredEdgeId((current) => (current === edge.edge_id ? "" : current))}
         >
-          +
+          <PlusIcon />
         </button>
       ))}
     </>
@@ -1785,10 +1796,10 @@ function arrangeWorkflowNodes(template: WorkflowTemplate): WorkflowNode[] {
   const positionByNodeId = new Map<string, { x: number; y: number }>();
   sortedLayerKeys.forEach((layer, layerIndex) => {
     const nodes = (grouped.get(layer) || []).sort((left, right) => (left.position.y || 0) - (right.position.y || 0));
-    const columnX = 92 + layerIndex * 270;
-    const startY = Math.max(92, 260 - Math.round((nodes.length - 1) * 62));
+    const columnX = 92 + layerIndex * NODE_COLUMN_SPACING;
+    const startY = Math.max(92, 260 - Math.round((nodes.length - 1) * (NODE_ROW_SPACING / 2)));
     nodes.forEach((node, rowIndex) => {
-      positionByNodeId.set(node.node_id, { x: columnX, y: startY + rowIndex * 124 });
+      positionByNodeId.set(node.node_id, { x: columnX, y: startY + rowIndex * NODE_ROW_SPACING });
     });
   });
   return template.nodes.map((node) => ({
@@ -1917,7 +1928,7 @@ function bezierPoint(start: { x: number; y: number }, end: { x: number; y: numbe
 function buildWorkflowNode(template: WorkflowTemplate, preset: NodePreset, position?: { x: number; y: number }): WorkflowNode {
   const index = nextNodeIndex(template, preset.node_type);
   const nodeId = uniqueNodeId(template, preset.key.replace(/[^a-zA-Z0-9_-]/g, "_"));
-  const defaultPosition = { x: 100 + (index % 4) * 230, y: 100 + Math.floor(index / 4) * 150 };
+  const defaultPosition = { x: 100 + (index % 4) * NODE_DEFAULT_GRID_X, y: 100 + Math.floor(index / 4) * NODE_DEFAULT_GRID_Y };
   return {
     node_id: nodeId,
     node_type: preset.node_type,
@@ -1931,15 +1942,65 @@ function buildWorkflowNode(template: WorkflowTemplate, preset: NodePreset, posit
 }
 
 function suggestedConnectedNodePosition(template: WorkflowTemplate, source: WorkflowNode): { x: number; y: number } {
-  const baseX = (source.position.x || 0) + 280;
+  const baseX = (source.position.x || 0) + NODE_COLUMN_SPACING;
   const sourceY = source.position.y || 0;
   const occupied = new Set(template.nodes.map((node) => `${Math.round((node.position.x || 0) / 20)}:${Math.round((node.position.y || 0) / 20)}`));
   for (let offset = 0; offset < 8; offset += 1) {
-    const y = Math.max(16, sourceY + offset * 112);
+    const y = Math.max(16, sourceY + offset * NODE_ROW_SPACING);
     const key = `${Math.round(baseX / 20)}:${Math.round(y / 20)}`;
     if (!occupied.has(key)) return { x: baseX, y };
   }
-  return { x: baseX, y: sourceY + 112 };
+  return { x: baseX, y: sourceY + NODE_ROW_SPACING };
+}
+
+function workflowInsertionLayout(
+  template: WorkflowTemplate,
+  source: WorkflowNode,
+  target: WorkflowNode
+): { nodes: WorkflowNode[]; target: WorkflowNode; position: { x: number; y: number } } {
+  const sourceX = source.position.x || 0;
+  const targetX = target.position.x || 0;
+  const minimumTargetX = sourceX + NODE_COLUMN_SPACING * 2;
+  const shiftX = Math.max(0, minimumTargetX - targetX);
+  const nodes = shiftX > 0 ? shiftWorkflowBranchNodes(template.nodes, template.edges, target.node_id, shiftX) : template.nodes;
+  const shiftedTarget = nodes.find((node) => node.node_id === target.node_id) || target;
+  return {
+    nodes,
+    target: shiftedTarget,
+    position: suggestedInsertedNodePosition({ ...template, nodes }, source, shiftedTarget)
+  };
+}
+
+function shiftWorkflowBranchNodes(
+  nodes: WorkflowNode[],
+  edges: WorkflowEdge[],
+  rootNodeId: string,
+  shiftX: number
+): WorkflowNode[] {
+  const branchNodeIds = downstreamNodeIds(edges, rootNodeId);
+  return nodes.map((node) =>
+    branchNodeIds.has(node.node_id)
+      ? { ...node, position: { ...node.position, x: Math.max(0, (node.position.x || 0) + shiftX) } }
+      : node
+  );
+}
+
+function downstreamNodeIds(edges: WorkflowEdge[], rootNodeId: string): Set<string> {
+  const outgoing = new Map<string, string[]>();
+  edges.forEach((edge) => {
+    outgoing.set(edge.source_node_id, [...(outgoing.get(edge.source_node_id) || []), edge.target_node_id]);
+  });
+  const seen = new Set<string>();
+  const queue = [rootNodeId];
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const nodeId = queue[cursor];
+    if (seen.has(nodeId)) continue;
+    seen.add(nodeId);
+    (outgoing.get(nodeId) || []).forEach((targetId) => {
+      if (!seen.has(targetId)) queue.push(targetId);
+    });
+  }
+  return seen;
 }
 
 function suggestedInsertedNodePosition(
@@ -1949,18 +2010,17 @@ function suggestedInsertedNodePosition(
 ): { x: number; y: number } {
   const baseX = Math.max(0, Math.round(((source.position.x || 0) + (target.position.x || 0)) / 2));
   const baseY = Math.max(0, Math.round(((source.position.y || 0) + (target.position.y || 0)) / 2));
-  // Check if position overlaps with existing nodes and offset if needed
   const occupied = new Set(
     template.nodes
       .filter((n) => n.node_id !== source.node_id && n.node_id !== target.node_id)
       .map((n) => `${Math.round((n.position.x || 0) / 20)}:${Math.round((n.position.y || 0) / 20)}`)
   );
   for (let offset = 0; offset < 12; offset += 1) {
-    const y = Math.max(16, baseY + (offset % 2 === 0 ? 1 : -1) * Math.ceil(offset / 2) * 60);
+    const y = Math.max(16, baseY + (offset % 2 === 0 ? 1 : -1) * Math.ceil(offset / 2) * NODE_INSERT_COLLISION_STEP);
     const key = `${Math.round(baseX / 20)}:${Math.round(y / 20)}`;
     if (!occupied.has(key)) return { x: baseX, y };
   }
-  return { x: baseX, y: baseY + 60 };
+  return { x: baseX, y: baseY + NODE_INSERT_COLLISION_STEP };
 }
 
 function uniqueNodeId(template: WorkflowTemplate, base: string): string {

@@ -32,7 +32,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                 outputs=(
                     _output("image", "Image", ("image",), formats=("drawai.image.v1",)),
                 ),
-                position={"x": 0, "y": 160},
+                position={"x": 0, "y": 320},
             ),
             WorkflowNode(
                 node_id="sam_parser",
@@ -48,7 +48,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                     ),
                 ),
                 config={"parser_id": "sam3_structure_parser", "resource": "sam3"},
-                position={"x": 240, "y": 80},
+                position={"x": 480, "y": 160},
             ),
             WorkflowNode(
                 node_id="ocr_parser",
@@ -64,7 +64,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                     ),
                 ),
                 config={"parser_id": "ocr_text_parser", "resource": "ocr"},
-                position={"x": 240, "y": 240},
+                position={"x": 480, "y": 480},
             ),
             WorkflowNode(
                 node_id="fusion",
@@ -87,7 +87,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                     ),
                 ),
                 config={"fusion_id": "priority_nms"},
-                position={"x": 500, "y": 160},
+                position={"x": 1000, "y": 320},
             ),
             WorkflowNode(
                 node_id="run0_agent",
@@ -107,7 +107,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                     "provider_id": "codex_sdk",
                     "prompt_role": "Refine element positions, types, and processing intent.",
                 },
-                position={"x": 760, "y": 160},
+                position={"x": 1520, "y": 320},
             ),
             WorkflowNode(
                 node_id="asset_planner",
@@ -123,7 +123,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                     ),
                 ),
                 config={"processor_id": "asset_planner"},
-                position={"x": 1020, "y": 160},
+                position={"x": 2040, "y": 320},
             ),
             WorkflowNode(
                 node_id="asset_processors",
@@ -139,7 +139,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                     ),
                 ),
                 config={"processor_id": "asset_processors"},
-                position={"x": 1280, "y": 160},
+                position={"x": 2560, "y": 320},
             ),
             WorkflowNode(
                 node_id="asset_confirm",
@@ -164,7 +164,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                     "review_surface": "assets",
                     "result_path": "output/confirmed_asset_packages.json",
                 },
-                position={"x": 1540, "y": 80},
+                position={"x": 3080, "y": 160},
             ),
             WorkflowNode(
                 node_id="svg_agent",
@@ -188,7 +188,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                     "provider_id": "codex_sdk",
                     "prompt_role": "Generate editable semantic SVG from element plans and asset packages.",
                 },
-                position={"x": 1540, "y": 260},
+                position={"x": 3080, "y": 520},
             ),
             WorkflowNode(
                 node_id="svg_to_ppt",
@@ -205,7 +205,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                     ),
                 ),
                 config={"exporter_id": "svg_to_ppt"},
-                position={"x": 1800, "y": 260},
+                position={"x": 3600, "y": 520},
             ),
             WorkflowNode(
                 node_id="output",
@@ -228,7 +228,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                     ),
                 ),
                 config={"auto_collect_deliverables": True},
-                position={"x": 2060, "y": 180},
+                position={"x": 4120, "y": 360},
             ),
         ),
         edges=(

@@ -876,15 +876,25 @@
   pointer-events: none;
 }
 
-.workflow-edges path {
-  pointer-events: stroke;
+.workflow-edges .workflow-edge-line,
+.workflow-edges .workflow-edge-hit {
   fill: none;
-  stroke: rgba(16, 24, 40, 0.14);
+}
+
+.workflow-edges .workflow-edge-line {
+  pointer-events: none;
+  stroke: rgba(16, 24, 40, 0.16);
   stroke-width: 2;
+}
+
+.workflow-edges .workflow-edge-hit {
+  pointer-events: stroke;
+  stroke: transparent;
+  stroke-width: 18;
   cursor: pointer;
 }
 
-.workflow-edges path.selected,
+.workflow-edges .workflow-edge-line.selected,
 .workflow-connection-preview path {
   fill: none;
   stroke: #0f172a;
@@ -898,20 +908,23 @@
 .workflow-edge-insert {
   position: absolute;
   z-index: 11;
-  width: 20px;
-  height: 20px;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
   display: grid;
   place-items: center;
-  transform: translate(-50%, -50%) scale(0.9);
-  border: 1.5px solid rgba(16, 24, 40, 0.12);
+  transform: translate(-50%, -50%) scale(0.86);
+  border: 2px solid #ffffff;
   border-radius: 999px;
-  background: #fff;
-  color: #344054;
-  font-size: 14px;
-  font-weight: 700;
+  background: #2563eb;
+  color: #ffffff;
+  padding: 0;
+  appearance: none;
   line-height: 1;
   opacity: 0;
-  box-shadow: 0 2px 6px rgba(16, 24, 40, 0.08);
+  pointer-events: none;
+  box-shadow: 0 5px 12px rgba(37, 99, 235, 0.26);
   transition: opacity 140ms ease, transform 140ms ease, background 140ms ease, border-color 140ms ease;
   cursor: pointer;
 }
@@ -919,20 +932,30 @@
 .workflow-edge-insert.visible,
 .workflow-edge-insert:hover {
   opacity: 1;
-  background: #0f172a;
-  color: #fff;
-  border-color: #0f172a;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.24);
+  pointer-events: auto;
+  color: #ffffff;
 }
 
 .workflow-edge-insert:hover {
-  transform: translate(-50%, -50%) scale(1.12);
+  background: #1d4ed8;
+  transform: translate(-50%, -50%) scale(1.08);
+}
+
+.workflow-edge-insert .plus-icon {
+  width: 14px;
+  height: 14px;
+  stroke-width: 3;
 }
 
 .workflow-edge-insert:disabled {
-  cursor: not-allowed;
-  opacity: 0;
+  background: #98a2b3;
+  box-shadow: none;
+  cursor: default;
   pointer-events: none;
+}
+
+.workflow-edge-insert:disabled:not(.visible) {
+  opacity: 0;
 }
 
 .workflow-node {
@@ -1834,11 +1857,17 @@
 }
 
 .workflow-node-plus {
-  width: 22px;
-  height: 22px;
+  right: -13px;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
   border: 0;
+  border-radius: 999px;
   background: #2563eb;
   color: #ffffff;
+  padding: 0;
+  appearance: none;
   box-shadow: 0 4px 10px rgba(37, 99, 235, 0.24);
 }
 
