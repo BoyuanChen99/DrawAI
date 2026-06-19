@@ -4,12 +4,10 @@ import {
   copyWorkflowTemplate,
   listWorkflowProviders,
   listWorkflowTemplates,
-  previewAgentPrompt,
   saveWorkflowTemplate,
   validateWorkflowTemplate
 } from "./workflowApi";
 import type {
-  AgentPromptPreview,
   AgentProviderSpec,
   WorkflowEdge,
   WorkflowNode,
@@ -142,6 +140,28 @@ const DEFAULT_WORKFLOW_FOLDERS: WorkflowFolder[] = [
   { folder_id: BUILTIN_WORKFLOW_FOLDER_ID, name: "DrawAI默认工作流", builtin: true },
   { folder_id: CUSTOM_WORKFLOW_FOLDER_ID, name: "自定义工作流" }
 ];
+const AGENT_DEFAULT_TASKS: Record<string, string> = {
+  run0_element_refine: "Refine element positions, sizes, and object types from connected parser or fusion outputs. Preserve the DrawAI element plan format.",
+  svg_generation: "Generate an editable semantic SVG from connected element plans and asset packages. Preserve raster assets only through declared package references.",
+  custom_agent: "Use the connected input files as context and produce exactly the output files declared by this node configuration."
+};
+const AGENT_DEFAULT_CONSTRAINTS: Record<string, string[]> = {
+  run0_element_refine: [
+    "Use only the connected input files listed in this prompt.",
+    "Keep element ids stable unless an element is split or newly added.",
+    "Write the declared output file exactly once as UTF-8 JSON."
+  ],
+  svg_generation: [
+    "Use SVG primitives and text for editable elements.",
+    "Do not inline unrelated local files or hidden state.",
+    "Write the declared SVG output path exactly."
+  ],
+  custom_agent: [
+    "Treat every connected input file as explicit node context.",
+    "Honor the configured output declarations over the node defaults.",
+    "Write only the declared output paths inside this node work directory."
+  ]
+};
 const DEFAULT_SAM_PROMPTS: SamPromptConfig[] = [
   { id: "arrow", text: "arrow", confidence_threshold: 0.3 },
   { id: "border", text: "border", confidence_threshold: 0.3 },
@@ -239,7 +259,8 @@ const NODE_PRESETS: NodePreset[] = [
     config: {
       preset_id: "run0_element_refine",
       provider_id: "codex_sdk",
-      prompt_fragments: "Refine element bbox, size, and type. Preserve IDs unless merge/delete is declared.",
+      task: AGENT_DEFAULT_TASKS.run0_element_refine,
+      constraints: AGENT_DEFAULT_CONSTRAINTS.run0_element_refine,
       outputs: [
         {
           port_id: "elements",
@@ -265,7 +286,8 @@ const NODE_PRESETS: NodePreset[] = [
     config: {
       preset_id: "svg_generation",
       provider_id: "codex_sdk",
-      prompt_fragments: "Generate an editable SVG using connected element plans and confirmed assets.",
+      task: AGENT_DEFAULT_TASKS.svg_generation,
+      constraints: AGENT_DEFAULT_CONSTRAINTS.svg_generation,
       outputs: [
         {
           port_id: "semantic_svg",
@@ -288,7 +310,8 @@ const NODE_PRESETS: NodePreset[] = [
     config: {
       preset_id: "custom_agent",
       provider_id: "codex_sdk",
-      prompt_fragments: "Use the connected files as context and write the declared outputs exactly.",
+      task: AGENT_DEFAULT_TASKS.custom_agent,
+      constraints: AGENT_DEFAULT_CONSTRAINTS.custom_agent,
       outputs: [
         {
           port_id: "image",
@@ -358,7 +381,6 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
   const [selectedEdgeId, setSelectedEdgeId] = useState("");
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [validation, setValidation] = useState<WorkflowValidationResult | null>(null);
-  const [promptPreview, setPromptPreview] = useState<AgentPromptPreview | null>(null);
   const [dragging, setDragging] = useState<DraggingNode | null>(null);
   const [canvasPan, setCanvasPan] = useState<CanvasPanState | null>(null);
   const [viewport, setViewport] = useState<CanvasViewport>(DEFAULT_VIEWPORT);
@@ -405,7 +427,6 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
       setSelectedNodeId(next ? defaultSelectedNodeId(next) : "");
       setSelectedEdgeId("");
       setValidation(null);
-      setPromptPreview(null);
       setNodePicker(null);
       handleDragRef.current = null;
       setHandleDrag(null);
@@ -434,6 +455,10 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
   const nodeStats = useMemo(() => workflowNodeStats(draft), [draft]);
   const selectedAgentInputs = useMemo(() => (draft && selectedNode ? workflowInputPreview(draft, selectedNode) : []), [draft, selectedNode]);
   const selectedAgentOutputs = selectedNode ? agentOutputsForNode(selectedNode) : [];
+  const selectedAgentPromptText = useMemo(
+    () => selectedNode && selectedNode.node_type === "agent" ? workflowAgentPromptText(selectedNode, selectedAgentInputs) : "",
+    [selectedNode, selectedAgentInputs]
+  );
   const selectedSamPrompts = selectedNode ? samPromptsForNode(selectedNode) : [];
   const pickerItems = useMemo(() => (draft && nodePicker ? nodePickerItems(draft, nodePicker) : []), [draft, nodePicker]);
   const pickerGroups = useMemo(() => nodePickerGroups(pickerItems), [pickerItems]);
@@ -547,7 +572,6 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     setSelectedNodeId(defaultSelectedNodeId(template));
     setSelectedEdgeId("");
     setValidation(null);
-    setPromptPreview(null);
     setNodePicker(null);
     handleDragRef.current = null;
     setHandleDrag(null);
@@ -591,28 +615,6 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     }
   }
 
-  async function renderPromptForNode(node: WorkflowNode) {
-    if (!draft || node.node_type !== "agent") return;
-    const presetId = String(node.config.preset_id || "");
-    if (!presetId) {
-      onError("这个 Agent 节点没有 preset_id。");
-      return;
-    }
-    try {
-      setBusy("prompt");
-      const response = await previewAgentPrompt({
-        preset_id: presetId,
-        node_config: node.config,
-        inputs: workflowInputPreview(draft, node)
-      });
-      setPromptPreview(response.prompt);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy("");
-    }
-  }
-
   function selectTemplate(templateId: string) {
     const template = templates.find((item) => item.template_id === templateId) || null;
     setSelectedTemplateId(template?.template_id || "");
@@ -620,7 +622,6 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     setSelectedNodeId(template ? defaultSelectedNodeId(template) : "");
     setSelectedEdgeId("");
     setValidation(null);
-    setPromptPreview(null);
     setConnecting(null);
     setNodePicker(null);
     handleDragRef.current = null;
@@ -690,7 +691,6 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
         })
       };
     });
-    setPromptPreview(null);
     setValidation(null);
   }
 
@@ -709,7 +709,6 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     });
     setSelectedNodeId(nextNodes[0]?.node_id || "");
     setSelectedEdgeId("");
-    setPromptPreview(null);
     setValidation(null);
   }
 
@@ -1401,7 +1400,6 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                     if (target instanceof Element && target.closest(".workflow-node-plus, [data-input-port]")) return;
                     setSelectedNodeId(node.node_id);
                     setSelectedEdgeId("");
-                    setPromptPreview(null);
                     setInspectorOpen(true);
                     setNodePicker(null);
                     setConnecting(null);
@@ -1643,32 +1641,73 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
 
             {selectedNode.node_type === "agent" && (
               <div className="workflow-agent-editor">
-                <label className="workflow-field">
-                  <span>执行提供方</span>
-                  <select
-                    value={String(selectedNode.config.provider_id || "")}
-                    disabled={readOnly}
-                    onChange={(event) => updateSelectedNodeConfig({ provider_id: event.target.value })}
-                  >
-                    {providers.map((provider) => (
-                      <option value={provider.provider_id} key={provider.provider_id}>
-                        {provider.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="workflow-field">
-                  <span>预设</span>
-                  <select
-                    value={String(selectedNode.config.preset_id || "run0_element_refine")}
-                    disabled={readOnly}
-                    onChange={(event) => updateSelectedNodeConfig({ preset_id: event.target.value })}
-                  >
-                    <option value="run0_element_refine">Asset Refine Agent</option>
-                    <option value="svg_generation">SVG 生成</option>
-                    <option value="custom_agent">Custom Agent</option>
-                  </select>
-                </label>
+                <div className="workflow-inspector-section workflow-agent-runtime">
+                  <div className="workflow-section-title">
+                    <span>运行设置</span>
+                  </div>
+                  <div className="workflow-agent-runtime-grid">
+                    <label>
+                      <span>执行提供方</span>
+                      <select
+                        value={defaultAgentProvider(selectedNode)}
+                        disabled={readOnly}
+                        onChange={(event) => updateSelectedNodeConfig({ provider_id: event.target.value })}
+                      >
+                        {providers.map((provider) => (
+                          <option value={provider.provider_id} key={provider.provider_id}>
+                            {provider.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      <span>模型</span>
+                      <input
+                        value={String(selectedNode.config.model || "")}
+                        disabled={readOnly}
+                        placeholder="默认"
+                        onChange={(event) => updateSelectedNodeConfig({ model: event.target.value })}
+                      />
+                    </label>
+                    <label>
+                      <span>Profile</span>
+                      <input
+                        value={String(selectedNode.config.profile || "")}
+                        disabled={readOnly}
+                        placeholder="默认"
+                        onChange={(event) => updateSelectedNodeConfig({ profile: event.target.value })}
+                      />
+                    </label>
+                    <label>
+                      <span>推理强度</span>
+                      <select
+                        value={String(selectedNode.config.reasoning_effort || "")}
+                        disabled={readOnly}
+                        onChange={(event) => updateSelectedNodeConfig({ reasoning_effort: event.target.value })}
+                      >
+                        <option value="">默认</option>
+                        <option value="none">none</option>
+                        <option value="minimal">minimal</option>
+                        <option value="low">low</option>
+                        <option value="medium">medium</option>
+                        <option value="high">high</option>
+                        <option value="xhigh">xhigh</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>超时秒数</span>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={String(selectedNode.config.timeout_seconds || "")}
+                        disabled={readOnly}
+                        placeholder="默认"
+                        onChange={(event) => updateSelectedNodeConfig({ timeout_seconds: event.target.value ? Number(event.target.value) : "" })}
+                      />
+                    </label>
+                  </div>
+                </div>
 
                 <div className="workflow-inspector-section">
                   <div className="workflow-section-title">
@@ -1751,29 +1790,26 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                   <textarea
                     rows={5}
                     disabled={readOnly}
-                    value={promptFragmentText(selectedNode)}
-                    onChange={(event) => updateSelectedNodeConfig({ prompt_fragments: event.target.value })}
+                    value={agentTaskText(selectedNode)}
+                    onChange={(event) => updateSelectedNodeConfig({ task: event.target.value, prompt_fragments: "", prompt_role: "" })}
                   />
                 </label>
-                <button
-                  type="button"
-                  disabled={busy === "prompt"}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    void renderPromptForNode(selectedNode);
-                  }}
-                >
-                  预览最终 Prompt
-                </button>
-                {promptPreview && (
-                  <div className="workflow-prompt-preview">
-                    <div>
-                      <span>{promptPreview.provider_id}</span>
-                      <strong>{agentPresetLabel(promptPreview.preset_id)}</strong>
-                    </div>
-                    <pre>{promptPreview.text}</pre>
+                <label className="workflow-field">
+                  <span>运行约束</span>
+                  <textarea
+                    rows={4}
+                    disabled={readOnly}
+                    value={agentConstraintsText(selectedNode)}
+                    onChange={(event) => updateSelectedNodeConfig({ constraints: constraintsFromText(event.target.value) })}
+                  />
+                </label>
+                <div className="workflow-prompt-preview">
+                  <div>
+                    <span>最终 Prompt</span>
+                    <strong>{String(selectedNode.config.provider_id || defaultAgentProvider(selectedNode))}</strong>
                   </div>
-                )}
+                  <pre>{selectedAgentPromptText}</pre>
+                </div>
               </div>
             )}
 
@@ -2128,13 +2164,136 @@ function normalizedThreshold(value: unknown, fallback: number): number {
   return clamp(numberValue, 0, 1);
 }
 
-function agentPresetLabel(presetId: string): string {
-  const labels: Record<string, string> = {
-    run0_element_refine: "Asset Refine Agent",
-    svg_generation: "SVG Agent",
+function agentPresetId(node: WorkflowNode): string {
+  return String(node.config.preset_id || "custom_agent");
+}
+
+function defaultAgentProvider(node: WorkflowNode): string {
+  return String(node.config.provider_id || "codex_sdk");
+}
+
+function agentPromptTitle(node: WorkflowNode): string {
+  const titles: Record<string, string> = {
+    run0_element_refine: "Run0 Element Refinement",
+    svg_generation: "SVG Generation",
     custom_agent: "Custom Agent"
   };
-  return labels[presetId] || presetId;
+  return titles[agentPresetId(node)] || node.title || "Agent";
+}
+
+function agentTaskText(node: WorkflowNode): string {
+  const raw =
+    configText(node.config.task)
+    || configText(node.config.prompt_role)
+    || configText(node.config.prompt_fragments)
+    || configText(node.config.user_prompt);
+  return raw || AGENT_DEFAULT_TASKS[agentPresetId(node)] || "";
+}
+
+function agentConstraints(node: WorkflowNode): string[] {
+  const raw = node.config.constraints;
+  if (raw === undefined) return [];
+  if (Array.isArray(raw)) return raw.filter((item) => typeof item === "string").map((item) => item.trim()).filter(Boolean);
+  if (typeof raw === "string") return constraintsFromText(raw);
+  return [];
+}
+
+function agentConstraintsText(node: WorkflowNode): string {
+  return agentConstraints(node).join("\n");
+}
+
+function constraintsFromText(text: string): string[] {
+  return text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+}
+
+function configText(value: unknown): string {
+  if (Array.isArray(value)) return value.filter((item) => typeof item === "string").join("\n\n").trim();
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function selectedInputsForPrompt(node: WorkflowNode, inputs: AgentInputPreview[]): AgentInputPreview[] {
+  const selected: AgentInputPreview[] = [];
+  inputs.forEach((input) => {
+    const override = inputOverrideFor(node, input);
+    if (override.include === false) return;
+    selected.push({
+      ...input,
+      description: typeof override.description === "string" ? override.description : input.description
+    });
+  });
+  return selected;
+}
+
+function agentRuntimeOptionsForNode(node: WorkflowNode): Array<[string, string]> {
+  return (["model", "profile", "timeout_seconds", "reasoning_effort"] as const)
+    .map((key): [string, string] | null => {
+      const value = node.config[key];
+      if (value === undefined || value === null || value === "") return null;
+      return [key, String(value)];
+    })
+    .filter((item): item is [string, string] => Boolean(item));
+}
+
+function workflowAgentPromptText(node: WorkflowNode, inputs: AgentInputPreview[]): string {
+  const providerId = defaultAgentProvider(node);
+  const selectedInputs = selectedInputsForPrompt(node, inputs);
+  const outputs = agentOutputsForNode(node);
+  const constraints = agentConstraints(node);
+  const options = agentRuntimeOptionsForNode(node);
+  const lines = [
+    `# ${agentPromptTitle(node)}`,
+    "",
+    `Provider: ${providerId}`,
+    "",
+    "## Task",
+    agentTaskText(node),
+    "",
+    "## Available Input Files"
+  ];
+
+  if (selectedInputs.length > 0) {
+    selectedInputs.forEach((input) => {
+      lines.push(
+        `- Path: ${String(input.path || "")}`,
+        `  Format: ${String(input.format_id || "unspecified")}`,
+        `  Type: ${String(input.type || "unspecified")}`,
+        `  Source: ${inputSourceLabel(input)}`,
+        `  Description: ${String(input.description || "No description supplied.")}`
+      );
+    });
+  } else {
+    lines.push("- No connected input files were provided.");
+  }
+
+  lines.push("", "## Required Output Files");
+  outputs.forEach((output) => {
+    lines.push(
+      `- Path: ${output.path}`,
+      `  Format: ${output.format_id}`,
+      `  Type: ${output.type}`,
+      `  Port: ${output.port_id}`,
+      `  Description: ${output.description}`
+    );
+  });
+
+  if (constraints.length > 0) {
+    lines.push("", "## Constraints");
+    constraints.forEach((constraint) => lines.push(`- ${constraint}`));
+  }
+
+  if (options.length > 0) {
+    lines.push("", "## Runtime Options");
+    options.forEach(([key, value]) => lines.push(`- ${key}: ${value}`));
+  }
+
+  return `${lines.join("\n").trim()}\n`;
+}
+
+function inputSourceLabel(input: AgentInputPreview): string {
+  const sourceNode = String(input.source_node_id || "");
+  const sourcePort = String(input.source_port_id || "");
+  if (sourceNode && sourcePort) return `${sourceNode}.${sourcePort}`;
+  return sourceNode || "connected input";
 }
 
 function workflowInputPreview(template: WorkflowTemplate, node: WorkflowNode): Array<Record<string, unknown>> {
@@ -2742,12 +2901,6 @@ function fileExtensionForFormat(formatId: string): string {
   if (formatId.includes("pptx")) return "pptx";
   if (formatId.includes("image")) return "png";
   return "json";
-}
-
-function promptFragmentText(node: WorkflowNode): string {
-  const raw = node.config.prompt_fragments ?? node.config.user_prompt ?? "";
-  if (Array.isArray(raw)) return raw.filter((item) => typeof item === "string").join("\n\n");
-  return typeof raw === "string" ? raw : "";
 }
 
 function inputOverrideKey(input: AgentInputPreview): string {

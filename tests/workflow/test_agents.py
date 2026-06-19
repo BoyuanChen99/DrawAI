@@ -44,6 +44,7 @@ def test_run0_agent_prompt_renders_inputs_and_output_contract() -> None:
     assert "Fused boxes from SAM and OCR." in prompt.text
     assert "output/elements.json" in prompt.text
     assert "drawai.element_plans.v1" in prompt.text
+    assert "## Constraints" not in prompt.text
     assert "shell_command" not in prompt.text
 
 
@@ -108,7 +109,11 @@ def test_custom_agent_prompt_uses_configured_output_formats() -> None:
                     "description": "Custom generated assets.",
                 }
             ],
-            "prompt_fragments": "Use the image and candidates together.",
+            "task": "Use the image and candidates together.",
+            "constraints": [
+                "Keep the output schema stable.",
+                "Write only the configured output file.",
+            ],
         },
     )
 
@@ -118,6 +123,7 @@ def test_custom_agent_prompt_uses_configured_output_formats() -> None:
     assert "nodes/sam/runs/latest/output/candidates.json" in prompt.text
     assert "output/asset_packages.json" in prompt.text
     assert "Use the image and candidates together." in prompt.text
+    assert "Keep the output schema stable." in prompt.text
 
 
 def test_agent_prompt_can_exclude_inputs_and_override_descriptions() -> None:
@@ -175,13 +181,27 @@ def test_agent_prompt_uses_configured_outputs_and_task_prompt() -> None:
                     "description": "UI-configured refined element plan file.",
                 }
             ],
-            "prompt_fragments": "Use the source image as visual truth and return JSON only.",
+            "task": "Use the source image as visual truth and return JSON only.",
+            "constraints": "Return one JSON document.\nDo not add markdown fences.",
         },
     )
 
     assert "output/refined_elements.json" in prompt.text
     assert "UI-configured refined element plan file." in prompt.text
     assert "Use the source image as visual truth and return JSON only." in prompt.text
+    assert "- Return one JSON document." in prompt.text
+    assert "- Do not add markdown fences." in prompt.text
+
+
+def test_agent_prompt_keeps_legacy_prompt_fragments_as_task() -> None:
+    prompt = render_agent_prompt(
+        custom_agent_preset(),
+        inputs=(),
+        node_config={"prompt_fragments": "Legacy task text stays visible."},
+    )
+
+    assert "Legacy task text stays visible." in prompt.text
+    assert "## Constraints" not in prompt.text
 
 
 def test_agent_config_rejects_arbitrary_command_override() -> None:

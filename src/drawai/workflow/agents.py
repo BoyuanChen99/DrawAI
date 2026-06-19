@@ -236,7 +236,8 @@ def render_agent_prompt(
         inputs=selected_inputs,
         outputs=outputs,
         options=options,
-        prompt_fragments=_prompt_fragments(config),
+        task=_agent_task(preset, config),
+        constraints=_agent_constraints(preset, config),
     )
     return AgentPrompt(
         preset_id=preset.preset_id,
@@ -255,16 +256,16 @@ def _render_prompt_text(
     inputs: tuple[Mapping[str, Any], ...],
     outputs: tuple[Mapping[str, Any], ...],
     options: Mapping[str, Any],
-    prompt_fragments: tuple[str, ...],
+    task: str,
+    constraints: tuple[str, ...],
 ) -> str:
     lines = [
         f"# {preset.title}",
         "",
-        f"Preset: {preset.preset_id}",
         f"Provider: {provider_id}",
         "",
         "## Task",
-        preset.task,
+        task,
         "",
         "## Available Input Files",
     ]
@@ -295,21 +296,15 @@ def _render_prompt_text(
             ]
         )
 
-    lines.extend(["", "## Constraints"])
-    for constraint in preset.constraints:
-        lines.append(f"- {constraint}")
-    lines.append("- Do not change files outside this node work directory unless an output declaration says so.")
-    lines.append("- Do not use web search, memories, skills, hooks, or multi-agent delegation.")
+    if constraints:
+        lines.extend(["", "## Constraints"])
+        for constraint in constraints:
+            lines.append(f"- {constraint}")
 
     if options:
         lines.extend(["", "## Runtime Options"])
         for key, value in options.items():
             lines.append(f"- {key}: {value}")
-
-    if prompt_fragments:
-        lines.extend(["", "## Additional Node Instructions"])
-        for fragment in prompt_fragments:
-            lines.append(fragment)
 
     return "\n".join(lines).strip() + "\n"
 
@@ -365,11 +360,11 @@ def _validate_agent_config(config: Mapping[str, Any]) -> None:
     for key in DANGEROUS_AGENT_CONFIG_KEYS:
         if key in config:
             raise ValueError(f"Agent node config cannot override {key}")
-    if "reasoning_effort" in config:
+    if config.get("reasoning_effort") not in (None, ""):
         effort = str(config["reasoning_effort"]).strip().lower()
         if effort not in SUPPORTED_REASONING_EFFORTS:
             raise ValueError(f"unsupported reasoning_effort: {effort}")
-    if "timeout_seconds" in config:
+    if config.get("timeout_seconds") not in (None, ""):
         timeout = config["timeout_seconds"]
         if not isinstance(timeout, int | float) or isinstance(timeout, bool) or timeout <= 0:
             raise ValueError("timeout_seconds must be positive")
@@ -381,25 +376,43 @@ def _validate_agent_config(config: Mapping[str, Any]) -> None:
 def _agent_options(config: Mapping[str, Any]) -> Mapping[str, Any]:
     options: dict[str, Any] = {}
     for key in ("model", "profile", "timeout_seconds", "reasoning_effort"):
-        if key in config:
+        if key in config and config[key] not in (None, ""):
             options[key] = config[key]
     return options
 
 
-def _prompt_fragments(config: Mapping[str, Any]) -> tuple[str, ...]:
-    raw = config.get("prompt_fragments", config.get("user_prompt", ()))
+def _agent_task(preset: AgentPreset, config: Mapping[str, Any]) -> str:
+    raw = (
+        config.get("task")
+        or config.get("prompt_role")
+        or config.get("prompt_fragments")
+        or config.get("user_prompt")
+        or preset.task
+    )
+    if not isinstance(raw, str):
+        raise ValueError("Agent task must be a string")
+    task = raw.strip()
+    if not task:
+        raise ValueError("Agent task must be non-empty")
+    return task
+
+
+def _agent_constraints(preset: AgentPreset, config: Mapping[str, Any]) -> tuple[str, ...]:
+    raw = config.get("constraints")
     if raw in (None, ""):
         return ()
     if isinstance(raw, str):
-        return (raw,)
+        return tuple(line.strip() for line in raw.splitlines() if line.strip())
     if not isinstance(raw, list | tuple):
-        raise ValueError("Agent prompt_fragments must be a string or array of strings")
-    fragments: list[str] = []
+        raise ValueError("Agent constraints must be a string or array of strings")
+    constraints: list[str] = []
     for index, item in enumerate(raw):
         if not isinstance(item, str):
-            raise ValueError(f"Agent prompt_fragments[{index}] must be a string")
-        fragments.append(item)
-    return tuple(fragments)
+            raise ValueError(f"Agent constraints[{index}] must be a string")
+        constraint = item.strip()
+        if constraint:
+            constraints.append(constraint)
+    return tuple(constraints)
 
 
 def _input_overrides(config: Mapping[str, Any]) -> Mapping[str, Mapping[str, Any]]:

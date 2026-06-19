@@ -110,7 +110,24 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                 config={
                     "preset_id": "run0_element_refine",
                     "provider_id": "codex_sdk",
-                    "prompt_role": "Refine element positions, types, and processing intent.",
+                    "task": (
+                        "Refine element positions, sizes, and object types from connected "
+                        "parser or fusion outputs. Preserve the DrawAI element plan format."
+                    ),
+                    "constraints": [
+                        "Use only the connected input files listed in this prompt.",
+                        "Keep element ids stable unless an element is split or newly added.",
+                        "Write the declared output file exactly once as UTF-8 JSON.",
+                    ],
+                    "outputs": [
+                        {
+                            "port_id": "elements",
+                            "path": "output/elements.json",
+                            "format_id": "drawai.element_plans.v1",
+                            "type": "element_plans",
+                            "description": "Refined element plans in the standard DrawAI v1 element plan JSON format.",
+                        }
+                    ],
                 },
                 position={"x": 760, "y": 160},
             ),
@@ -191,7 +208,25 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                 config={
                     "preset_id": "svg_generation",
                     "provider_id": "codex_sdk",
-                    "prompt_role": "Generate editable semantic SVG from element plans and asset packages.",
+                    "task": (
+                        "Generate an editable semantic SVG from connected element plans "
+                        "and asset packages. Preserve raster assets only through declared "
+                        "package references."
+                    ),
+                    "constraints": [
+                        "Use SVG primitives and text for editable elements.",
+                        "Do not inline unrelated local files or hidden state.",
+                        "Write the declared SVG output path exactly.",
+                    ],
+                    "outputs": [
+                        {
+                            "port_id": "semantic_svg",
+                            "path": "output/semantic.svg",
+                            "format_id": "drawai.semantic_svg.v1",
+                            "type": "semantic_svg",
+                            "description": "Editable semantic SVG rooted at an svg element.",
+                        }
+                    ],
                 },
                 position={"x": 1540, "y": 260},
             ),

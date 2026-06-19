@@ -56,7 +56,11 @@ def test_workbench_workflow_agent_prompt_preview_uses_connected_inputs(tmp_path:
         "/api/workflow/agent-prompt-preview",
         json={
             "preset_id": "run0_element_refine",
-            "node_config": {"provider_id": "kimi_cli"},
+            "node_config": {
+                "provider_id": "kimi_cli",
+                "task": "Refine the connected element plans from the current node settings.",
+                "constraints": ["Return the declared JSON output only."],
+            },
             "inputs": [
                 {
                     "path": "nodes/fusion/runs/001/output/elements.json",
@@ -71,6 +75,8 @@ def test_workbench_workflow_agent_prompt_preview_uses_connected_inputs(tmp_path:
     assert response.status_code == 200
     payload = response.json()["prompt"]
     assert payload["provider_id"] == "kimi_cli"
+    assert "Refine the connected element plans from the current node settings." in payload["text"]
+    assert "Return the declared JSON output only." in payload["text"]
     assert "Fused element plans." in payload["text"]
 
 

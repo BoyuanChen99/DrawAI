@@ -87,6 +87,12 @@ def test_asset_refine_and_svg_are_agent_node_presets() -> None:
     assert nodes["svg_agent"].config["provider_id"] == "codex_sdk"
     assert nodes["run0_agent"].config["preset_id"] == "run0_element_refine"
     assert nodes["svg_agent"].config["preset_id"] == "svg_generation"
+    assert "Refine element positions" in nodes["run0_agent"].config["task"]
+    assert nodes["run0_agent"].config["constraints"]
+    assert nodes["run0_agent"].config["outputs"][0]["format_id"] == "drawai.element_plans.v1"
+    assert "Generate an editable semantic SVG" in nodes["svg_agent"].config["task"]
+    assert nodes["svg_agent"].config["constraints"]
+    assert nodes["svg_agent"].config["outputs"][0]["format_id"] == "drawai.semantic_svg.v1"
 
 
 def test_default_template_routes_svg_and_pptx_into_output() -> None:
