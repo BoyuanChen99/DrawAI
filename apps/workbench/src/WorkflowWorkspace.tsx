@@ -103,11 +103,11 @@ type AgentOutputConfig = {
 
 const NODE_WIDTH = 236;
 const NODE_HEIGHT = 72;
-const NODE_COLUMN_SPACING = 540;
-const NODE_ROW_SPACING = 248;
-const NODE_DEFAULT_GRID_X = 460;
-const NODE_DEFAULT_GRID_Y = 300;
-const NODE_INSERT_COLLISION_STEP = 120;
+const NODE_COLUMN_SPACING = 270;
+const NODE_ROW_SPACING = 124;
+const NODE_DEFAULT_GRID_X = 230;
+const NODE_DEFAULT_GRID_Y = 150;
+const NODE_INSERT_COLLISION_STEP = 60;
 const DEFAULT_VIEWPORT: CanvasViewport = { x: 88, y: 74, zoom: 0.84 };
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 1.25;
