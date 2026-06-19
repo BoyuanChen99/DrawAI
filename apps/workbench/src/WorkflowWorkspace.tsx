@@ -1,4 +1,4 @@
-import { DragEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   copyWorkflowTemplate,
   listWorkflowProviders,
@@ -31,6 +31,25 @@ type ConnectingPort = {
   portId: string;
 };
 
+type HandleDragState = {
+  nodeId: string;
+  portId: string;
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  start: { x: number; y: number };
+  current: { x: number; y: number };
+  active: boolean;
+};
+
+type NodePickerState = {
+  sourceNodeId: string;
+  sourcePortId: string;
+  x: number;
+  y: number;
+  query: string;
+};
+
 type NodePreset = {
   key: string;
   node_type: string;
@@ -51,8 +70,8 @@ type AgentOutputConfig = {
   description: string;
 };
 
-const NODE_WIDTH = 184;
-const NODE_HEIGHT = 102;
+const NODE_WIDTH = 204;
+const NODE_HEIGHT = 78;
 const DEFAULT_COPY_NAME = "Custom DrawAI DAG";
 
 const NODE_PRESETS: NodePreset[] = [
@@ -188,6 +207,8 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
   const [copyName, setCopyName] = useState(DEFAULT_COPY_NAME);
   const [dragging, setDragging] = useState<DraggingNode | null>(null);
   const [connecting, setConnecting] = useState<ConnectingPort | null>(null);
+  const [handleDrag, setHandleDrag] = useState<HandleDragState | null>(null);
+  const [nodePicker, setNodePicker] = useState<NodePickerState | null>(null);
   const [busy, setBusy] = useState("");
   const canvasRef = useRef<HTMLDivElement | null>(null);
 
@@ -214,6 +235,9 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
       setSelectedEdgeId("");
       setValidation(null);
       setPromptPreview(null);
+      setNodePicker(null);
+      setHandleDrag(null);
+      setConnecting(null);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -235,6 +259,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
   const nodeStats = useMemo(() => workflowNodeStats(draft), [draft]);
   const selectedAgentInputs = useMemo(() => (draft && selectedNode ? workflowInputPreview(draft, selectedNode) : []), [draft, selectedNode]);
   const selectedAgentOutputs = selectedNode ? agentOutputsForNode(selectedNode) : [];
+  const pickerItems = useMemo(() => (draft && nodePicker ? nodePickerItems(draft, nodePicker) : []), [draft, nodePicker]);
 
   async function copySelectedTemplate() {
     const sourceId = selectedTemplateId || "default_drawai_dag";
@@ -264,6 +289,9 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     setSelectedEdgeId("");
     setValidation(null);
     setPromptPreview(null);
+    setNodePicker(null);
+    setHandleDrag(null);
+    setConnecting(null);
   }
 
   async function validateDraft() {
@@ -324,6 +352,8 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     setValidation(null);
     setPromptPreview(null);
     setConnecting(null);
+    setNodePicker(null);
+    setHandleDrag(null);
   }
 
   function updateDraft(patch: Partial<WorkflowTemplate>) {
@@ -348,46 +378,6 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
   function updateSelectedNodeConfig(patch: Record<string, unknown>) {
     if (!selectedNode) return;
     updateNode(selectedNode.node_id, (node) => ({ ...node, config: { ...node.config, ...patch } }));
-  }
-
-  function addNode(preset: NodePreset, position?: { x: number; y: number }) {
-    if (!draft || readOnly) return;
-    const index = nextNodeIndex(draft, preset.node_type);
-    const nodeId = uniqueNodeId(draft, preset.key.replace(/[^a-zA-Z0-9_-]/g, "_"));
-    const defaultPosition = { x: 100 + (index % 4) * 230, y: 100 + Math.floor(index / 4) * 150 };
-    const node: WorkflowNode = {
-      node_id: nodeId,
-      node_type: preset.node_type,
-      title: preset.title,
-      description: preset.description,
-      inputs: cloneJson(preset.inputs),
-      outputs: cloneJson(preset.outputs),
-      config: cloneJson(preset.config || {}),
-      position: position || defaultPosition
-    };
-    setDraft({ ...draft, nodes: [...draft.nodes, node] });
-    setSelectedNodeId(node.node_id);
-    setSelectedEdgeId("");
-    setValidation(null);
-  }
-
-  function beginLibraryDrag(event: DragEvent<HTMLButtonElement>, preset: NodePreset) {
-    if (!draft || readOnly) return;
-    event.dataTransfer.effectAllowed = "copy";
-    event.dataTransfer.setData("application/x-drawai-node", preset.key);
-  }
-
-  function dropLibraryNode(event: DragEvent<HTMLDivElement>) {
-    const presetKey = event.dataTransfer.getData("application/x-drawai-node");
-    if (!presetKey) return;
-    event.preventDefault();
-    const preset = NODE_PRESETS.find((item) => item.key === presetKey);
-    if (!preset || !canvasRef.current) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    addNode(preset, {
-      x: Math.max(0, Math.round(event.clientX - rect.left - NODE_WIDTH / 2)),
-      y: Math.max(0, Math.round(event.clientY - rect.top - NODE_HEIGHT / 2))
-    });
   }
 
   function deleteSelectedNode() {
@@ -437,29 +427,110 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     if (dragging?.pointerId === event.pointerId) setDragging(null);
   }
 
-  function startConnection(nodeId: string, portId: string) {
-    if (readOnly) return;
-    setConnecting({ nodeId, portId });
-    setSelectedNodeId(nodeId);
+  function canvasPointFromClient(clientX: number, clientY: number): { x: number; y: number } {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect) return { x: clientX, y: clientY };
+    return { x: Math.round(clientX - rect.left), y: Math.round(clientY - rect.top) };
+  }
+
+  function outputAnchorFor(node: WorkflowNode): { x: number; y: number } {
+    return {
+      x: (node.position.x || 0) + NODE_WIDTH,
+      y: (node.position.y || 0) + NODE_HEIGHT / 2
+    };
+  }
+
+  function openNodePicker(sourceNodeId: string, sourcePortId: string, point?: { x: number; y: number }) {
+    if (!draft || readOnly) return;
+    const source = draft.nodes.find((node) => node.node_id === sourceNodeId);
+    if (!source) return;
+    const anchor = point || outputAnchorFor(source);
+    setNodePicker({
+      sourceNodeId,
+      sourcePortId,
+      x: Math.max(0, Math.min(canvasSize.width - 236, Math.round(anchor.x + 18))),
+      y: Math.max(0, Math.min(canvasSize.height - 420, Math.round(anchor.y - 36))),
+      query: ""
+    });
+    setConnecting({ nodeId: sourceNodeId, portId: sourcePortId });
+    setSelectedNodeId(sourceNodeId);
     setSelectedEdgeId("");
+  }
+
+  function closeNodePicker() {
+    setNodePicker(null);
+    setConnecting(null);
+  }
+
+  function beginOutputHandlePointer(event: PointerEvent<HTMLButtonElement>, node: WorkflowNode, output: WorkflowPort) {
+    if (readOnly) return;
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const start = outputAnchorFor(node);
+    setHandleDrag({
+      nodeId: node.node_id,
+      portId: output.port_id,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      start,
+      current: start,
+      active: false
+    });
+    setConnecting({ nodeId: node.node_id, portId: output.port_id });
+    setNodePicker(null);
+    setSelectedNodeId(node.node_id);
+    setSelectedEdgeId("");
+  }
+
+  function moveOutputHandlePointer(event: PointerEvent<HTMLButtonElement>) {
+    if (!handleDrag || handleDrag.pointerId !== event.pointerId) return;
+    const distance = Math.hypot(event.clientX - handleDrag.startClientX, event.clientY - handleDrag.startClientY);
+    setHandleDrag({
+      ...handleDrag,
+      current: canvasPointFromClient(event.clientX, event.clientY),
+      active: handleDrag.active || distance > 5
+    });
+  }
+
+  function endOutputHandlePointer(event: PointerEvent<HTMLButtonElement>) {
+    if (!handleDrag || handleDrag.pointerId !== event.pointerId) return;
+    event.stopPropagation();
+    const distance = Math.hypot(event.clientX - handleDrag.startClientX, event.clientY - handleDrag.startClientY);
+    const dropPoint = canvasPointFromClient(event.clientX, event.clientY);
+    const wasDrag = handleDrag.active || distance > 5;
+    if (wasDrag) {
+      const connected = connectDropTarget(handleDrag.nodeId, handleDrag.portId, event.clientX, event.clientY);
+      if (!connected) openNodePicker(handleDrag.nodeId, handleDrag.portId, dropPoint);
+    } else {
+      openNodePicker(handleDrag.nodeId, handleDrag.portId);
+    }
+    setHandleDrag(null);
   }
 
   function completeConnection(targetNodeId: string, targetPortId: string) {
     if (!draft || !connecting || readOnly) return;
-    if (connecting.nodeId === targetNodeId) {
+    const connected = connectNodes(connecting.nodeId, connecting.portId, targetNodeId, targetPortId);
+    if (connected) return;
+    setConnecting(null);
+  }
+
+  function connectNodes(sourceNodeId: string, sourcePortId: string, targetNodeId: string, targetPortId: string): boolean {
+    if (!draft || readOnly) return false;
+    if (sourceNodeId === targetNodeId) {
       setConnecting(null);
-      return;
+      return false;
     }
-    const source = draft.nodes.find((node) => node.node_id === connecting.nodeId);
+    const source = draft.nodes.find((node) => node.node_id === sourceNodeId);
     const target = draft.nodes.find((node) => node.node_id === targetNodeId);
-    const sourcePort = source?.outputs.find((item) => item.port_id === connecting.portId);
+    const sourcePort = source?.outputs.find((item) => item.port_id === sourcePortId);
     const targetPort = target?.inputs.find((item) => item.port_id === targetPortId);
-    if (!source || !target || !sourcePort || !targetPort) return;
+    if (!source || !target || !sourcePort || !targetPort) return false;
     const overlap = compatibleTypes(sourcePort, targetPort);
     if (overlap.length === 0) {
       onError(`不能连接：${source.title}.${sourcePort.label} 和 ${target.title}.${targetPort.label} 没有兼容类型。`);
       setConnecting(null);
-      return;
+      return false;
     }
     const edge: WorkflowEdge = {
       edge_id: uniqueEdgeId(draft, `${source.node_id}:${sourcePort.port_id}->${target.node_id}:${targetPort.port_id}`),
@@ -472,6 +543,49 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     setDraft({ ...draft, edges: [...draft.edges, edge] });
     setSelectedEdgeId(edge.edge_id);
     setSelectedNodeId("");
+    setConnecting(null);
+    setNodePicker(null);
+    setValidation(null);
+    return true;
+  }
+
+  function connectDropTarget(sourceNodeId: string, sourcePortId: string, clientX: number, clientY: number): boolean {
+    if (!draft) return false;
+    const targetElement = document.elementFromPoint(clientX, clientY);
+    if (!(targetElement instanceof HTMLElement)) return false;
+    const exactInput = targetElement.closest<HTMLElement>("[data-input-port]");
+    if (exactInput?.dataset.nodeId && exactInput.dataset.inputPort) {
+      return connectNodes(sourceNodeId, sourcePortId, exactInput.dataset.nodeId, exactInput.dataset.inputPort);
+    }
+    const targetNodeElement = targetElement.closest<HTMLElement>(".workflow-node[data-node-id]");
+    const targetNodeId = targetNodeElement?.dataset.nodeId || "";
+    const source = draft.nodes.find((node) => node.node_id === sourceNodeId);
+    const sourcePort = source?.outputs.find((portItem) => portItem.port_id === sourcePortId);
+    const targetNode = draft.nodes.find((node) => node.node_id === targetNodeId);
+    const targetPort = sourcePort && targetNode ? bestInputForSource(sourcePort, targetNode) : null;
+    return Boolean(targetPort && connectNodes(sourceNodeId, sourcePortId, targetNodeId, targetPort.port_id));
+  }
+
+  function addNodeFromPicker(preset: NodePreset) {
+    if (!draft || !nodePicker || readOnly) return;
+    const source = draft.nodes.find((node) => node.node_id === nodePicker.sourceNodeId);
+    const sourcePort = source?.outputs.find((portItem) => portItem.port_id === nodePicker.sourcePortId);
+    if (!source || !sourcePort) return;
+    const targetPort = bestInputForPreset(sourcePort, preset);
+    if (!targetPort) return;
+    const node = buildWorkflowNode(draft, preset, suggestedConnectedNodePosition(draft, source));
+    const edge: WorkflowEdge = {
+      edge_id: uniqueEdgeId(draft, `${source.node_id}:${sourcePort.port_id}->${node.node_id}:${targetPort.port_id}`),
+      source_node_id: source.node_id,
+      source_port_id: sourcePort.port_id,
+      target_node_id: node.node_id,
+      target_port_id: targetPort.port_id,
+      enabled_types: compatibleTypes(sourcePort, targetPort)
+    };
+    setDraft({ ...draft, nodes: [...draft.nodes, node], edges: [...draft.edges, edge] });
+    setSelectedNodeId(node.node_id);
+    setSelectedEdgeId("");
+    setNodePicker(null);
     setConnecting(null);
     setValidation(null);
   }
@@ -583,39 +697,22 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
         </div>
       </header>
 
-      <aside className="workflow-sidebar">
-        <div className="workflow-panel-head">
-          <span>Node Library</span>
-          <strong>拖入或点击添加</strong>
-        </div>
-        <div className="workflow-node-library">
-          {NODE_PRESETS.map((preset) => (
-            <button
-              type="button"
-              key={preset.key}
-              className={`workflow-tool node-${preset.node_type}`}
-              disabled={!draft || readOnly}
-              draggable={Boolean(draft) && !readOnly}
-              title={preset.description}
-              onClick={() => addNode(preset)}
-              onDragStart={(event) => beginLibraryDrag(event, preset)}
-            >
-              <span>{preset.icon}</span>
-              <strong>{preset.title}</strong>
-              <em>{preset.node_type}</em>
-            </button>
-          ))}
-        </div>
-        <div className="workflow-stats" aria-label="节点类型">
-          <span>Parser <strong>{nodeStats.parser}</strong></span>
-          <span>Agent <strong>{nodeStats.agent}</strong></span>
-          <span>Human <strong>{nodeStats.human_review}</strong></span>
-          <span>Export <strong>{nodeStats.export}</strong></span>
-        </div>
+      <section className="workflow-canvas-shell">
+        <aside className="workflow-canvas-rail" aria-label="Workflow tools">
+          <button type="button" className="active" title="编排">W</button>
+          <button type="button" title="选择">↖</button>
+          <button type="button" title="移动">✥</button>
+          <button type="button" title="校验" onClick={() => void validateDraft()} disabled={!draft || busy === "validate"}>✓</button>
+          <div className="workflow-rail-stats">
+            <span>P {nodeStats.parser}</span>
+            <span>A {nodeStats.agent}</span>
+            <span>H {nodeStats.human_review}</span>
+          </div>
+        </aside>
         {validation && !validation.ok && (
-          <div className="workflow-validation failed">
+          <div className="workflow-floating-validation failed">
             <strong>{validation.errors.length} 个校验问题</strong>
-            {validation.errors.slice(0, 6).map((item, index) => (
+            {validation.errors.slice(0, 4).map((item, index) => (
               <button
                 type="button"
                 key={`${item.code}-${item.node_id}-${item.edge_id}-${index}`}
@@ -630,21 +727,17 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
             ))}
           </div>
         )}
-      </aside>
-
-      <section className="workflow-canvas-shell">
         <div className="workflow-canvas-scroll">
           <div
             ref={canvasRef}
             className="workflow-canvas"
             style={{ width: canvasSize.width, height: canvasSize.height }}
-            onDragOver={(event) => {
-              if (event.dataTransfer.types.includes("application/x-drawai-node")) {
-                event.preventDefault();
-                event.dataTransfer.dropEffect = "copy";
+            onClick={(event) => {
+              if (event.target === event.currentTarget) {
+                setNodePicker(null);
+                setConnecting(null);
               }
             }}
-            onDrop={dropLibraryNode}
           >
             {draft && (
               <WorkflowEdges
@@ -656,10 +749,12 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                 }}
               />
             )}
+            {handleDrag?.active && <WorkflowConnectionPreview drag={handleDrag} />}
             {draft?.nodes.map((node) => (
               <article
                 key={node.node_id}
                 className={`workflow-node node-${node.node_type} ${node.node_id === selectedNodeId ? "active" : ""}`}
+                data-node-id={node.node_id}
                 style={{ left: node.position.x || 0, top: node.position.y || 0 }}
                 onClick={() => {
                   setSelectedNodeId(node.node_id);
@@ -683,12 +778,14 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                     <button
                       type="button"
                       key={input.port_id}
-                      disabled={!connecting}
+                      data-node-id={node.node_id}
+                      data-input-port={input.port_id}
+                      aria-disabled={!connecting}
                       className={connecting && compatibleTarget(draft, connecting, node, input) ? "compatible" : ""}
                       title={`${input.label}: ${input.types.join(" / ")}`}
                       onClick={(event) => {
                         event.stopPropagation();
-                        completeConnection(node.node_id, input.port_id);
+                        if (connecting) completeConnection(node.node_id, input.port_id);
                       }}
                     >
                       {input.port_id}
@@ -696,25 +793,71 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                   ))}
                 </div>
                 <p>{nodeOutputSummary(node)}</p>
-                <div className="workflow-node-port-row outputs">
+                <div className="workflow-node-output-list">
                   {node.outputs.map((output) => (
-                    <button
-                      type="button"
-                      key={output.port_id}
-                      className={connecting?.nodeId === node.node_id && connecting.portId === output.port_id ? "connecting" : ""}
-                      title={`${output.label}: ${output.types.join(" / ")}`}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        startConnection(node.node_id, output.port_id);
-                      }}
-                    >
-                      {output.port_id}
-                    </button>
+                    <div className="workflow-output-slot" key={output.port_id}>
+                      <span>{output.port_id}</span>
+                      <button
+                        type="button"
+                        className={`workflow-node-plus ${connecting?.nodeId === node.node_id && connecting.portId === output.port_id ? "connecting" : ""}`}
+                        disabled={readOnly}
+                        title="点击添加节点，拖拽连接节点"
+                        onClick={(event) => event.stopPropagation()}
+                        onPointerDown={(event) => beginOutputHandlePointer(event, node, output)}
+                        onPointerMove={moveOutputHandlePointer}
+                        onPointerUp={endOutputHandlePointer}
+                        onPointerCancel={() => {
+                          setHandleDrag(null);
+                          setConnecting(null);
+                        }}
+                      >
+                        +
+                      </button>
+                    </div>
                   ))}
                 </div>
               </article>
             ))}
-            {connecting && (
+            {nodePicker && (
+              <div
+                className="workflow-node-picker"
+                style={{ left: nodePicker.x, top: nodePicker.y }}
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="workflow-picker-tabs">
+                  <strong>节点</strong>
+                  <span>工具</span>
+                  <button type="button" onClick={closeNodePicker}>×</button>
+                </div>
+                <label className="workflow-picker-search">
+                  <span>⌕</span>
+                  <input
+                    value={nodePicker.query}
+                    placeholder="搜索节点"
+                    onChange={(event) => setNodePicker({ ...nodePicker, query: event.target.value })}
+                  />
+                </label>
+                <div className="workflow-picker-list">
+                  {pickerItems.map((item) => (
+                    <button
+                      type="button"
+                      key={item.preset.key}
+                      className={`workflow-picker-item node-${item.preset.node_type} ${item.compatible ? "compatible" : "incompatible"}`}
+                      disabled={!item.compatible}
+                      title={item.compatible ? item.preset.description : "当前输出没有兼容输入"}
+                      onClick={() => addNodeFromPicker(item.preset)}
+                    >
+                      <span>{item.preset.icon}</span>
+                      <strong>{item.preset.title}</strong>
+                      <em>{item.group}</em>
+                    </button>
+                  ))}
+                  {pickerItems.length === 0 && <p>没有匹配节点</p>}
+                </div>
+              </div>
+            )}
+            {connecting && !nodePicker && (
               <button type="button" className="workflow-connect-cancel" onClick={() => setConnecting(null)}>
                 取消连线
               </button>
@@ -979,6 +1122,42 @@ function WorkflowEdges({
   );
 }
 
+function WorkflowConnectionPreview({ drag }: { drag: HandleDragState }) {
+  const mid = Math.max(42, Math.abs(drag.current.x - drag.start.x) * 0.4);
+  const d = `M ${drag.start.x} ${drag.start.y} C ${drag.start.x + mid} ${drag.start.y}, ${drag.current.x - mid} ${drag.current.y}, ${drag.current.x} ${drag.current.y}`;
+  return (
+    <svg className="workflow-connection-preview" aria-hidden="true">
+      <path d={d} />
+    </svg>
+  );
+}
+
+function nodePickerItems(template: WorkflowTemplate, picker: NodePickerState): Array<{ preset: NodePreset; compatible: boolean; group: string }> {
+  const source = template.nodes.find((node) => node.node_id === picker.sourceNodeId);
+  const sourcePort = source?.outputs.find((portItem) => portItem.port_id === picker.sourcePortId);
+  const query = picker.query.trim().toLowerCase();
+  return NODE_PRESETS
+    .filter((preset) => {
+      if (!query) return true;
+      return [preset.title, preset.node_type, preset.description].some((value) => value.toLowerCase().includes(query));
+    })
+    .map((preset) => ({
+      preset,
+      compatible: Boolean(sourcePort && bestInputForPreset(sourcePort, preset)),
+      group: nodePresetGroup(preset)
+    }));
+}
+
+function nodePresetGroup(preset: NodePreset): string {
+  if (preset.node_type === "parser") return "解析";
+  if (preset.node_type === "agent") return "Agent";
+  if (preset.node_type === "processor") return "处理";
+  if (preset.node_type === "fusion") return "融合";
+  if (preset.node_type === "human_review") return "人工";
+  if (preset.node_type === "export" || preset.node_type === "output") return "输出";
+  return "输入";
+}
+
 function workflowInputPreview(template: WorkflowTemplate, node: WorkflowNode): Array<Record<string, unknown>> {
   return template.edges
     .filter((edge) => edge.target_node_id === node.node_id)
@@ -1057,6 +1236,42 @@ function compatibleTarget(template: WorkflowTemplate | null, connecting: Connect
   const source = template?.nodes.find((node) => node.node_id === connecting.nodeId);
   const sourcePort = source?.outputs.find((item) => item.port_id === connecting.portId);
   return Boolean(sourcePort && source?.node_id !== targetNode.node_id && compatibleTypes(sourcePort, targetPort).length > 0);
+}
+
+function bestInputForSource(sourcePort: WorkflowPort, targetNode: WorkflowNode): WorkflowPort | null {
+  return targetNode.inputs.find((input) => compatibleTypes(sourcePort, input).length > 0) || null;
+}
+
+function bestInputForPreset(sourcePort: WorkflowPort, preset: NodePreset): WorkflowPort | null {
+  return preset.inputs.find((input) => compatibleTypes(sourcePort, input).length > 0) || null;
+}
+
+function buildWorkflowNode(template: WorkflowTemplate, preset: NodePreset, position?: { x: number; y: number }): WorkflowNode {
+  const index = nextNodeIndex(template, preset.node_type);
+  const nodeId = uniqueNodeId(template, preset.key.replace(/[^a-zA-Z0-9_-]/g, "_"));
+  const defaultPosition = { x: 100 + (index % 4) * 230, y: 100 + Math.floor(index / 4) * 150 };
+  return {
+    node_id: nodeId,
+    node_type: preset.node_type,
+    title: preset.title,
+    description: preset.description,
+    inputs: cloneJson(preset.inputs),
+    outputs: cloneJson(preset.outputs),
+    config: cloneJson(preset.config || {}),
+    position: position || defaultPosition
+  };
+}
+
+function suggestedConnectedNodePosition(template: WorkflowTemplate, source: WorkflowNode): { x: number; y: number } {
+  const baseX = (source.position.x || 0) + 280;
+  const sourceY = source.position.y || 0;
+  const occupied = new Set(template.nodes.map((node) => `${Math.round((node.position.x || 0) / 20)}:${Math.round((node.position.y || 0) / 20)}`));
+  for (let offset = 0; offset < 8; offset += 1) {
+    const y = Math.max(16, sourceY + offset * 112);
+    const key = `${Math.round(baseX / 20)}:${Math.round(y / 20)}`;
+    if (!occupied.has(key)) return { x: baseX, y };
+  }
+  return { x: baseX, y: sourceY + 112 };
 }
 
 function uniqueNodeId(template: WorkflowTemplate, base: string): string {
