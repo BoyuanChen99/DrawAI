@@ -100,6 +100,20 @@ type AgentOutputConfig = {
   type: string;
   description: string;
 };
+type SamPromptConfig = {
+  id: string;
+  text: string;
+  confidence_threshold: number;
+};
+type NodePickerItem = {
+  preset: NodePreset;
+  compatible: boolean;
+  group: string;
+};
+type NodePickerGroup = {
+  group: string;
+  items: NodePickerItem[];
+};
 
 const NODE_WIDTH = 236;
 const NODE_HEIGHT = 72;
@@ -119,26 +133,36 @@ const DEFAULT_WORKFLOW_FOLDERS: WorkflowFolder[] = [
   { folder_id: BUILTIN_WORKFLOW_FOLDER_ID, name: "默认分类", builtin: true },
   { folder_id: CUSTOM_WORKFLOW_FOLDER_ID, name: "自定义工作流" }
 ];
+const DEFAULT_SAM_PROMPTS: SamPromptConfig[] = [
+  { id: "arrow", text: "arrow", confidence_threshold: 0.3 },
+  { id: "border", text: "border", confidence_threshold: 0.3 },
+  { id: "content_box", text: "content box", confidence_threshold: 0.15 },
+  { id: "grid", text: "grid", confidence_threshold: 0.3 },
+  { id: "icon", text: "icon", confidence_threshold: 0.3 },
+  { id: "picture", text: "picture", confidence_threshold: 0.3 }
+];
+const NODE_PICKER_GROUP_ORDER = ["Parser", "Agent", "Processor", "Review", "Fusion", "Export"];
 
 const NODE_PRESETS: NodePreset[] = [
   {
-    key: "input",
-    node_type: "input",
-    title: "Input",
-    icon: "I",
-    description: "Source image input.",
-    inputs: [],
-    outputs: [port("image", "Image", ["image"], "drawai.image.v1", false)]
-  },
-  {
-    key: "parser",
+    key: "sam-parser",
     node_type: "parser",
-    title: "Parser",
+    title: "SAM Parser",
     icon: "P",
-    description: "Fixed parser node such as SAM or OCR.",
+    description: "Segment visual structure with configurable text prompts and thresholds.",
     inputs: [port("image", "Image", ["image"], "drawai.image.v1")],
     outputs: [port("candidates", "Candidates", ["element_candidates"], "drawai.element_candidates.v1", false)],
-    config: { parser_id: "custom_parser" }
+    config: { parser_id: "sam3_structure_parser", resource: "sam3", prompts: DEFAULT_SAM_PROMPTS }
+  },
+  {
+    key: "ocr-parser",
+    node_type: "parser",
+    title: "OCR Parser",
+    icon: "P",
+    description: "Extract text candidates from the source image.",
+    inputs: [port("image", "Image", ["image"], "drawai.image.v1")],
+    outputs: [port("candidates", "Candidates", ["element_candidates"], "drawai.element_candidates.v1", false)],
+    config: { parser_id: "ocr_text_parser", resource: "ocr" }
   },
   {
     key: "merge",
@@ -151,9 +175,9 @@ const NODE_PRESETS: NodePreset[] = [
     config: { fusion_id: "priority_nms" }
   },
   {
-    key: "run0-agent",
+    key: "asset-refine-agent",
     node_type: "agent",
-    title: "Run0 Agent",
+    title: "Asset Refine Agent",
     icon: "A",
     description: "Agent node that refines element plans.",
     inputs: [port("elements", "Element Plans", ["element_plans"], "drawai.element_plans.v1")],
@@ -328,7 +352,9 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
   const nodeStats = useMemo(() => workflowNodeStats(draft), [draft]);
   const selectedAgentInputs = useMemo(() => (draft && selectedNode ? workflowInputPreview(draft, selectedNode) : []), [draft, selectedNode]);
   const selectedAgentOutputs = selectedNode ? agentOutputsForNode(selectedNode) : [];
+  const selectedSamPrompts = selectedNode ? samPromptsForNode(selectedNode) : [];
   const pickerItems = useMemo(() => (draft && nodePicker ? nodePickerItems(draft, nodePicker) : []), [draft, nodePicker]);
+  const pickerGroups = useMemo(() => nodePickerGroups(pickerItems), [pickerItems]);
   const minimapNodes = useMemo(() => (draft ? workflowMinimapNodes(draft) : []), [draft]);
   const visibleWorkflowFolders = useMemo(() => workflowFoldersWithCounts(workflowFolders, templates), [workflowFolders, templates]);
   const activeWorkflowFolder = visibleWorkflowFolders.find((folder) => folder.folder_id === activeWorkflowFolderId) || visibleWorkflowFolders[0];
@@ -913,6 +939,36 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     updateSelectedNodeConfig({ input_overrides: overrides });
   }
 
+  function updateSamPrompt(index: number, patch: Partial<SamPromptConfig>) {
+    if (!selectedNode || selectedNode.node_type !== "parser") return;
+    const prompts = samPromptsForNode(selectedNode);
+    prompts[index] = { ...prompts[index], ...patch };
+    updateSelectedNodeConfig({ prompts });
+  }
+
+  function addSamPrompt() {
+    if (!selectedNode || selectedNode.node_type !== "parser") return;
+    const prompts = samPromptsForNode(selectedNode);
+    const nextId = uniqueSamPromptId(prompts, "prompt");
+    updateSelectedNodeConfig({
+      prompts: [
+        ...prompts,
+        {
+          id: nextId,
+          text: "object",
+          confidence_threshold: 0.3
+        }
+      ]
+    });
+  }
+
+  function removeSamPrompt(index: number) {
+    if (!selectedNode || selectedNode.node_type !== "parser" || readOnly) return;
+    const prompts = samPromptsForNode(selectedNode);
+    if (prompts.length <= 1) return;
+    updateSelectedNodeConfig({ prompts: prompts.filter((_item, itemIndex) => itemIndex !== index) });
+  }
+
   function updateAgentOutput(index: number, patch: Partial<AgentOutputConfig>) {
     if (!selectedNode || selectedNode.node_type !== "agent") return;
     const outputs = agentOutputsForNode(selectedNode);
@@ -1258,7 +1314,6 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
               >
                 <div className="workflow-picker-tabs">
                   <strong>节点</strong>
-                  <span>工具</span>
                   <button type="button" onClick={closeNodePicker}>×</button>
                 </div>
                 <label className="workflow-picker-search">
@@ -1270,21 +1325,28 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                   />
                 </label>
                 <div className="workflow-picker-list">
-                  {pickerItems.map((item) => (
-                    <button
-                      type="button"
-                      key={item.preset.key}
-                      className={`workflow-picker-item node-${item.preset.node_type} ${item.compatible ? "compatible" : "incompatible"}`}
-                      disabled={!item.compatible}
-                      title={item.compatible ? item.preset.description : "当前输出没有兼容输入"}
-                      onClick={() => addNodeFromPicker(item.preset)}
-                    >
-                      <span>
-                        <WorkflowNodeIcon nodeType={item.preset.node_type} />
-                      </span>
-                      <strong>{item.preset.title}</strong>
-                      <em>{item.group}</em>
-                    </button>
+                  {pickerGroups.map((group) => (
+                    <section className="workflow-picker-group" key={group.group}>
+                      <h4>{group.group}</h4>
+                      {group.items.map((item) => (
+                        <button
+                          type="button"
+                          key={item.preset.key}
+                          className={`workflow-picker-item node-${item.preset.node_type} ${item.compatible ? "compatible" : "incompatible"}`}
+                          disabled={!item.compatible}
+                          title={item.compatible ? item.preset.description : "当前输出没有兼容输入"}
+                          onClick={() => addNodeFromPicker(item.preset)}
+                        >
+                          <span className="workflow-picker-item-icon">
+                            <WorkflowNodeIcon nodeType={item.preset.node_type} />
+                          </span>
+                          <div className="workflow-picker-item-copy">
+                            <strong>{item.preset.title}</strong>
+                            <em>{item.preset.description}</em>
+                          </div>
+                        </button>
+                      ))}
+                    </section>
                   ))}
                   {pickerItems.length === 0 && <p>没有匹配节点</p>}
                 </div>
@@ -1342,6 +1404,86 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
               />
             </label>
 
+            {selectedNode.node_type === "parser" && (
+              <div className="workflow-parser-editor">
+                <div className="workflow-inspector-section">
+                  <div className="workflow-section-title">
+                    <span>解析器</span>
+                  </div>
+                  <label className="workflow-field">
+                    <span>Parser ID</span>
+                    <input
+                      value={String(selectedNode.config.parser_id || "")}
+                      disabled={readOnly}
+                      onChange={(event) => updateSelectedNodeConfig({ parser_id: event.target.value })}
+                    />
+                  </label>
+                  <label className="workflow-field">
+                    <span>Resource</span>
+                    <input
+                      value={String(selectedNode.config.resource || "")}
+                      disabled={readOnly}
+                      onChange={(event) => updateSelectedNodeConfig({ resource: event.target.value })}
+                    />
+                  </label>
+                </div>
+
+                {isSamParserNode(selectedNode) ? (
+                  <div className="workflow-inspector-section">
+                    <div className="workflow-section-title">
+                      <span>SAM Prompts</span>
+                      <button type="button" disabled={readOnly} onClick={addSamPrompt}>添加</button>
+                    </div>
+                    {selectedSamPrompts.map((prompt, index) => (
+                      <div className="workflow-sam-prompt" key={`${prompt.id}-${index}`}>
+                        <div className="workflow-sam-prompt-grid">
+                          <label>
+                            <span>ID</span>
+                            <input
+                              value={prompt.id}
+                              disabled={readOnly}
+                              onChange={(event) => updateSamPrompt(index, { id: event.target.value })}
+                            />
+                          </label>
+                          <label>
+                            <span>阈值</span>
+                            <input
+                              type="number"
+                              min="0"
+                              max="1"
+                              step="0.01"
+                              value={prompt.confidence_threshold}
+                              disabled={readOnly}
+                              onChange={(event) =>
+                                updateSamPrompt(index, {
+                                  confidence_threshold: normalizedThreshold(event.target.value, prompt.confidence_threshold)
+                                })
+                              }
+                            />
+                          </label>
+                        </div>
+                        <label>
+                          <span>文本</span>
+                          <input
+                            value={prompt.text}
+                            disabled={readOnly}
+                            onChange={(event) => updateSamPrompt(index, { text: event.target.value })}
+                          />
+                        </label>
+                        <button type="button" disabled={readOnly || selectedSamPrompts.length <= 1} onClick={() => removeSamPrompt(index)}>
+                          删除 Prompt
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="workflow-inspector-section">
+                    <p className="workflow-muted">这个解析器当前没有可调 prompt 参数。</p>
+                  </div>
+                )}
+              </div>
+            )}
+
             {selectedNode.node_type === "agent" && (
               <div className="workflow-agent-editor">
                 <label className="workflow-field">
@@ -1365,7 +1507,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                     disabled={readOnly}
                     onChange={(event) => updateSelectedNodeConfig({ preset_id: event.target.value })}
                   >
-                    <option value="run0_element_refine">Run0 元素校正</option>
+                    <option value="run0_element_refine">Asset Refine Agent</option>
                     <option value="svg_generation">SVG 生成</option>
                   </select>
                 </label>
@@ -1502,7 +1644,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
               <div className="workflow-prompt-preview">
                 <div>
                   <span>{promptPreview.provider_id}</span>
-                  <strong>{promptPreview.preset_id}</strong>
+                  <strong>{agentPresetLabel(promptPreview.preset_id)}</strong>
                 </div>
                 <pre>{promptPreview.text}</pre>
               </div>
@@ -1612,7 +1754,7 @@ function WorkflowConnectionPreview({ drag }: { drag: HandleDragState }) {
   );
 }
 
-function nodePickerItems(template: WorkflowTemplate, picker: NodePickerState): Array<{ preset: NodePreset; compatible: boolean; group: string }> {
+function nodePickerItems(template: WorkflowTemplate, picker: NodePickerState): NodePickerItem[] {
   const source = template.nodes.find((node) => node.node_id === picker.sourceNodeId);
   const sourcePort = source?.outputs.find((portItem) => portItem.port_id === picker.sourcePortId);
   const target = template.nodes.find((node) => node.node_id === picker.targetNodeId);
@@ -1620,8 +1762,9 @@ function nodePickerItems(template: WorkflowTemplate, picker: NodePickerState): A
   const query = picker.query.trim().toLowerCase();
   return NODE_PRESETS
     .filter((preset) => {
+      if (preset.node_type === "input") return false;
       if (!query) return true;
-      return [preset.title, preset.node_type, preset.description].some((value) => value.toLowerCase().includes(query));
+      return [preset.title, preset.node_type, preset.description, nodePresetGroup(preset)].some((value) => value.toLowerCase().includes(query));
     })
     .map((preset) => ({
       preset,
@@ -1634,14 +1777,75 @@ function nodePickerItems(template: WorkflowTemplate, picker: NodePickerState): A
     }));
 }
 
+function nodePickerGroups(items: NodePickerItem[]): NodePickerGroup[] {
+  const grouped = new Map<string, NodePickerItem[]>();
+  items.forEach((item) => {
+    grouped.set(item.group, [...(grouped.get(item.group) || []), item]);
+  });
+  return [...grouped.entries()]
+    .sort(([left], [right]) => nodePickerGroupRank(left) - nodePickerGroupRank(right))
+    .map(([group, groupItems]) => ({ group, items: groupItems }));
+}
+
+function nodePickerGroupRank(group: string): number {
+  const index = NODE_PICKER_GROUP_ORDER.indexOf(group);
+  return index === -1 ? NODE_PICKER_GROUP_ORDER.length : index;
+}
+
 function nodePresetGroup(preset: NodePreset): string {
-  if (preset.node_type === "parser") return "解析";
+  if (preset.node_type === "parser") return "Parser";
   if (preset.node_type === "agent") return "Agent";
-  if (preset.node_type === "processor") return "处理";
-  if (preset.node_type === "fusion") return "融合";
-  if (preset.node_type === "human_review") return "人工";
-  if (preset.node_type === "export" || preset.node_type === "output") return "输出";
-  return "输入";
+  if (preset.node_type === "processor") return "Processor";
+  if (preset.node_type === "fusion") return "Fusion";
+  if (preset.node_type === "human_review") return "Review";
+  if (preset.node_type === "export" || preset.node_type === "output") return "Export";
+  return "Other";
+}
+
+function isSamParserNode(node: WorkflowNode): boolean {
+  return node.node_type === "parser" && String(node.config.parser_id || "") === "sam3_structure_parser";
+}
+
+function samPromptsForNode(node: WorkflowNode): SamPromptConfig[] {
+  const raw = node.config.prompts;
+  if (!Array.isArray(raw)) return cloneJson(DEFAULT_SAM_PROMPTS);
+  const prompts = raw
+    .filter((item) => item && typeof item === "object")
+    .map((item, index) => {
+      const data = item as Record<string, unknown>;
+      return {
+        id: String(data.id || `prompt_${index + 1}`),
+        text: String(data.text || ""),
+        confidence_threshold: normalizedThreshold(data.confidence_threshold, 0.3)
+      };
+    })
+    .filter((item) => item.id.trim() || item.text.trim());
+  return prompts.length > 0 ? prompts : cloneJson(DEFAULT_SAM_PROMPTS);
+}
+
+function uniqueSamPromptId(prompts: SamPromptConfig[], base: string): string {
+  const existing = new Set(prompts.map((prompt) => prompt.id));
+  let candidate = base;
+  let index = prompts.length + 1;
+  while (existing.has(candidate)) {
+    candidate = `${base}_${index}`;
+    index += 1;
+  }
+  return candidate;
+}
+
+function normalizedThreshold(value: unknown, fallback: number): number {
+  const numberValue = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numberValue)) return fallback;
+  return clamp(numberValue, 0, 1);
+}
+
+function agentPresetLabel(presetId: string): string {
+  const labels: Record<string, string> = {
+    run0_element_refine: "Asset Refine Agent",
+    svg_generation: "SVG Agent"
+  };
+  return labels[presetId] || presetId;
 }
 
 function workflowInputPreview(template: WorkflowTemplate, node: WorkflowNode): Array<Record<string, unknown>> {

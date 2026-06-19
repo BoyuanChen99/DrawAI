@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -61,12 +62,27 @@ def test_default_template_routes_assets_through_human_review_node() -> None:
     assert ("asset_confirm", "asset_packages", "svg_agent", "asset_packages") in edges
 
 
-def test_run0_and_svg_are_agent_node_presets() -> None:
+def test_default_template_exposes_sam_prompt_configuration() -> None:
+    template = default_drawai_workflow_template()
+    nodes = {node.node_id: node for node in template.nodes}
+
+    prompts = nodes["sam_parser"].config["prompts"]
+
+    assert prompts[0] == {
+        "id": "arrow",
+        "text": "arrow",
+        "confidence_threshold": 0.3,
+    }
+    assert {prompt["id"] for prompt in prompts} >= {"content_box", "icon", "picture"}
+
+
+def test_asset_refine_and_svg_are_agent_node_presets() -> None:
     template = default_drawai_workflow_template()
     nodes = {node.node_id: node for node in template.nodes}
 
     assert nodes["run0_agent"].node_type == "agent"
     assert nodes["svg_agent"].node_type == "agent"
+    assert nodes["run0_agent"].title == "Asset Refine Agent"
     assert nodes["run0_agent"].config["provider_id"] == "codex_sdk"
     assert nodes["svg_agent"].config["provider_id"] == "codex_sdk"
     assert nodes["run0_agent"].config["preset_id"] == "run0_element_refine"
@@ -120,6 +136,22 @@ def test_save_and_load_workflow_template_round_trip(tmp_path: Path) -> None:
 
     assert path == user_workflow_template_path(tmp_path, copied.template_id)
     assert loaded.to_dict() == copied.to_dict()
+
+
+def test_load_workflow_template_normalizes_legacy_asset_refine_title(tmp_path: Path) -> None:
+    copied = copy_builtin_template("default_drawai_dag", name="Legacy DAG")
+    payload = copied.to_dict()
+    for node in payload["nodes"]:
+        if node["node_id"] == "run0_agent":
+            node["title"] = "Run0 Agent"
+    path = user_workflow_template_path(tmp_path, copied.template_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = load_workflow_template(path)
+    nodes = {node.node_id: node for node in loaded.nodes}
+
+    assert nodes["run0_agent"].title == "Asset Refine Agent"
 
 
 def test_save_workflow_template_rejects_invalid_template(tmp_path: Path) -> None:

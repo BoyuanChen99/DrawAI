@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Literal, Mapping
 
+from ..prompt_plan import DEFAULT_SAM3_PROMPTS
 from .schema import (
     WORKFLOW_TEMPLATE_SCHEMA,
     WorkflowEdge,
@@ -47,7 +48,11 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                         formats=("drawai.element_candidates.v1",),
                     ),
                 ),
-                config={"parser_id": "sam3_structure_parser", "resource": "sam3"},
+                config={
+                    "parser_id": "sam3_structure_parser",
+                    "resource": "sam3",
+                    "prompts": _sam3_prompt_configs(),
+                },
                 position={"x": 240, "y": 80},
             ),
             WorkflowNode(
@@ -92,7 +97,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
             WorkflowNode(
                 node_id="run0_agent",
                 node_type="agent",
-                title="Run0 Agent",
+                title="Asset Refine Agent",
                 inputs=(_input("elements", "Element Plans", ("element_plans",)),),
                 outputs=(
                     _output(
@@ -369,12 +374,30 @@ def _builtin_workflow_template(template_id: str) -> WorkflowTemplate:
     raise ValueError(f"unknown built-in workflow template: {template_id}")
 
 
+def _sam3_prompt_configs() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": prompt.id,
+            "text": prompt.text,
+            "confidence_threshold": prompt.confidence_threshold,
+        }
+        for prompt in DEFAULT_SAM3_PROMPTS
+    ]
+
+
 def _node_from_dict(payload: object, field_name: str) -> WorkflowNode:
     data = _mapping(payload, field_name)
+    node_type = _string(data.get("node_type"), f"{field_name}.node_type")
+    config = dict(_mapping(data.get("config", {}), f"{field_name}.config"))
+    title = _normalized_node_title(
+        node_type,
+        _string(data.get("title"), f"{field_name}.title"),
+        config,
+    )
     return WorkflowNode(
         node_id=_string(data.get("node_id"), f"{field_name}.node_id"),
-        node_type=_string(data.get("node_type"), f"{field_name}.node_type"),
-        title=_string(data.get("title"), f"{field_name}.title"),
+        node_type=node_type,
+        title=title,
         inputs=tuple(
             _port_from_dict(item, f"{field_name}.inputs[{index}]")
             for index, item in enumerate(_sequence(data.get("inputs", ()), f"{field_name}.inputs"))
@@ -383,10 +406,24 @@ def _node_from_dict(payload: object, field_name: str) -> WorkflowNode:
             _port_from_dict(item, f"{field_name}.outputs[{index}]")
             for index, item in enumerate(_sequence(data.get("outputs", ()), f"{field_name}.outputs"))
         ),
-        config=dict(_mapping(data.get("config", {}), f"{field_name}.config")),
+        config=config,
         position=_number_mapping(data.get("position", {}), f"{field_name}.position"),
         description=_string(data.get("description", ""), f"{field_name}.description"),
     )
+
+
+def _normalized_node_title(
+    node_type: str,
+    title: str,
+    config: Mapping[str, Any],
+) -> str:
+    if (
+        node_type == "agent"
+        and config.get("preset_id") == "run0_element_refine"
+        and title in {"Run0 Agent", "Run0 元素校正"}
+    ):
+        return "Asset Refine Agent"
+    return title
 
 
 def _port_from_dict(payload: object, field_name: str) -> WorkflowPort:
