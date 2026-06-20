@@ -14,7 +14,8 @@ import type {
   V2AssetPackage,
   V2Compatibility,
   V2ElementPlan,
-  V2RunPackage
+  V2RunPackage,
+  WorkflowNodeViewer
 } from "./types";
 
 const LOCAL_API_ORIGIN = "http://127.0.0.1:8890";
@@ -215,6 +216,10 @@ export function getAssetPackage(caseId: string, elementId: string): Promise<{ co
   return requestJson<{ compatibility: V2Compatibility; asset_package: V2AssetPackage }>(
     `/api/cases/${caseId}/elements/${encodeURIComponent(elementId)}/asset-package`
   );
+}
+
+export function getWorkflowNodeViewer(caseId: string, nodeId: string): Promise<WorkflowNodeViewer> {
+  return requestJson<WorkflowNodeViewer>(`/api/cases/${caseId}/workflow/nodes/${encodeURIComponent(nodeId)}/viewer`);
 }
 
 export function processV2Asset(

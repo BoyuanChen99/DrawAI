@@ -1001,6 +1001,155 @@ def test_api_exposes_v2_package_and_asset_package(tmp_path: Path) -> None:
     assert case_response.json()["case"]["can_fork_from_source"] is True
 
 
+def test_api_exposes_workflow_node_viewer_for_parser_candidates(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    settings = _settings(tmp_path, base_config)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
+    app = create_app(settings, store=store, runner=runner)
+    client = TestClient(app)
+    batch = store.create_batch(
+        name="viewer batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    _write_minimal_v2_package(Path(case.run_root), case.case_id)
+    _write_workflow_node_run(
+        Path(case.run_root),
+        "sam_parser",
+        output_type="element_candidates",
+        format_id="drawai.element_candidates.v1",
+        output_payload={
+            "candidates": [
+                {
+                    "schema": "drawai.element_candidate.v1",
+                    "candidate_id": "sam3:B001",
+                    "source_parser": "sam3_structure_parser",
+                    "element_type": "icon",
+                    "bbox": [2, 3, 8, 9],
+                    "geometry": {"kind": "bbox", "bbox": [2, 3, 10, 12]},
+                    "confidence": 0.875,
+                    "text": "",
+                }
+            ]
+        },
+        output_name="candidates.json",
+    )
+
+    response = client.get(f"/api/cases/{case.case_id}/workflow/nodes/sam_parser/viewer")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is True
+    assert payload["kind"] == "element_candidates"
+    assert payload["source_image"]["url"].endswith("/inputs/figure.png")
+    assert payload["elements"][0]["element_id"] == "sam3:B001"
+    assert payload["elements"][0]["bbox"] == [2.0, 3.0, 8.0, 9.0]
+    assert payload["elements"][0]["processing_intent"]["processing_type"] == "sam3_structure_parser"
+    assert payload["files"][0]["relative_path"] == "nodes/sam_parser/runs/001/output/candidates.json"
+
+
+def test_api_exposes_workflow_node_viewer_for_planned_elements(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    settings = _settings(tmp_path, base_config)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
+    app = create_app(settings, store=store, runner=runner)
+    client = TestClient(app)
+    batch = store.create_batch(
+        name="viewer batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    _write_minimal_v2_package(Path(case.run_root), case.case_id)
+    package_payload = json.loads((Path(case.run_root) / "drawai_package.json").read_text(encoding="utf-8"))
+    _write_workflow_node_run(
+        Path(case.run_root),
+        "asset_planner",
+        output_type="element_plans",
+        format_id="drawai.element_plans.v1",
+        output_payload=package_payload,
+        output_name="elements.json",
+    )
+
+    response = client.get(f"/api/cases/{case.case_id}/workflow/nodes/asset_planner/viewer")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is True
+    assert payload["kind"] == "element_plans"
+    assert payload["elements"][0]["element_id"] == "E001"
+    assert payload["elements"][0]["processing_intent"]["processing_type"] == "crop"
+
+
+def test_api_workflow_node_viewer_reports_unavailable_node_output(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    settings = _settings(tmp_path, base_config)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
+    app = create_app(settings, store=store, runner=runner)
+    client = TestClient(app)
+    batch = store.create_batch(
+        name="viewer batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    _write_minimal_v2_package(Path(case.run_root), case.case_id)
+
+    response = client.get(f"/api/cases/{case.case_id}/workflow/nodes/svg_to_ppt/viewer")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is False
+    assert payload["elements"] == []
+    assert "还没有运行记录" in payload["message"]
+
+
 def test_api_asset_process_marks_downstream_outputs_stale(tmp_path: Path) -> None:
     store = WorkbenchStore(tmp_path / "workspace")
     base_config = _base_config(tmp_path)
@@ -2809,6 +2958,49 @@ def _write_minimal_v2_package(root: Path, case_id: str) -> None:
             "asset_packages": [asset_package.to_dict()],
         },
     )
+
+
+def _write_workflow_node_run(
+    root: Path,
+    node_id: str,
+    *,
+    output_type: str,
+    format_id: str,
+    output_payload: object,
+    output_name: str,
+) -> None:
+    run_dir = root / "nodes" / node_id / "runs" / "001"
+    output_relative_path = Path("nodes") / node_id / "runs" / "001" / "output" / output_name
+    _write_json(root / output_relative_path, output_payload)
+    _write_json(
+        run_dir / "node_run.json",
+        {
+            "schema": "drawai.workflow_node_run.v1",
+            "node_id": node_id,
+            "node_type": "parser" if output_type == "element_candidates" else "processor",
+            "attempt_id": "001",
+            "status": "ok",
+            "workdir": f"nodes/{node_id}/runs/001",
+            "inputs": [],
+            "outputs": [
+                {
+                    "port_id": "output",
+                    "path": output_relative_path.as_posix(),
+                    "format_id": format_id,
+                    "type": output_type,
+                    "exit_code": 0,
+                    "source_node_id": node_id,
+                    "source_port_id": "output",
+                }
+            ],
+            "started_at": "2026-06-18T00:00:00Z",
+            "ended_at": "2026-06-18T00:00:01Z",
+            "duration_ms": 1000,
+            "exit_code": 0,
+            "error": None,
+        },
+    )
+    _write_json(run_dir / "input_manifest.json", {"schema": "drawai.workflow_input_manifest.v1", "inputs": []})
 
 
 def _failing_stage_executor(case, stage: str) -> None:

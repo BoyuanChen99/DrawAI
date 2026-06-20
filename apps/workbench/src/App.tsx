@@ -17,6 +17,7 @@ import {
   getHealth,
   getRunPackage,
   getSvgSource,
+  getWorkflowNodeViewer,
   isDrawAiApiStatus,
   listBatches,
   processAssetElements,
@@ -53,7 +54,8 @@ import type {
   V2AssetResult,
   V2AssetStatus,
   V2ElementPlan,
-  V2RunPackage
+  V2RunPackage,
+  WorkflowNodeViewer
 } from "./types";
 import type { WorkflowTemplate } from "./workflowTypes";
 
@@ -1509,6 +1511,9 @@ function DagRunPanel({
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
   const [loadError, setLoadError] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState("");
+  const [viewer, setViewer] = useState<WorkflowNodeViewer | null>(null);
+  const [viewerError, setViewerError] = useState("");
+  const [viewerLoadingNodeId, setViewerLoadingNodeId] = useState("");
 
   useEffect(() => {
     let canceled = false;
@@ -1536,7 +1541,30 @@ function DagRunPanel({
   const viewByNodeId = useMemo(() => new Map(views.map((view) => [view.node.node_id, view])), [views]);
   useEffect(() => {
     setSelectedNodeId("");
+    setViewer(null);
+    setViewerError("");
+    setViewerLoadingNodeId("");
   }, [caseDetail.case.case_id, workflowTemplateId]);
+
+  useEffect(() => {
+    setViewer(null);
+    setViewerError("");
+    setViewerLoadingNodeId("");
+  }, [selectedView?.node.node_id]);
+
+  async function openNodeViewer(nodeId: string) {
+    setViewerLoadingNodeId(nodeId);
+    setViewerError("");
+    try {
+      const nextViewer = await getWorkflowNodeViewer(caseDetail.case.case_id, nodeId);
+      setViewer(nextViewer);
+    } catch (err) {
+      setViewerError(err instanceof Error ? err.message : String(err));
+      setViewer(null);
+    } finally {
+      setViewerLoadingNodeId((current) => (current === nodeId ? "" : current));
+    }
+  }
 
   return (
     <section className="dag-run-card">
@@ -1609,6 +1637,13 @@ function DagRunPanel({
               </dl>
               {selectedView.error && <p className="detail-error">{shortenError(selectedView.error)}</p>}
               <div className="dag-node-actions">
+                <button
+                  type="button"
+                  onClick={() => openNodeViewer(selectedView.node.node_id)}
+                  disabled={viewerLoadingNodeId === selectedView.node.node_id}
+                >
+                  {viewerLoadingNodeId === selectedView.node.node_id ? "加载中" : "查看产物"}
+                </button>
                 {selectedView.node.node_type === "human_review" && String(selectedView.node.config.review_surface || "assets") === "assets" && (
                   <button type="button" className="primary" onClick={onOpenAssetsReview}>
                     Open assets review
@@ -1620,6 +1655,8 @@ function DagRunPanel({
                   </a>
                 )}
               </div>
+              {viewerError && <p className="detail-error">{shortenError(viewerError)}</p>}
+              {viewer && <WorkflowNodeArtifactViewer viewer={viewer} />}
             </>
           ) : (
             <EmptyState label="还没有 Workflow 节点" />
@@ -1628,6 +1665,112 @@ function DagRunPanel({
       </div>
     </section>
   );
+}
+
+function WorkflowNodeArtifactViewer({ viewer }: { viewer: WorkflowNodeViewer }) {
+  const [naturalSize, setNaturalSize] = useState({ width: 1, height: 1 });
+  const [zoom, setZoom] = useState(0.42);
+  const [selectedElementId, setSelectedElementId] = useState(viewer.elements[0]?.element_id || "");
+  const [hoveredElementId, setHoveredElementId] = useState("");
+  const selectedElement = viewer.elements.find((element) => element.element_id === selectedElementId) || null;
+  const canvasWidth = naturalSize.width > 1 ? Math.max(260, Math.round(naturalSize.width * zoom)) : undefined;
+  const visibleElements = viewer.elements
+    .map((element, originalIndex) => ({ element, originalIndex, area: v2BBoxArea(element.bbox) }))
+    .sort((left, right) => right.area - left.area || left.originalIndex - right.originalIndex);
+  const hoveredElement = visibleElements.find(({ element }) => element.element_id === hoveredElementId)?.element || null;
+  const fileLinks = viewer.files.filter((file) => file.exists && file.url);
+
+  useEffect(() => {
+    setSelectedElementId(viewer.elements[0]?.element_id || "");
+    setHoveredElementId("");
+    setNaturalSize({ width: 1, height: 1 });
+  }, [viewer.node_id, viewer.attempt_id, viewer.source_path, viewer.elements]);
+
+  return (
+    <section className="node-artifact-viewer">
+      <header className="node-artifact-head">
+        <div>
+          <span>节点产物</span>
+          <strong>{nodeViewerKindLabel(viewer.kind)}</strong>
+          <em>{viewer.attempt_id ? `run ${viewer.attempt_id}` : viewer.workdir || "not run"}</em>
+        </div>
+        <div className="node-artifact-zoom" aria-label="节点产物缩放">
+          <button type="button" onClick={() => setZoom((value) => clamp(Number((value - 0.08).toFixed(2)), 0.18, 1.5))}>−</button>
+          <span>{Math.round(zoom * 100)}%</span>
+          <button type="button" onClick={() => setZoom((value) => clamp(Number((value + 0.08).toFixed(2)), 0.18, 1.5))}>+</button>
+        </div>
+      </header>
+      {viewer.available && viewer.source_image.url ? (
+        <div className="node-artifact-canvas">
+          <div className="image-overlay-wrap node-artifact-image-wrap" style={canvasWidth ? { width: `${canvasWidth}px` } : undefined}>
+            <img
+              src={viewer.source_image.url}
+              alt=""
+              draggable={false}
+              onLoad={(event) => setNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
+            />
+            {visibleElements.map(({ element }, layerIndex) => (
+              <V2ElementBox
+                key={element.element_id}
+                element={element}
+                naturalSize={naturalSize}
+                selected={element.element_id === selectedElementId}
+                status={viewer.kind}
+                sourceOnly={false}
+                zIndex={layerIndex + 1}
+                onSelect={() => setSelectedElementId(element.element_id)}
+                onHover={() => setHoveredElementId(element.element_id)}
+                onLeave={() => setHoveredElementId((id) => (id === element.element_id ? "" : id))}
+              />
+            ))}
+            {hoveredElement && (
+              <V2ElementTooltip
+                element={hoveredElement}
+                naturalSize={naturalSize}
+                status={viewer.kind}
+                sourceOnly={false}
+              />
+            )}
+          </div>
+        </div>
+      ) : (
+        <EmptyState label={viewer.message || "这个节点没有可视化产物"} />
+      )}
+      {selectedElement && (
+        <div className="node-artifact-selection">
+          <strong>{selectedElement.element_id}</strong>
+          <span>{humanize(selectedElement.element_type)} · {humanize(selectedElement.processing_intent.processing_type)}</span>
+          <em>{bboxText(selectedElement.bbox)}</em>
+        </div>
+      )}
+      <div className="node-artifact-meta">
+        <div>
+          <span>来源文件</span>
+          <code>{viewer.source_path || viewer.source_image.relative_path || "-"}</code>
+        </div>
+        <div>
+          <span>工作目录</span>
+          <code>{viewer.workdir || "-"}</code>
+        </div>
+      </div>
+      {fileLinks.length > 0 && (
+        <div className="node-artifact-files">
+          {fileLinks.slice(0, 6).map((file) => (
+            <a key={file.relative_path} href={file.url} target="_blank" rel="noreferrer">
+              {file.label}
+            </a>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function nodeViewerKindLabel(kind: string): string {
+  if (kind === "element_candidates") return "候选框";
+  if (kind === "element_plans") return "元素计划";
+  if (kind === "element_analysis") return "Agent 分析";
+  return "文件";
 }
 
 function LegacyReadOnlyBanner({

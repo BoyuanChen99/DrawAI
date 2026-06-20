@@ -2525,6 +2525,163 @@ select:focus {
   color: #fff;
 }
 
+.node-artifact-viewer {
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.node-artifact-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.node-artifact-head > div:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.node-artifact-head span,
+.node-artifact-meta span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.node-artifact-head strong {
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.node-artifact-head em {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-artifact-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line);
+  background: #fff;
+  padding: 3px;
+}
+
+.node-artifact-zoom button {
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.node-artifact-zoom span {
+  min-width: 38px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.node-artifact-canvas {
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  background:
+    linear-gradient(rgba(18, 32, 24, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(18, 32, 24, 0.045) 1px, transparent 1px),
+    #ffffff;
+  background-size: 24px 24px;
+  padding: 10px;
+}
+
+.node-artifact-image-wrap {
+  margin: 0 auto;
+  min-width: 220px;
+}
+
+.node-artifact-selection {
+  display: grid;
+  grid-template-columns: minmax(48px, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--line);
+  background: #fff;
+  padding: 7px 9px;
+}
+
+.node-artifact-selection strong,
+.node-artifact-selection span,
+.node-artifact-selection em {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 12px;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-artifact-selection span,
+.node-artifact-selection em {
+  color: var(--muted);
+}
+
+.node-artifact-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.node-artifact-meta div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid rgba(18, 32, 24, 0.08);
+  padding-top: 7px;
+}
+
+.node-artifact-meta code {
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.node-artifact-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.node-artifact-files a {
+  min-height: 26px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--teal);
+  padding: 4px 7px;
+  font-size: 11px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .pipeline-card {
     animation: none;

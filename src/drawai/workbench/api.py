@@ -467,6 +467,14 @@ def create_app(
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
+    @app.get("/api/cases/{case_id}/workflow/nodes/{node_id}/viewer")
+    def get_workflow_node_viewer(case_id: str, node_id: str) -> dict[str, Any]:
+        case = _get_case_or_404(resolved_store, case_id)
+        try:
+            return _workflow_node_viewer_payload(case, node_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/api/cases/{case_id}/elements/{element_id}/process")
     async def process_case_element(case_id: str, element_id: str, request: Request) -> dict[str, Any]:
         case = _get_case_or_404(resolved_store, case_id)
@@ -2157,6 +2165,404 @@ def _issue_summaries(raw_issues: Any) -> list[str]:
 
 def _truncate_progress_text(value: str, *, limit: int) -> str:
     return value if len(value) <= limit else value[: limit - 3].rstrip() + "..."
+
+
+def _workflow_node_viewer_payload(case: CaseRecord, node_id: str) -> dict[str, Any]:
+    safe_node_id = _safe_workflow_node_id(node_id)
+    root = Path(case.run_root).expanduser().resolve()
+    run_dir = _latest_workflow_node_run_dir(root, safe_node_id)
+    source_image = _workflow_viewer_source_image(case, root)
+    base_payload: dict[str, Any] = {
+        "case_id": case.case_id,
+        "node_id": safe_node_id,
+        "available": False,
+        "kind": "none",
+        "title": safe_node_id,
+        "message": "这个节点还没有可视化产物。",
+        "source_image": source_image,
+        "workdir": "",
+        "attempt_id": "",
+        "node_run": None,
+        "input_manifest": None,
+        "files": [],
+        "elements": [],
+    }
+    if run_dir is None:
+        base_payload["message"] = "这个节点还没有运行记录。"
+        return base_payload
+
+    node_run = _read_json_object_if_exists(run_dir / "node_run.json")
+    input_manifest = _read_json_object_if_exists(run_dir / "input_manifest.json")
+    workdir = _case_relative_path(root, run_dir)
+    output_files = _workflow_node_output_files(case, root, run_dir, node_run)
+    base_payload.update(
+        {
+            "title": str((node_run or {}).get("node_id") or safe_node_id),
+            "workdir": workdir,
+            "attempt_id": run_dir.name,
+            "node_run": node_run,
+            "input_manifest": input_manifest,
+            "files": output_files,
+        }
+    )
+
+    overlay_source = _workflow_node_overlay_source(root, run_dir, node_run)
+    if overlay_source is None:
+        base_payload["message"] = "这个节点的输出文件暂时没有可绘制的 bbox。"
+        return base_payload
+
+    kind, relative_path, payload = overlay_source
+    elements = _workflow_viewer_elements_from_payload(payload, kind)
+    if not elements:
+        base_payload["message"] = "这个节点产物已生成，但没有可绘制的 bbox。"
+        base_payload["kind"] = kind
+        base_payload["source_path"] = relative_path
+        return base_payload
+
+    base_payload.update(
+        {
+            "available": True,
+            "kind": kind,
+            "message": "",
+            "source_path": relative_path,
+            "elements": elements,
+        }
+    )
+    return base_payload
+
+
+def _safe_workflow_node_id(value: str) -> str:
+    node_id = str(value or "").strip()
+    if not node_id or not re.fullmatch(r"[A-Za-z0-9_.-]+", node_id):
+        raise ValueError(f"workflow node_id must be a safe path segment: {value}")
+    if node_id in {".", ".."}:
+        raise ValueError(f"workflow node_id must be a safe path segment: {value}")
+    return node_id
+
+
+def _latest_workflow_node_run_dir(root: Path, node_id: str) -> Path | None:
+    runs_dir = _resolve_case_path(root, Path("nodes") / node_id / "runs")
+    if not runs_dir.is_dir():
+        return None
+    run_dirs = [path for path in runs_dir.iterdir() if path.is_dir()]
+    if not run_dirs:
+        return None
+    return sorted(run_dirs, key=lambda path: (path.name, path.stat().st_mtime))[-1]
+
+
+def _workflow_viewer_source_image(case: CaseRecord, root: Path) -> dict[str, str]:
+    figure = _case_figure_path(case).expanduser().resolve(strict=False)
+    try:
+        relative_path = _case_relative_path(root, figure)
+    except ValueError:
+        return {"relative_path": "", "url": f"/api/cases/{case.case_id}/source-image"}
+    return {"relative_path": relative_path, "url": _case_file_url(case.case_id, relative_path)}
+
+
+def _workflow_node_output_files(
+    case: CaseRecord,
+    root: Path,
+    run_dir: Path,
+    node_run: Mapping[str, Any] | None,
+) -> list[dict[str, Any]]:
+    relative_paths: list[str] = []
+    if node_run:
+        for item in _json_list(node_run.get("outputs")):
+            path = item.get("path")
+            if isinstance(path, str) and path:
+                relative_paths.append(path)
+        for key in ("prompt_path", "stdout_path", "stderr_path"):
+            path = node_run.get(key)
+            if isinstance(path, str) and path:
+                relative_paths.append(path)
+    output_dir = run_dir / "output"
+    if output_dir.is_dir():
+        for path in sorted(item for item in output_dir.rglob("*") if item.is_file()):
+            relative_paths.append(_case_relative_path(root, path))
+
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for relative_path in relative_paths:
+        if relative_path in seen:
+            continue
+        seen.add(relative_path)
+        records.append(_case_file_record(case.case_id, root, Path(relative_path).name, relative_path))
+    return records
+
+
+def _workflow_node_overlay_source(
+    root: Path,
+    run_dir: Path,
+    node_run: Mapping[str, Any] | None,
+) -> tuple[str, str, Mapping[str, Any] | list[Any]] | None:
+    candidates: list[tuple[int, str, str]] = []
+    if node_run:
+        for item in _json_list(node_run.get("outputs")):
+            path = item.get("path")
+            if not isinstance(path, str) or not path:
+                continue
+            output_type = str(item.get("type") or "")
+            format_id = str(item.get("format_id") or "")
+            kind = _workflow_overlay_kind(output_type, format_id, path)
+            if kind:
+                candidates.append((_workflow_overlay_priority(kind), kind, path))
+    for filename in ("elements.json", "candidates.json", "element_analysis.json"):
+        path = _case_relative_path(root, run_dir / "output" / filename)
+        kind = _workflow_overlay_kind("", "", path)
+        if kind:
+            candidates.append((_workflow_overlay_priority(kind) + 10, kind, path))
+
+    seen: set[str] = set()
+    for _, kind, relative_path in sorted(candidates, key=lambda item: item[0]):
+        if relative_path in seen:
+            continue
+        seen.add(relative_path)
+        path = _resolve_case_path(root, relative_path)
+        if not path.is_file():
+            continue
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        inferred_kind = _workflow_overlay_kind_from_payload(payload, fallback=kind)
+        if _workflow_viewer_elements_from_payload(payload, inferred_kind):
+            return inferred_kind, relative_path, payload
+    return None
+
+
+def _workflow_overlay_kind(output_type: str, format_id: str, path: str) -> str:
+    probe = f"{output_type} {format_id} {path}".lower()
+    if "element_candidates" in probe or path.endswith("candidates.json"):
+        return "element_candidates"
+    if "element_plans" in probe or path.endswith("elements.json"):
+        return "element_plans"
+    if "element_analysis" in probe or path.endswith("element_analysis.json"):
+        return "element_analysis"
+    return ""
+
+
+def _workflow_overlay_kind_from_payload(payload: object, *, fallback: str) -> str:
+    if isinstance(payload, Mapping):
+        schema = str(payload.get("schema") or "")
+        if "element_candidate" in schema or "candidates" in payload:
+            return "element_candidates"
+        if "element_plan" in schema or "run_package" in schema:
+            return "element_plans"
+        if "element_analysis" in schema:
+            return "element_analysis"
+    return fallback
+
+
+def _workflow_overlay_priority(kind: str) -> int:
+    return {
+        "element_plans": 10,
+        "element_candidates": 20,
+        "element_analysis": 30,
+    }.get(kind, 100)
+
+
+def _workflow_viewer_elements_from_payload(
+    payload: Mapping[str, Any] | list[Any],
+    kind: str,
+) -> list[dict[str, Any]]:
+    if kind == "element_candidates":
+        items = payload.get("candidates", []) if isinstance(payload, Mapping) else payload
+        return [
+            element
+            for index, item in enumerate(_json_list(items))
+            if (element := _workflow_viewer_element_from_candidate(item, index)) is not None
+        ]
+    if kind == "element_plans":
+        items = payload.get("elements", []) if isinstance(payload, Mapping) else payload
+        return [
+            element
+            for index, item in enumerate(_json_list(items))
+            if (element := _workflow_viewer_element_from_plan(item, index)) is not None
+        ]
+    if kind == "element_analysis":
+        items = payload.get("elements", []) if isinstance(payload, Mapping) else payload
+        return [
+            element
+            for index, item in enumerate(_json_list(items))
+            if (element := _workflow_viewer_element_from_analysis(item, index)) is not None
+        ]
+    return []
+
+
+def _workflow_viewer_element_from_candidate(item: Mapping[str, Any], index: int) -> dict[str, Any] | None:
+    bbox = _coerce_bbox_xywh(item.get("bbox"), item.get("geometry"))
+    if bbox is None:
+        return None
+    candidate_id = str(item.get("candidate_id") or f"C{index + 1:03d}")
+    element_type = str(item.get("element_type") or item.get("type") or "candidate")
+    source_parser = str(item.get("source_parser") or "parser")
+    text = str(item.get("text") or "").strip()
+    return _workflow_viewer_element(
+        element_id=candidate_id,
+        bbox=bbox,
+        element_type=element_type,
+        source_candidate_ids=(candidate_id,),
+        confidence=_confidence_label(item.get("confidence")),
+        processing_type=source_parser,
+        object_type=element_type,
+        review_status="parser_candidate",
+        created_by_stage=source_parser,
+        change_reason=text or source_parser,
+        z_order=index,
+        geometry=item.get("geometry"),
+    )
+
+
+def _workflow_viewer_element_from_plan(item: Mapping[str, Any], index: int) -> dict[str, Any] | None:
+    bbox = _coerce_bbox_xywh(item.get("bbox"), item.get("geometry"))
+    if bbox is None:
+        return None
+    intent = item.get("processing_intent")
+    intent_mapping = intent if isinstance(intent, Mapping) else {}
+    element_type = str(item.get("element_type") or item.get("type") or intent_mapping.get("object_type") or "element")
+    processing_type = str(intent_mapping.get("processing_type") or "planned")
+    object_type = str(intent_mapping.get("object_type") or element_type)
+    source_ids = _string_sequence(item.get("source_candidate_ids"))
+    element_id = str(item.get("element_id") or item.get("box_id") or f"E{index + 1:03d}")
+    return _workflow_viewer_element(
+        element_id=element_id,
+        bbox=bbox,
+        element_type=element_type,
+        source_candidate_ids=source_ids,
+        confidence=_confidence_label(item.get("confidence")),
+        processing_type=processing_type,
+        object_type=object_type,
+        review_status=str(item.get("review_status") or "node_output"),
+        created_by_stage=str(item.get("created_by_stage") or "workflow"),
+        change_reason=str(item.get("change_reason") or item.get("reason") or "Element plan output."),
+        z_order=_int_or_default(item.get("z_order"), index),
+        geometry=item.get("geometry"),
+        parameters=intent_mapping.get("parameters") if isinstance(intent_mapping.get("parameters"), Mapping) else {},
+    )
+
+
+def _workflow_viewer_element_from_analysis(item: Mapping[str, Any], index: int) -> dict[str, Any] | None:
+    bbox = _coerce_bbox_xywh(item.get("bbox"), item.get("geometry"))
+    if bbox is None:
+        return None
+    element_id = str(item.get("box_id") or item.get("element_id") or f"A{index + 1:03d}")
+    element_type = str(item.get("type") or item.get("element_type") or item.get("visual_role") or "analysis")
+    processing_type = str(item.get("source_strategy") or item.get("category") or item.get("processing_type") or "analysis")
+    source_ids = _string_sequence(item.get("source_candidate_ids")) or (element_id,)
+    return _workflow_viewer_element(
+        element_id=element_id,
+        bbox=bbox,
+        element_type=element_type,
+        source_candidate_ids=source_ids,
+        confidence=_confidence_label(item.get("confidence")),
+        processing_type=processing_type,
+        object_type=element_type,
+        review_status="agent_analysis",
+        created_by_stage="agent",
+        change_reason=str(item.get("reason") or item.get("change_reason") or "Agent analysis output."),
+        z_order=index,
+        geometry=item.get("geometry"),
+    )
+
+
+def _workflow_viewer_element(
+    *,
+    element_id: str,
+    bbox: tuple[float, float, float, float],
+    element_type: str,
+    source_candidate_ids: tuple[str, ...],
+    confidence: str,
+    processing_type: str,
+    object_type: str,
+    review_status: str,
+    created_by_stage: str,
+    change_reason: str,
+    z_order: int,
+    geometry: object,
+    parameters: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    geometry_payload = geometry if isinstance(geometry, Mapping) else {"kind": "bbox", "bbox": list(bbox)}
+    return {
+        "schema": "drawai.viewer_element.v1",
+        "element_id": element_id,
+        "source_candidate_ids": list(source_candidate_ids),
+        "element_type": element_type,
+        "bbox": list(bbox),
+        "geometry": dict(geometry_payload),
+        "z_order": z_order,
+        "confidence": confidence,
+        "processing_intent": {
+            "object_type": object_type,
+            "processing_type": processing_type,
+            "parameters": dict(parameters or {}),
+        },
+        "review_status": review_status,
+        "created_by_stage": created_by_stage,
+        "change_reason": change_reason,
+    }
+
+
+def _coerce_bbox_xywh(value: object, geometry: object = None) -> tuple[float, float, float, float] | None:
+    numbers = _number_tuple4(value)
+    if numbers is not None and numbers[2] >= 0 and numbers[3] >= 0:
+        return numbers
+    if isinstance(geometry, Mapping) and geometry.get("kind") == "bbox":
+        bbox = _number_tuple4(geometry.get("bbox"))
+        if bbox is None:
+            return None
+        x1, y1, x2, y2 = bbox
+        return (x1, y1, max(0.0, x2 - x1), max(0.0, y2 - y1))
+    return None
+
+
+def _number_tuple4(value: object) -> tuple[float, float, float, float] | None:
+    if not isinstance(value, list | tuple) or len(value) != 4:
+        return None
+    try:
+        return (float(value[0]), float(value[1]), float(value[2]), float(value[3]))
+    except (TypeError, ValueError):
+        return None
+
+
+def _confidence_label(value: object) -> str:
+    if isinstance(value, str) and value:
+        return value
+    if isinstance(value, int | float):
+        return f"{float(value):.3f}"
+    return "unknown"
+
+
+def _int_or_default(value: object, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _string_sequence(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list | tuple):
+        return ()
+    return tuple(str(item) for item in value if isinstance(item, str) and item)
+
+
+def _json_list(value: object) -> list[Mapping[str, Any]]:
+    if not isinstance(value, list | tuple):
+        return []
+    return [item for item in value if isinstance(item, Mapping)]
+
+
+def _read_json_object_if_exists(path: Path) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+def _case_relative_path(root: Path, path: Path) -> str:
+    resolved = path.expanduser().resolve(strict=False)
+    try:
+        return resolved.relative_to(root.expanduser().resolve()).as_posix()
+    except ValueError as exc:
+        raise ValueError(f"case file path is outside case root: {path}") from exc
 
 
 def _case_file_record(case_id: str, root: Path, label: str, relative_path: str) -> dict[str, Any]:

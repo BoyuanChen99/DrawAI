@@ -189,6 +189,26 @@ export interface CaseProgressFile {
   url: string;
 }
 
+export interface WorkflowNodeViewer {
+  case_id: string;
+  node_id: string;
+  available: boolean;
+  kind: "element_candidates" | "element_plans" | "element_analysis" | "none" | string;
+  title: string;
+  message: string;
+  source_image: {
+    relative_path: string;
+    url: string;
+  };
+  workdir: string;
+  attempt_id: string;
+  source_path?: string;
+  node_run: Record<string, unknown> | null;
+  input_manifest: Record<string, unknown> | null;
+  files: CaseProgressFile[];
+  elements: V2ElementPlan[];
+}
+
 export interface SvgAttemptProgress {
   phase: string;
   attempt: string;
