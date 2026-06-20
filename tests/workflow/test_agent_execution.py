@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+import sys
+import time
 
 import pytest
 
@@ -11,6 +13,8 @@ from drawai.workflow.agent_execution import (
     execute_agent_prompt,
     _execute_codex_cli_agent,
     _execute_kimi_cli_agent,
+    _execute_subprocess_agent,
+    _run_codex_sdk_thread_until_done_or_outputs,
     AgentExecutionResult,
 )
 from drawai.workflow.agents import AgentPrompt
@@ -89,6 +93,141 @@ def test_agent_execution_rejects_output_paths_outside_workdir(tmp_path: Path) ->
                 node_type="agent",
             )
         )
+
+
+def test_codex_sdk_agent_completes_when_declared_outputs_are_valid(tmp_path: Path) -> None:
+    run_root = tmp_path / "run"
+    workdir = run_root / "nodes" / "svg_agent" / "runs" / "001"
+    workdir.mkdir(parents=True)
+    prompt = AgentPrompt(
+        preset_id="svg_generation",
+        provider_id="codex_sdk",
+        text="Write output/semantic.svg.",
+        inputs=(),
+        outputs=(
+            {
+                "port_id": "semantic_svg",
+                "path": "output/semantic.svg",
+                "format_id": "drawai.semantic_svg.v1",
+                "type": "semantic_svg",
+                "description": "SVG output.",
+            },
+        ),
+        options={
+            "output_completion_poll_seconds": 0.02,
+            "output_completion_stable_seconds": 0.05,
+            "output_completion_close_wait_seconds": 0.02,
+        },
+    )
+    request = AgentExecutionRequest(
+        prompt=prompt,
+        workdir=workdir,
+        run_root=run_root,
+        node_id="svg_agent",
+        node_type="agent",
+    )
+
+    class HangingThread:
+        def __init__(self) -> None:
+            self.closed = False
+            self._client = SimpleNamespace(close=self.close)
+
+        def close(self) -> None:
+            self.closed = True
+
+        def run(self, _run_input: object, **_kwargs: object) -> SimpleNamespace:
+            output_path = workdir / "output" / "semantic.svg"
+            output_path.parent.mkdir(parents=True)
+            output_path.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>\n',
+                encoding="utf-8",
+            )
+            while not self.closed:
+                time.sleep(0.01)
+            return SimpleNamespace(final_response="")
+
+    thread = HangingThread()
+    started_at = time.monotonic()
+
+    result = _run_codex_sdk_thread_until_done_or_outputs(
+        thread,
+        "prompt",
+        request=request,
+        trace_path=workdir / "codex_sdk_trace.jsonl",
+        timeout_seconds=5,
+    )
+
+    assert result.completed_by_outputs is True
+    assert thread.closed is True
+    assert time.monotonic() - started_at < 1
+    assert (workdir / "codex_sdk_trace.jsonl").read_text(encoding="utf-8").count(
+        "agent_outputs_satisfied_before_sdk_turn_finished"
+    ) == 1
+
+
+def test_subprocess_agent_completes_when_declared_outputs_are_valid(tmp_path: Path) -> None:
+    run_root = tmp_path / "run"
+    workdir = run_root / "nodes" / "svg_agent" / "runs" / "001"
+    workdir.mkdir(parents=True)
+    prompt_path = workdir / "prompt.md"
+    prompt_path.write_text("Write output/semantic.svg.", encoding="utf-8")
+    prompt = AgentPrompt(
+        preset_id="svg_generation",
+        provider_id="kimi_cli",
+        text="Write output/semantic.svg.",
+        inputs=(),
+        outputs=(
+            {
+                "port_id": "semantic_svg",
+                "path": "output/semantic.svg",
+                "format_id": "drawai.semantic_svg.v1",
+                "type": "semantic_svg",
+                "description": "SVG output.",
+            },
+        ),
+        options={
+            "output_completion_poll_seconds": 0.02,
+            "output_completion_stable_seconds": 0.05,
+            "output_completion_close_wait_seconds": 0.02,
+        },
+    )
+    request = AgentExecutionRequest(
+        prompt=prompt,
+        workdir=workdir,
+        run_root=run_root,
+        node_id="svg_agent",
+        node_type="agent",
+    )
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "from pathlib import Path; import sys, time; "
+            "Path('output').mkdir(exist_ok=True); "
+            "Path('output/semantic.svg').write_text("
+            "'<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"></svg>\\n', "
+            "encoding='utf-8'); "
+            "sys.stdin.read(); "
+            "time.sleep(30)"
+        ),
+    ]
+    started_at = time.monotonic()
+
+    result = _execute_subprocess_agent(
+        request,
+        prompt_path=prompt_path,
+        provider_id="kimi_cli",
+        command=command,
+        stdout_name="events.jsonl",
+        stderr_name="stderr.txt",
+    )
+
+    assert result.exit_code == 0
+    assert time.monotonic() - started_at < 1
+    assert (workdir / "output" / "semantic.svg").is_file()
+    assert "agent_outputs_satisfied_before_process_finished" in (
+        workdir / "kimi_cli_trace.jsonl"
+    ).read_text(encoding="utf-8")
 
 
 def test_codex_cli_agent_uses_isolated_codex_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

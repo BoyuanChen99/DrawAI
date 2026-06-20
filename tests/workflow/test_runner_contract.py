@@ -59,7 +59,19 @@ def _tiny_template() -> WorkflowTemplate:
                         description="deliverable",
                     ),
                 ),
-                config={"provider_id": "codex_sdk", "resource": "codex_sdk"},
+                config={
+                    "provider_id": "codex_sdk",
+                    "resource": "codex_sdk",
+                    "outputs": [
+                        {
+                            "port_id": "semantic_svg",
+                            "path": "output/semantic.svg",
+                            "format_id": "drawai.semantic_svg.v1",
+                            "type": "semantic_svg",
+                            "description": "Semantic SVG output.",
+                        },
+                    ],
+                },
             ),
             WorkflowNode(
                 node_id="output",

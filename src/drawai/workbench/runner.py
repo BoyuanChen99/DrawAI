@@ -19,6 +19,7 @@ from drawai.artifacts import DrawAiArtifactPaths, prepare_artifact_paths, write_
 from drawai.config import load_drawai_config
 from drawai.pipeline import run_drawai_pipeline_from_stage
 from drawai.rmbg_client import RemoteRmbgClient
+from drawai.svg_to_ppt_check import check_svg_to_ppt_compatibility
 from drawai.v2.packages import write_element_plan
 from drawai.v2.refine import codex_analysis_to_v2_element_plans
 from drawai.v2.schema import RUN_PACKAGE_SCHEMA, AssetPackage, ElementPlan, utc_now
@@ -515,9 +516,24 @@ class WorkbenchRunner:
             raise ValueError(f"unsupported export node: {exporter_id or context.node.node_id}")
         paths = prepare_artifact_paths(case.run_root)
         svg_source = _first_input_path(case.run_root, inputs)
-        _copy_workflow_file(svg_source, paths.semantic_svg)
+        semantic_svg = _copy_workflow_file(svg_source, paths.semantic_svg)
         if not stage_state.get("export"):
-            self._run_stage(case.case_id, "export")
+            self.store.update_case_status(
+                case.case_id,
+                status="svg_running",
+                phase="reconstruction",
+                stage="export",
+            )
+            asset_manifest = _read_optional_workflow_json(paths.asset_manifest_json)
+            report = check_svg_to_ppt_compatibility(
+                semantic_svg,
+                output_dir=paths.root,
+                export_pptx=True,
+                asset_manifest=asset_manifest,
+            )
+            write_json(paths.svg_to_ppt_export_report_json, report)
+            if report.get("status") != "ok":
+                raise RuntimeError(_svg_to_ppt_report_error(report))
             stage_state["export"] = True
         pptx_path = paths.root / "svg_to_ppt" / "semantic.svg_to_ppt.pptx"
         output_path = _copy_workflow_file(pptx_path, context.output_dir / "semantic.svg_to_ppt.pptx")
@@ -1066,6 +1082,28 @@ def _copy_workflow_json(source: str | Path, target: str | Path) -> Path:
     target_path = Path(target).expanduser().resolve(strict=False)
     write_json(target_path, payload)
     return target_path
+
+
+def _read_optional_workflow_json(path: str | Path) -> Mapping[str, Any] | list[Any] | None:
+    source_path = Path(path).expanduser().resolve(strict=False)
+    if not source_path.is_file():
+        return None
+    payload = json.loads(source_path.read_text(encoding="utf-8"))
+    if isinstance(payload, Mapping | list):
+        return payload
+    raise ValueError(f"workflow JSON artifact must be an object or array: {source_path}")
+
+
+def _svg_to_ppt_report_error(report: Mapping[str, Any]) -> str:
+    failure_class = str(report.get("failure_class") or "unknown")
+    issues = report.get("issues")
+    if isinstance(issues, list) and issues:
+        first_issue = issues[0]
+        if isinstance(first_issue, Mapping):
+            code = str(first_issue.get("code") or "issue")
+            message = str(first_issue.get("message") or "")
+            return f"SVG-to-PPTX export failed ({failure_class}): {code}{': ' + message if message else ''}"
+    return f"SVG-to-PPTX export failed ({failure_class})"
 
 
 def _copy_workflow_file(source: str | Path, target: str | Path) -> Path:
