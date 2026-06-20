@@ -1,4 +1,4 @@
-import { DragEvent, MouseEvent, PointerEvent, ReactNode, WheelEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { DragEvent, MouseEvent, PointerEvent, WheelEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   approveAssets,
@@ -59,12 +59,13 @@ import type {
 } from "./types";
 import type { WorkflowTemplate } from "./workflowTypes";
 
-type AppView = "board" | "editor" | "svg";
+type AppView = "board" | "editor" | "svg" | "nodeArtifact";
 type BoardMode = "generate" | "process" | "workflow";
 type CanvasMode = "select" | "add" | "polygon";
 type AssetEditorView = "extraction" | "processing";
 type PipelineNodeState = "waiting" | "running" | "done" | "failed" | "review" | "stale";
 type AssetPlanChangeOptions = { track?: boolean };
+type V2ElementFilter = { query: string; elementType: string; processingType: string; status: string };
 type V2ProcessorType = "crop" | "crop_nobg" | "image_generate" | "image_edit" | "chart_rebuild_reserved";
 type SvgEditableElement = { path: string; tag: string; label: string; detail: string; text: string; textEditable: boolean };
 type SvgDragState =
@@ -148,6 +149,7 @@ const V2_PROCESSABLE_PROCESSORS: V2ProcessorType[] = ["crop", "crop_nobg", "imag
 const SUPPORTED_UPLOAD_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".zip"];
 const WORKBENCH_PROCESSING_APPLIED_REASON = "工作台处理结果为";
 const WORKBENCH_PROCESSING_MODE_REASON = "工作台处理模式设为";
+const EMPTY_V2_ELEMENT_FILTER: V2ElementFilter = { query: "", elementType: "", processingType: "", status: "" };
 
 const PIPELINE_GROUPS = [
   {
@@ -210,6 +212,7 @@ export default function App() {
   const [v2PackageError, setV2PackageError] = useState("");
   const [v2AssetLoadingElementId, setV2AssetLoadingElementId] = useState("");
   const [v2ActionPending, setV2ActionPending] = useState("");
+  const [nodeArtifactViewer, setNodeArtifactViewer] = useState<WorkflowNodeViewer | null>(null);
   const [activeView, setActiveView] = useState<AppView>("board");
   const [boardMode, setBoardMode] = useState<BoardMode>(() => initialBoardMode());
   const [submitOpen, setSubmitOpen] = useState(false);
@@ -374,6 +377,7 @@ export default function App() {
     const detail = await getCase(caseId);
     setActiveCase(detail);
     setCaseProgress(await getCaseProgress(caseId));
+    setNodeArtifactViewer(null);
     clearAssetEditingState();
     const hasV2Package = await loadV2PackageForCase(caseId);
     if (hasV2Package) {
@@ -681,6 +685,16 @@ export default function App() {
     setActiveView("editor");
   }
 
+  async function openWorkflowNodeArtifactCanvas(caseId: string, nodeId: string) {
+    const selected = activeCase?.case.case_id === caseId;
+    if (!selected) {
+      await selectCase(caseId);
+    }
+    const viewer = await getWorkflowNodeViewer(caseId, nodeId);
+    setNodeArtifactViewer(viewer);
+    setActiveView("nodeArtifact");
+  }
+
   async function renameTaskBatch(batchId: string, name: string) {
     const cleanName = name.trim();
     if (!cleanName) {
@@ -967,6 +981,7 @@ export default function App() {
           onProcessV2Asset={(processor, elementId) => processSelectedV2Asset(processor, elementId).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
           onSetActiveV2Result={(resultId) => activateV2AssetResult(resultId).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
           onForkV2FromSource={() => forkActiveCaseToV2().catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+          onOpenWorkflowNodeArtifact={(caseId, nodeId) => openWorkflowNodeArtifactCanvas(caseId, nodeId).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
         />
         )
       ) : activeView === "editor" && runCompatibility === "v2" ? (
@@ -986,6 +1001,12 @@ export default function App() {
           onProcessAsset={(processor, elementId) => processSelectedV2Asset(processor, elementId).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
           onSetActiveResult={(resultId) => activateV2AssetResult(resultId).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
           onRun={runFromEditor}
+        />
+      ) : activeView === "nodeArtifact" && nodeArtifactViewer ? (
+        <WorkflowNodeArtifactWorkspace
+          viewer={nodeArtifactViewer}
+          activeCase={activeCase}
+          onBackToBoard={() => setActiveView("board")}
         />
       ) : activeView === "editor" ? (
         <EditorWorkspace
@@ -1098,7 +1119,8 @@ function BoardWorkspace({
   onSelectV2Element,
   onProcessV2Asset,
   onSetActiveV2Result,
-  onForkV2FromSource
+  onForkV2FromSource,
+  onOpenWorkflowNodeArtifact
 }: {
   batches: BatchRecord[];
   activeBatch: BatchDetail | null;
@@ -1139,6 +1161,7 @@ function BoardWorkspace({
   onProcessV2Asset: (processor: V2ProcessorType, elementId?: string) => void;
   onSetActiveV2Result: (resultId: string) => void;
   onForkV2FromSource: () => void;
+  onOpenWorkflowNodeArtifact: (caseId: string, nodeId: string) => void;
 }) {
   return (
     <main className="board-workspace">
@@ -1189,6 +1212,7 @@ function BoardWorkspace({
           onSetActiveV2Result={onSetActiveV2Result}
           onForkV2FromSource={onForkV2FromSource}
           onOpenCaseAssets={onOpenCaseAssets}
+          onOpenWorkflowNodeArtifact={onOpenWorkflowNodeArtifact}
         />
       </div>
     </main>
@@ -1437,7 +1461,8 @@ function TaskDetailPanel({
   onProcessV2Asset,
   onSetActiveV2Result,
   onForkV2FromSource,
-  onOpenCaseAssets
+  onOpenCaseAssets,
+  onOpenWorkflowNodeArtifact
 }: {
   caseDetail: CaseDetail | null;
   progress: CaseProgress | null;
@@ -1456,6 +1481,7 @@ function TaskDetailPanel({
   onSetActiveV2Result: (resultId: string) => void;
   onForkV2FromSource: () => void;
   onOpenCaseAssets: (caseId: string) => void;
+  onOpenWorkflowNodeArtifact: (caseId: string, nodeId: string) => void;
 }) {
   if (!caseDetail) {
     return (
@@ -1471,6 +1497,7 @@ function TaskDetailPanel({
         progress={progress}
         workflowTemplateId={workflowTemplateId}
         onOpenAssetsReview={() => onOpenCaseAssets(caseDetail.case.case_id)}
+        onOpenNodeArtifact={(nodeId) => onOpenWorkflowNodeArtifact(caseDetail.case.case_id, nodeId)}
       />
       {runCompatibility === "legacy_readonly" && (
         <LegacyReadOnlyBanner
@@ -1501,17 +1528,18 @@ function DagRunPanel({
   caseDetail,
   progress,
   workflowTemplateId,
-  onOpenAssetsReview
+  onOpenAssetsReview,
+  onOpenNodeArtifact
 }: {
   caseDetail: CaseDetail;
   progress: CaseProgress | null;
   workflowTemplateId: string;
   onOpenAssetsReview: () => void;
+  onOpenNodeArtifact: (nodeId: string) => void | Promise<void>;
 }) {
   const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
   const [loadError, setLoadError] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState("");
-  const [viewer, setViewer] = useState<WorkflowNodeViewer | null>(null);
   const [viewerError, setViewerError] = useState("");
   const [viewerLoadingNodeId, setViewerLoadingNodeId] = useState("");
 
@@ -1541,13 +1569,11 @@ function DagRunPanel({
   const viewByNodeId = useMemo(() => new Map(views.map((view) => [view.node.node_id, view])), [views]);
   useEffect(() => {
     setSelectedNodeId("");
-    setViewer(null);
     setViewerError("");
     setViewerLoadingNodeId("");
   }, [caseDetail.case.case_id, workflowTemplateId]);
 
   useEffect(() => {
-    setViewer(null);
     setViewerError("");
     setViewerLoadingNodeId("");
   }, [selectedView?.node.node_id]);
@@ -1556,11 +1582,9 @@ function DagRunPanel({
     setViewerLoadingNodeId(nodeId);
     setViewerError("");
     try {
-      const nextViewer = await getWorkflowNodeViewer(caseDetail.case.case_id, nodeId);
-      setViewer(nextViewer);
+      await onOpenNodeArtifact(nodeId);
     } catch (err) {
       setViewerError(err instanceof Error ? err.message : String(err));
-      setViewer(null);
     } finally {
       setViewerLoadingNodeId((current) => (current === nodeId ? "" : current));
     }
@@ -1656,7 +1680,6 @@ function DagRunPanel({
                 )}
               </div>
               {viewerError && <p className="detail-error">{shortenError(viewerError)}</p>}
-              {viewer && <WorkflowNodeArtifactViewer viewer={viewer} />}
             </>
           ) : (
             <EmptyState label="还没有 Workflow 节点" />
@@ -1667,183 +1690,141 @@ function DagRunPanel({
   );
 }
 
-function WorkflowNodeArtifactViewer({ viewer }: { viewer: WorkflowNodeViewer }) {
-  const [expanded, setExpanded] = useState(false);
-
-  return (
-    <>
-      <WorkflowNodeArtifactSurface
-        viewer={viewer}
-        initialZoom={0.42}
-        className="node-artifact-viewer"
-        canvasClassName="node-artifact-canvas"
-        headerAction={
-          <button type="button" className="node-artifact-open-canvas" disabled={!viewer.available} onClick={() => setExpanded(true)}>
-            独立画布
-          </button>
-        }
-      />
-      {expanded && createPortal(
-        <WorkflowNodeArtifactCanvasModal viewer={viewer} onClose={() => setExpanded(false)} />,
-        document.body
-      )}
-    </>
-  );
-}
-
-function WorkflowNodeArtifactCanvasModal({
-  viewer,
-  onClose
-}: {
-  viewer: WorkflowNodeViewer;
-  onClose: () => void;
-}) {
-  useEffect(() => {
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onClose]);
-
-  return (
-    <div className="node-artifact-modal" role="dialog" aria-modal="true" aria-label="节点产物独立画布">
-      <button type="button" className="node-artifact-modal-backdrop" aria-label="关闭节点产物画布" onClick={onClose} />
-      <WorkflowNodeArtifactSurface
-        viewer={viewer}
-        initialZoom={0.72}
-        className="node-artifact-viewer node-artifact-viewer-expanded"
-        canvasClassName="node-artifact-canvas node-artifact-canvas-expanded"
-        headerAction={
-          <button type="button" className="node-artifact-close-canvas" onClick={onClose}>
-            关闭
-          </button>
-        }
-      />
-    </div>
-  );
-}
-
-function WorkflowNodeArtifactSurface({
-  viewer,
-  initialZoom,
-  className,
-  canvasClassName,
-  headerAction
-}: {
-  viewer: WorkflowNodeViewer;
-  initialZoom: number;
-  className: string;
-  canvasClassName: string;
-  headerAction?: ReactNode;
-}) {
-  const [naturalSize, setNaturalSize] = useState({ width: 1, height: 1 });
-  const [zoom, setZoom] = useState(initialZoom);
-  const [selectedElementId, setSelectedElementId] = useState(viewer.elements[0]?.element_id || "");
-  const [hoveredElementId, setHoveredElementId] = useState("");
-  const selectedElement = viewer.elements.find((element) => element.element_id === selectedElementId) || null;
-  const canvasWidth = naturalSize.width > 1 ? Math.max(260, Math.round(naturalSize.width * zoom)) : undefined;
-  const visibleElements = viewer.elements
-    .map((element, originalIndex) => ({ element, originalIndex, area: v2BBoxArea(element.bbox) }))
-    .sort((left, right) => right.area - left.area || left.originalIndex - right.originalIndex);
-  const hoveredElement = visibleElements.find(({ element }) => element.element_id === hoveredElementId)?.element || null;
-  const fileLinks = viewer.files.filter((file) => file.exists && file.url);
-
-  useEffect(() => {
-    setSelectedElementId(viewer.elements[0]?.element_id || "");
-    setHoveredElementId("");
-    setNaturalSize({ width: 1, height: 1 });
-    setZoom(initialZoom);
-  }, [viewer.node_id, viewer.attempt_id, viewer.source_path, viewer.elements, initialZoom]);
-
-  return (
-    <section className={className}>
-      <header className="node-artifact-head">
-        <div>
-          <span>节点产物</span>
-          <strong>{nodeViewerKindLabel(viewer.kind)}</strong>
-          <em>{viewer.attempt_id ? `run ${viewer.attempt_id}` : viewer.workdir || "not run"}</em>
-        </div>
-        <div className="node-artifact-head-actions">
-          <div className="node-artifact-zoom" aria-label="节点产物缩放">
-            <button type="button" onClick={() => setZoom((value) => clamp(Number((value - 0.08).toFixed(2)), 0.18, 1.5))}>−</button>
-            <span>{Math.round(zoom * 100)}%</span>
-            <button type="button" onClick={() => setZoom((value) => clamp(Number((value + 0.08).toFixed(2)), 0.18, 1.5))}>+</button>
-          </div>
-          {headerAction}
-        </div>
-      </header>
-      {viewer.available && viewer.source_image.url ? (
-        <div className={canvasClassName}>
-          <div className="image-overlay-wrap node-artifact-image-wrap" style={canvasWidth ? { width: `${canvasWidth}px` } : undefined}>
-            <img
-              src={viewer.source_image.url}
-              alt=""
-              draggable={false}
-              onLoad={(event) => setNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
-            />
-            {visibleElements.map(({ element }, layerIndex) => (
-              <V2ElementBox
-                key={element.element_id}
-                element={element}
-                naturalSize={naturalSize}
-                selected={element.element_id === selectedElementId}
-                status={viewer.kind}
-                sourceOnly={false}
-                zIndex={layerIndex + 1}
-                onSelect={() => setSelectedElementId(element.element_id)}
-                onHover={() => setHoveredElementId(element.element_id)}
-                onLeave={() => setHoveredElementId((id) => (id === element.element_id ? "" : id))}
-              />
-            ))}
-            {hoveredElement && (
-              <V2ElementTooltip
-                element={hoveredElement}
-                naturalSize={naturalSize}
-                status={viewer.kind}
-                sourceOnly={false}
-              />
-            )}
-          </div>
-        </div>
-      ) : (
-        <EmptyState label={viewer.message || "这个节点没有可视化产物"} />
-      )}
-      {selectedElement && (
-        <div className="node-artifact-selection">
-          <strong>{selectedElement.element_id}</strong>
-          <span>{humanize(selectedElement.element_type)} · {humanize(selectedElement.processing_intent.processing_type)}</span>
-          <em>{bboxText(selectedElement.bbox)}</em>
-        </div>
-      )}
-      <div className="node-artifact-meta">
-        <div>
-          <span>来源文件</span>
-          <code>{viewer.source_path || viewer.source_image.relative_path || "-"}</code>
-        </div>
-        <div>
-          <span>工作目录</span>
-          <code>{viewer.workdir || "-"}</code>
-        </div>
-      </div>
-      {fileLinks.length > 0 && (
-        <div className="node-artifact-files">
-          {fileLinks.slice(0, 6).map((file) => (
-            <a key={file.relative_path} href={file.url} target="_blank" rel="noreferrer">
-              {file.label}
-            </a>
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
-
 function nodeViewerKindLabel(kind: string): string {
   if (kind === "element_candidates") return "候选框";
   if (kind === "element_plans") return "元素计划";
   if (kind === "element_analysis") return "Agent 分析";
   return "文件";
+}
+
+function WorkflowNodeArtifactWorkspace({
+  viewer,
+  activeCase,
+  onBackToBoard
+}: {
+  viewer: WorkflowNodeViewer;
+  activeCase: CaseDetail | null;
+  onBackToBoard: () => void;
+}) {
+  const editorRef = useRef<HTMLElement | null>(null);
+  const [zoom, setZoom] = useState(0.72);
+  const [selectedElementId, setSelectedElementId] = useState(viewer.elements[0]?.element_id || "");
+  const [elementFilter, setElementFilter] = useState<V2ElementFilter>(EMPTY_V2_ELEMENT_FILTER);
+  const filteredElements = useMemo(
+    () => filterV2Elements(viewer.elements, elementFilter, null, viewer.kind),
+    [viewer.elements, elementFilter, viewer.kind]
+  );
+  const fileLinks = viewer.files.filter((file) => file.exists && file.url);
+
+  const changeZoom = useCallback((delta: number) => {
+    setZoom((value) => clamp(Number((value + delta).toFixed(2)), 0.25, 2.5));
+  }, []);
+
+  useEffect(() => {
+    setZoom(0.72);
+    setSelectedElementId(viewer.elements[0]?.element_id || "");
+    setElementFilter(EMPTY_V2_ELEMENT_FILTER);
+  }, [viewer.case_id, viewer.node_id, viewer.attempt_id, viewer.source_path]);
+
+  useEffect(() => {
+    if (!filteredElements.length) return;
+    if (!filteredElements.some((element) => element.element_id === selectedElementId)) {
+      setSelectedElementId(filteredElements[0].element_id);
+    }
+  }, [filteredElements, selectedElementId]);
+
+  useEffect(() => {
+    const root = editorRef.current;
+    if (!root) return;
+
+    function handleWheel(event: globalThis.WheelEvent) {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      if (event.target instanceof Element && event.target.closest(".canvas-stage")) {
+        changeZoom(event.deltaY < 0 ? 0.03 : -0.03);
+      }
+    }
+
+    root.addEventListener("wheel", handleWheel, { passive: false, capture: true });
+    return () => root.removeEventListener("wheel", handleWheel, { capture: true });
+  }, [changeZoom]);
+
+  const topbarTarget = typeof document !== "undefined" ? document.getElementById("drawai-view-controls") : null;
+  const topbarPortal = topbarTarget
+    ? createPortal(
+        <div className="editor-banner-controls node-artifact-banner-controls">
+          <button className="home-button" title="返回任务" aria-label="返回任务" onClick={onBackToBoard}>
+            <HomeIcon />
+          </button>
+          <div className="editor-title">
+            <div>
+              <strong>{activeCase?.case.name || viewer.title || viewer.node_id}</strong>
+              <span>
+                {viewer.node_id} · {viewer.attempt_id ? `run ${viewer.attempt_id}` : "not run"} · {filteredElements.length}/{viewer.elements.length} 框
+              </span>
+            </div>
+          </div>
+          <div className="artifact-kind-pill">{nodeViewerKindLabel(viewer.kind)}</div>
+          <div className="editor-toolbar">
+            <V2ElementFilterControls
+              elements={viewer.elements}
+              filter={elementFilter}
+              onChange={setElementFilter}
+              packageByElementId={null}
+              statusFallback={viewer.kind}
+              showStatus={false}
+            />
+          </div>
+          <div className="editor-actions">
+            <div className="tool-group">
+              <button className="icon-button" title="缩小" onClick={() => changeZoom(-0.1)}>−</button>
+              <span className="zoom-readout">{Math.round(zoom * 100)}%</span>
+              <button className="icon-button" title="放大" onClick={() => changeZoom(0.1)}>+</button>
+            </div>
+          </div>
+        </div>,
+        topbarTarget
+      )
+    : null;
+
+  return (
+    <>
+      {topbarPortal}
+      <main ref={editorRef} className="editor-workspace v2-assets-workspace node-artifact-workspace">
+        <div className="asset-stage v2-assets-stage" data-asset-view="extraction">
+          {viewer.available && viewer.source_image.url ? (
+            <V2AssetCanvas
+              activeCase={activeCase}
+              runPackage={null}
+              elements={viewer.elements}
+              selectedElementId={selectedElementId}
+              selectedAssetPackage={null}
+              figureUrl={viewer.source_image.url}
+              zoom={zoom}
+              filter={elementFilter}
+              statusFallback={viewer.kind}
+              onSelectElement={setSelectedElementId}
+            />
+          ) : (
+            <section className="canvas-layout v2-assets-layout node-artifact-empty">
+              <div className="canvas-stage v2-assets-canvas">
+                <EmptyState label={viewer.message || "这个节点没有可视化产物"} />
+              </div>
+            </section>
+          )}
+        </div>
+        <div className="node-artifact-file-strip" aria-label="节点产物文件">
+          <span>来源：{viewer.source_path || viewer.source_image.relative_path || "-"}</span>
+          <span>工作目录：{viewer.workdir || "-"}</span>
+          {fileLinks.slice(0, 5).map((file) => (
+            <a key={file.relative_path} href={file.url} target="_blank" rel="noreferrer">
+              {file.label}
+            </a>
+          ))}
+        </div>
+      </main>
+    </>
+  );
 }
 
 function LegacyReadOnlyBanner({
@@ -1877,6 +1858,7 @@ function V2AssetPackagePanel({
   activeCase,
   runPackage,
   elements,
+  totalElementCount,
   selectedElementId,
   selectedAssetPackage,
   loadingElementId,
@@ -1889,6 +1871,7 @@ function V2AssetPackagePanel({
   activeCase: CaseDetail | null;
   runPackage: V2RunPackage | null;
   elements: V2ElementPlan[];
+  totalElementCount: number;
   selectedElementId: string;
   selectedAssetPackage: V2AssetPackage | null;
   loadingElementId: string;
@@ -1928,7 +1911,7 @@ function V2AssetPackagePanel({
       <header className="v2-package-head">
         <div>
           <span>Assets 处理</span>
-          <strong>{elements.length} 个元素 · {processedCount} 已处理 · {pendingCount} 待处理</strong>
+          <strong>{elements.length}/{totalElementCount} 个元素 · {processedCount} 已处理 · {pendingCount} 待处理</strong>
         </div>
       </header>
 
@@ -2004,7 +1987,7 @@ function V2AssetPackagePanel({
             </tbody>
           </table>
         ) : (
-          <EmptyState label="还没有 v2 元素" />
+          <EmptyState label={totalElementCount > 0 ? "筛选后没有 v2 元素" : "还没有 v2 元素"} />
         )}
       </div>
 
@@ -2157,12 +2140,34 @@ function V2AssetsWorkspace({
   const editorRef = useRef<HTMLElement | null>(null);
   const [zoom, setZoom] = useState(0.72);
   const [assetView, setAssetView] = useState<AssetEditorView>("extraction");
+  const [elementFilter, setElementFilter] = useState<V2ElementFilter>(EMPTY_V2_ELEMENT_FILTER);
   const runPending = runInProgress || actionPending === "compose";
   const canRun = Boolean(runPackage && !runPending && !actionPending && !hasBlockingAssetPackage(runPackage));
+  const packageByElementId = useMemo(() => {
+    const items = new Map<string, V2AssetPackage>();
+    (runPackage?.asset_packages || []).forEach((assetPackage) => {
+      items.set(assetPackage.element_id, assetPackage);
+    });
+    if (selectedAssetPackage) {
+      items.set(selectedAssetPackage.element_id, selectedAssetPackage);
+    }
+    return items;
+  }, [runPackage, selectedAssetPackage]);
+  const filteredElements = useMemo(
+    () => filterV2Elements(elements, elementFilter, packageByElementId, "pending"),
+    [elements, elementFilter, packageByElementId]
+  );
 
   const changeZoom = useCallback((delta: number) => {
     setZoom((value) => clamp(Number((value + delta).toFixed(2)), 0.25, 2.5));
   }, []);
+
+  useEffect(() => {
+    if (!filteredElements.length) return;
+    if (!filteredElements.some((element) => element.element_id === selectedElementId)) {
+      onSelectElement(filteredElements[0].element_id);
+    }
+  }, [filteredElements, selectedElementId, onSelectElement]);
 
   useEffect(() => {
     const root = editorRef.current;
@@ -2190,11 +2195,8 @@ function V2AssetsWorkspace({
           <div className="editor-title">
             <div>
               <strong>{activeCase?.case.name || "未选择图片"}</strong>
-              <span>{humanize(activeCase?.case.status || "idle")} · {humanize(activeCase?.case.stage || "select a case")}</span>
+              <span>{humanize(activeCase?.case.status || "idle")} · {humanize(activeCase?.case.stage || "select a case")} · {filteredElements.length}/{elements.length} 框</span>
             </div>
-          </div>
-          <div className="toolbar-note">
-            Assets · {elements.length}
           </div>
           <div className={`asset-type-switch is-${assetView}`} role="tablist" aria-label="v2 assets 查看模式">
             <span className="asset-type-switch__thumb" aria-hidden="true" />
@@ -2221,13 +2223,31 @@ function V2AssetsWorkspace({
           </div>
           <div className="editor-toolbar">
             {assetView === "extraction" ? (
-              <div className="tool-group">
-                <button className="icon-button" title="缩小" onClick={() => changeZoom(-0.1)}>−</button>
-                <span className="zoom-readout">{Math.round(zoom * 100)}%</span>
-                <button className="icon-button" title="放大" onClick={() => changeZoom(0.1)}>+</button>
-              </div>
+              <>
+                <V2ElementFilterControls
+                  elements={elements}
+                  filter={elementFilter}
+                  onChange={setElementFilter}
+                  packageByElementId={packageByElementId}
+                  statusFallback="pending"
+                />
+                <div className="tool-group">
+                  <button className="icon-button" title="缩小" onClick={() => changeZoom(-0.1)}>−</button>
+                  <span className="zoom-readout">{Math.round(zoom * 100)}%</span>
+                  <button className="icon-button" title="放大" onClick={() => changeZoom(0.1)}>+</button>
+                </div>
+              </>
             ) : (
-              <div className="toolbar-note">查看每个 asset 的处理结果并切换 active result</div>
+              <>
+                <V2ElementFilterControls
+                  elements={elements}
+                  filter={elementFilter}
+                  onChange={setElementFilter}
+                  packageByElementId={packageByElementId}
+                  statusFallback="pending"
+                />
+                <div className="toolbar-note">查看处理结果并切换 active result</div>
+              </>
             )}
           </div>
           <div className="editor-actions">
@@ -2260,6 +2280,8 @@ function V2AssetsWorkspace({
               selectedAssetPackage={selectedAssetPackage}
               figureUrl={figureUrl}
               zoom={zoom}
+              filter={elementFilter}
+              statusFallback="pending"
               onSelectElement={onSelectElement}
             />
           ) : (
@@ -2267,7 +2289,8 @@ function V2AssetsWorkspace({
               <V2AssetPackagePanel
                 activeCase={activeCase}
                 runPackage={runPackage}
-                elements={elements}
+                elements={filteredElements}
+                totalElementCount={elements.length}
                 selectedElementId={selectedElementId}
                 selectedAssetPackage={selectedAssetPackage}
                 loadingElementId={loadingElementId}
@@ -2285,6 +2308,77 @@ function V2AssetsWorkspace({
   );
 }
 
+function V2ElementFilterControls({
+  elements,
+  filter,
+  onChange,
+  packageByElementId,
+  statusFallback,
+  showStatus = true
+}: {
+  elements: V2ElementPlan[];
+  filter: V2ElementFilter;
+  onChange: (filter: V2ElementFilter) => void;
+  packageByElementId: Map<string, V2AssetPackage> | null;
+  statusFallback: string;
+  showStatus?: boolean;
+}) {
+  const elementTypeOptions = useMemo(
+    () => uniqueSorted(elements.map((element) => element.element_type).filter(Boolean)),
+    [elements]
+  );
+  const processingOptions = useMemo(
+    () => uniqueSorted(elements.map((element) => element.processing_intent.processing_type).filter(Boolean)),
+    [elements]
+  );
+  const statusOptions = useMemo(
+    () => showStatus
+      ? uniqueSorted(elements.map((element) => v2ElementFilterStatus(element, packageByElementId, statusFallback)).filter(Boolean))
+      : [],
+    [elements, packageByElementId, statusFallback, showStatus]
+  );
+  const active = Boolean(filter.query || filter.elementType || filter.processingType || filter.status);
+
+  function update(patch: Partial<V2ElementFilter>) {
+    onChange({ ...filter, ...patch });
+  }
+
+  return (
+    <div className="element-filter-bar" aria-label="筛选框">
+      <input
+        value={filter.query}
+        onChange={(event) => update({ query: event.target.value })}
+        placeholder="筛选框"
+      />
+      <select value={filter.elementType} onChange={(event) => update({ elementType: event.target.value })} aria-label="元素类型">
+        <option value="">全部类型</option>
+        {elementTypeOptions.map((value) => (
+          <option key={value} value={value}>{humanize(value)}</option>
+        ))}
+      </select>
+      <select value={filter.processingType} onChange={(event) => update({ processingType: event.target.value })} aria-label="处理类型">
+        <option value="">全部处理</option>
+        {processingOptions.map((value) => (
+          <option key={value} value={value}>{humanize(value)}</option>
+        ))}
+      </select>
+      {showStatus && (
+        <select value={filter.status} onChange={(event) => update({ status: event.target.value })} aria-label="资产状态">
+          <option value="">全部状态</option>
+          {statusOptions.map((value) => (
+            <option key={value} value={value}>{humanize(value)}</option>
+          ))}
+        </select>
+      )}
+      {active && (
+        <button type="button" className="element-filter-clear" onClick={() => onChange(EMPTY_V2_ELEMENT_FILTER)}>
+          清除
+        </button>
+      )}
+    </div>
+  );
+}
+
 function V2AssetCanvas({
   activeCase,
   runPackage,
@@ -2293,6 +2387,8 @@ function V2AssetCanvas({
   selectedAssetPackage,
   figureUrl,
   zoom,
+  filter = EMPTY_V2_ELEMENT_FILTER,
+  statusFallback = "pending",
   onSelectElement
 }: {
   activeCase: CaseDetail | null;
@@ -2302,6 +2398,8 @@ function V2AssetCanvas({
   selectedAssetPackage: V2AssetPackage | null;
   figureUrl: string;
   zoom: number;
+  filter?: V2ElementFilter;
+  statusFallback?: string;
   onSelectElement: (elementId: string) => void;
 }) {
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -2325,6 +2423,7 @@ function V2AssetCanvas({
     ...sourceElements.map((element, originalIndex) => ({ element, originalIndex, area: v2BBoxArea(element.bbox), sourceOnly: true })),
     ...elements.map((element, originalIndex) => ({ element, originalIndex: sourceElements.length + originalIndex, area: v2BBoxArea(element.bbox), sourceOnly: false }))
   ]
+    .filter(({ element, sourceOnly }) => v2ElementMatchesFilter(element, filter, packageByElementId, sourceOnly ? "source" : statusFallback))
     .sort((left, right) => right.area - left.area || left.originalIndex - right.originalIndex);
   const hoveredElement = visibleElements.find(({ element }) => element.element_id === hoveredElementId)?.element || null;
   const hoveredSourceOnly = visibleElements.find(({ element }) => element.element_id === hoveredElementId)?.sourceOnly || false;
@@ -5406,11 +5505,71 @@ function humanize(value: string): string {
     text: "文本",
     frame: "框架",
     pending: "待处理",
+    source: "来源",
     unsupported: "暂不支持",
     analysis_running: "分析中",
-    svg_running: "SVG生成中"
+    svg_running: "SVG生成中",
+    element_candidates: "候选框",
+    element_plans: "元素计划",
+    element_analysis: "Agent 分析"
   };
   return labels[value] || value.replace(/_/g, " ");
+}
+
+function uniqueSorted(values: string[]): string[] {
+  return Array.from(new Set(values.filter(Boolean))).sort((left, right) => left.localeCompare(right));
+}
+
+function filterV2Elements(
+  elements: V2ElementPlan[],
+  filter: V2ElementFilter,
+  packageByElementId: Map<string, V2AssetPackage> | null,
+  statusFallback: string
+): V2ElementPlan[] {
+  return elements.filter((element) => v2ElementMatchesFilter(element, filter, packageByElementId, statusFallback));
+}
+
+function v2ElementMatchesFilter(
+  element: V2ElementPlan,
+  filter: V2ElementFilter,
+  packageByElementId: Map<string, V2AssetPackage> | null,
+  statusFallback: string
+): boolean {
+  if (filter.elementType && element.element_type !== filter.elementType) return false;
+  if (filter.processingType && element.processing_intent.processing_type !== filter.processingType) return false;
+  const status = v2ElementFilterStatus(element, packageByElementId, statusFallback);
+  if (filter.status && status !== filter.status) return false;
+  const query = filter.query.trim().toLowerCase();
+  if (!query) return true;
+  return v2ElementFilterHaystack(element, status).includes(query);
+}
+
+function v2ElementFilterStatus(
+  element: V2ElementPlan,
+  packageByElementId: Map<string, V2AssetPackage> | null,
+  statusFallback: string
+): string {
+  return packageByElementId?.get(element.element_id)?.status || statusFallback;
+}
+
+function v2ElementFilterHaystack(element: V2ElementPlan, status: string): string {
+  return [
+    element.element_id,
+    element.element_type,
+    element.processing_intent.object_type,
+    element.processing_intent.processing_type,
+    element.confidence,
+    element.review_status,
+    element.created_by_stage,
+    element.change_reason,
+    status,
+    bboxText(element.bbox),
+    ...element.source_candidate_ids,
+    JSON.stringify(element.processing_intent.parameters || {})
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
 }
 
 function caseInitials(value: string): string {
