@@ -9,6 +9,7 @@ from drawai.artifacts import DrawAiArtifactPaths
 from drawai.config import DrawAiPipelineConfig
 from drawai.core import ArtifactRef, ArtifactStore, ProviderRef, RunContext, StageResult, StageSpec
 from drawai.svg_to_ppt_check import CompilerCallable
+from drawai.v2.stages import V2_STAGE_ORDER, V2StageOptions, build_v2_stage_specs
 
 FILE_BACKED_STAGE_ORDER = (
     "input_normalized",
@@ -153,6 +154,15 @@ def build_file_backed_stage_specs(
     options: FileBackedStageOptions | None = None,
 ) -> list[StageSpec]:
     selected = tuple(stage_ids)
+    if selected and all(stage_id in V2_STAGE_ORDER for stage_id in selected):
+        v2_options = V2StageOptions(
+            sam3_transport=(options.sam3_transport if options is not None else None),
+            ocr_provider=(options.ocr_provider if options is not None else None),
+            rmbg_client=(options.rmbg_client if options is not None else None),
+            svg_invoker=(options.svg_invoker if options is not None else None),
+            svg_to_ppt_compiler=(options.svg_to_ppt_compiler if options is not None else None),
+        )
+        return build_v2_stage_specs(selected, options=v2_options)
     _validate_stage_ids(selected)
     selected_set = set(selected)
     return [

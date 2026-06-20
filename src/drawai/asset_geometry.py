@@ -114,11 +114,14 @@ def geometry_crop(
     *,
     base_dir: str | Path | None = None,
 ) -> Image.Image:
-    crop = source.convert("RGBA").crop(bbox)
     if not isinstance(geometry, Mapping):
-        return crop
+        return source.crop(bbox)
 
     kind = str(geometry.get("kind") or "").strip().lower()
+    if kind in {"", "bbox"}:
+        return source.crop(bbox)
+
+    crop = source.convert("RGBA").crop(bbox)
     if kind == "polygon":
         points = _normalize_polygon_points(geometry.get("points"), image_size=source.size)
         if points is None:

@@ -38,6 +38,8 @@ https://github.com/user-attachments/assets/59a81ac2-cdbe-49b6-a4fa-8db897afc6bb
 
 </details>
 
+The current pipeline packages each run as `drawai_package.json`. That package records element parsing, fusion, optional Agent refinement, asset processing, SVG composition, and export results. Users usually open the rendered SVG, PNG, or PPTX, but follow-up edits can continue from the package instead of starting from a flattened image.
+
 <a id="roadmap"></a>
 ## 🗺️ Roadmap
 
@@ -162,11 +164,17 @@ The most useful files are usually:
 reports/run_summary.json
 outputs/case_001_*/
   reports/pipeline_summary.json
-  box_ir/box_ir.json
+  drawai_package.json
+  elements/E001/element.json
+  elements/E001/asset_package.json
+  reports/svg_validation_report.json
+  reports/svg_to_ppt_export_report.json
   svg/semantic.svg
   svg/rendered.png
-  svg_to_ppt/semantic.svg_to_ppt.pptx
+  exports/
 ```
+
+`drawai_package.json` is the run-level index, and `elements/<element_id>/asset_package.json` stores the package for each element. The Workbench keeps legacy results visible and downloadable, but legacy run roots are read-only for the new asset processing, compose, and export commands.
 
 Workbench tasks and uploaded files are stored by default under:
 
@@ -186,6 +194,7 @@ Feel free to open a [GitHub issue](https://github.com/Renaissance-Mind/DrawAI-de
 
 DrawAI is not meant to simply place the original bitmap into a PowerPoint file. It tries to produce artifacts that are editable, inspectable, and suitable for further work:
 
+- `package`: the complete run data package with elements, assets, processing results, and export state
 - `svg`: the primary editable vector result
 - `pptx`: export artifact ready for slide workflows
 - `psd`: TODO

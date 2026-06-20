@@ -38,12 +38,18 @@ from drawai.codex_cli import resolve_codex_executable  # noqa: E402
 from drawai.config import load_drawai_config  # noqa: E402
 from drawai.asset_geometry import geometry_crop, normalize_asset_geometry  # noqa: E402
 from drawai.agent_cli_svg import invoke_agent_cli_text  # noqa: E402
+from drawai.v2.refine import (  # noqa: E402
+    CodexElementRefiner,
+    RefineConfig,
+    REFINED_ELEMENT_PLANS_EXPORT_SCHEMA,
+    codex_analysis_to_v2_removal_records,
+)
 
 
 SCHEMA_REQUEST = "drawai.codex_element_analysis_request.v1"
 SCHEMA_OUTPUT = "drawai.codex_element_analysis.v1"
 CATEGORIES = ("svg_self_draw", "crop", "crop_nobg")
-REFINEMENT_ACTIONS = ("unchanged", "adjusted", "split", "added")
+REFINEMENT_ACTIONS = ("unchanged", "adjusted", "split", "added", "removed", "merged")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -129,11 +135,25 @@ def run_case(case_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
     runtime_config = _load_case_runtime_config(case_dir)
     started_at = time.monotonic()
     if args.skip_existing and output_path.exists():
+        output_dir.mkdir(parents=True, exist_ok=True)
+        request = build_request(case_dir, output_dir)
+        request_path = output_dir / "element_analysis_request.json"
+        write_json(request_path, request)
+        validation, v2_export = finalize_analysis_outputs(
+            case_dir=case_dir,
+            output_dir=output_dir,
+            output_path=output_path,
+            request=request,
+        )
         return {
             "status": "ok",
             "case_dir": str(case_dir),
             "output_path": str(output_path),
+            "v2_output_path": str(output_dir / "element_plans.v2.json"),
             "skipped": True,
+            "validation": validation,
+            "v2_validation": v2_export["validation"],
+            "category_counts": validation["category_counts"],
         }
 
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -204,22 +224,26 @@ def run_case(case_dir: Path, args: argparse.Namespace) -> dict[str, Any]:
             config_overrides=args.config_override,
             runtime_config=runtime_config,
         )
-    analysis = enrich_analysis_with_source_geometry(case_dir, read_json(output_path))
-    write_json(output_path, analysis)
-    validation = validate_analysis(analysis, request)
-    write_json(output_dir / "validation.json", validation)
+    validation, v2_export = finalize_analysis_outputs(
+        case_dir=case_dir,
+        output_dir=output_dir,
+        output_path=output_path,
+        request=request,
+    )
     elapsed_seconds = round(time.monotonic() - started_at, 3)
     summary = {
         "schema": "drawai.codex_element_analysis_status.v1",
         "status": "ok",
         "case_dir": str(case_dir),
         "output_path": str(output_path),
+        "v2_output_path": str(output_dir / "element_plans.v2.json"),
         "request_path": str(request_path),
         "candidate_table_path": str(candidate_table_path),
         "prompt_path": str(prompt_path),
         "trace_path": str(trace_path),
         "elapsed_seconds": elapsed_seconds,
         "validation": validation,
+        "v2_validation": v2_export["validation"],
         "codex_result": codex_result,
         "ended_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
@@ -242,6 +266,22 @@ def _load_case_runtime_config(case_dir: Path) -> dict[str, Any]:
     except Exception:
         return {}
     return cfg.model_runtime.to_runtime_dict()
+
+
+def finalize_analysis_outputs(
+    *,
+    case_dir: Path,
+    output_dir: Path,
+    output_path: Path,
+    request: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    analysis = backfill_omitted_candidates(read_json(output_path), request)
+    analysis = enrich_analysis_with_source_geometry(case_dir, analysis)
+    write_json(output_path, analysis)
+    validation = validate_analysis(analysis, request)
+    write_json(output_dir / "validation.json", validation)
+    v2_export = write_v2_element_plans_export(output_dir, analysis, request)
+    return validation, v2_export
 
 
 def build_request(case_dir: Path, output_dir: Path) -> dict[str, Any]:
@@ -434,10 +474,13 @@ def enrich_analysis_with_source_geometry(case_dir: Path, analysis: Mapping[str, 
     }
 
     elements: list[dict[str, Any]] = []
-    for raw_element in raw_elements:
+    for index, raw_element in enumerate(raw_elements):
         if not isinstance(raw_element, Mapping):
-            continue
+            raise ValueError(f"element analysis record {index} must be an object")
         element = dict(raw_element)
+        if is_removal_record(element):
+            elements.append(element)
+            continue
         source_ids = normalized_element_source_ids(element, source_boxes)
         mask_sources: list[tuple[str, Mapping[str, Any], dict[str, Any]]] = []
         polygon_sources: list[tuple[str, Mapping[str, Any], dict[str, Any]]] = []
@@ -494,6 +537,131 @@ def normalized_element_source_ids(
     if not source_ids and box_id in source_boxes:
         source_ids = [box_id]
     return source_ids
+
+
+def is_removal_record(element: Mapping[str, Any]) -> bool:
+    action = record_refinement_action(element)
+    if action == "removed":
+        return True
+    if action != "merged":
+        return False
+    if "removed_source_candidate_ids" in element:
+        return True
+    return not has_retained_element_payload(element)
+
+
+def record_refinement_action(record: Mapping[str, Any]) -> str:
+    return str(record.get("refinement_action") or record.get("action") or "").strip()
+
+
+def has_retained_element_payload(record: Mapping[str, Any]) -> bool:
+    return any(record.get(key) not in (None, "", []) for key in ("category", "bbox", "element_type", "type", "geometry"))
+
+
+def analysis_removal_records(analysis: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    records: list[Mapping[str, Any]] = []
+    elements = analysis.get("elements")
+    if isinstance(elements, list):
+        records.extend(element for element in elements if isinstance(element, Mapping) and is_removal_record(element))
+    records.extend(top_level_removal_records(analysis))
+    return records
+
+
+def top_level_removal_records(analysis: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    raw_records = analysis.get("removal_records", [])
+    if raw_records is None:
+        return []
+    if not isinstance(raw_records, list):
+        raise ValueError("element_analysis.json removal_records must be a list")
+    records: list[Mapping[str, Any]] = []
+    for index, raw_record in enumerate(raw_records):
+        if not isinstance(raw_record, Mapping):
+            raise ValueError(f"removal_records[{index}] must be an object")
+        records.append(raw_record)
+    return records
+
+
+def backfill_omitted_candidates(
+    analysis: Mapping[str, Any],
+    request: Mapping[str, Any],
+) -> dict[str, Any]:
+    enriched = dict(analysis)
+    elements = enriched.get("elements")
+    if not isinstance(elements, list):
+        return enriched
+    candidates = [
+        candidate
+        for candidate in request.get("candidates", [])
+        if isinstance(candidate, Mapping) and candidate.get("box_id")
+    ]
+    expected_ids = {str(candidate.get("box_id")) for candidate in candidates}
+    covered_ids: set[str] = set()
+    for element in elements:
+        if not isinstance(element, Mapping):
+            continue
+        source_ids = _analysis_record_source_ids(element, expected_ids)
+        covered_ids.update(source_ids)
+    for removal_record in analysis_removal_records(enriched):
+        covered_ids.update(_analysis_record_source_ids(removal_record, expected_ids))
+    missing_ids = expected_ids - covered_ids
+    if not missing_ids:
+        return enriched
+    enriched["elements"] = [
+        *elements,
+        *[
+            _backfilled_candidate_element(candidate)
+            for candidate in candidates
+            if str(candidate.get("box_id")) in missing_ids
+        ],
+    ]
+    return enriched
+
+
+def _analysis_record_source_ids(
+    element: Mapping[str, Any],
+    expected_ids: set[str],
+) -> list[str]:
+    raw_source_ids = element.get("source_candidate_ids")
+    if isinstance(raw_source_ids, list):
+        return [str(item) for item in raw_source_ids if str(item)]
+    removed_source_ids = element.get("removed_source_candidate_ids")
+    if isinstance(removed_source_ids, list):
+        return [str(item) for item in removed_source_ids if str(item)]
+    box_id = str(element.get("box_id") or "")
+    return [box_id] if box_id in expected_ids else []
+
+
+def _backfilled_candidate_element(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    box_id = str(candidate.get("box_id"))
+    category = str(candidate.get("current_pipeline_method") or "")
+    if category not in CATEGORIES:
+        category = "svg_self_draw"
+    bbox = normalize_bbox(candidate.get("bbox"), allow_line=True)
+    if bbox is None:
+        bbox = (0.0, 0.0, 1.0, 1.0)
+    element: dict[str, Any] = {
+        "box_id": box_id,
+        "source_candidate_ids": [box_id],
+        "refinement_action": "unchanged",
+        "category": category,
+        "confidence": "medium",
+        "visual_role": str(candidate.get("visual_role") or candidate.get("type") or "unknown"),
+        "reason": "Preserved automatically because the agent response omitted this source candidate.",
+        "bbox": list(bbox),
+        "type": str(candidate.get("type") or "unknown"),
+    }
+    geometry = candidate.get("geometry")
+    if isinstance(geometry, Mapping):
+        element["geometry"] = dict(geometry)
+    for source_key, target_key in (
+        ("geometry_kind", "geometry_kind"),
+        ("geometry_locked", "geometry_locked"),
+        ("geometry_preview", "geometry_preview_relative_path"),
+    ):
+        value = candidate.get(source_key)
+        if value not in (None, ""):
+            element[target_key] = value
+    return element
 
 
 def append_unique_sentence(text: str, sentence: str) -> str:
@@ -657,6 +825,7 @@ Each output element should be the smallest independent visual part, such as one 
 - Add a new element when an asset is visible in the original image but not covered by any current candidate.
 - Adjust the bbox when the current position is wrong or misses part of a component, for example a complex image whose frame does not include all visible content.
 - Preserve traceability. For an unchanged or adjusted element, set source_candidate_ids to the original candidate ID. For a split element, use a new stable ID such as B012_S01 and set source_candidate_ids to ["B012"]. For a newly added element, use a stable ID such as N001 and set source_candidate_ids to [].
+- When an original candidate is removed as duplicate/noise or merged into another retained element, emit a removal record with box_id, source_candidate_ids, refinement_action set to removed or merged, and a concise reason. Removal records do not need category or bbox because they are not retained output elements.
 - Bboxes must be visual extents in image pixels. For a straight line or divider, give at least 1 pixel of thickness so the bbox has positive width and height.
 - Pay close attention to whether coordinates are correct and whether each bbox tightly contains the corresponding asset.
 - Some candidates have geometry_kind="mask". For those candidates, use their mask_preview PNG and the mask preview sheet as visual evidence. Do not adjust or resize the mask region; preserve its bbox/geometry when keeping it. You may remove or merge a mask candidate only when it is clearly duplicate or noise, and the original candidate ID must still be represented through source_candidate_ids.
@@ -683,6 +852,7 @@ Task 3: classify every final refined output element into exactly one of these th
 Important:
 - Treat SAM/OCR/current asset plan as evidence, not truth. You may disagree with current_pipeline_method if the image supports it.
 - Do not skip candidates. Every original request.candidates item must be represented by at least one output element through source_candidate_ids, or by an unchanged output element with the same box_id.
+- The type field must be a concrete DrawAI element type: text, icon, picture, table, chart, diagram, arrow, frame, grid, symbol, content_box, or unknown. For newly added elements, do not use a meta type such as added_asset; classify the visible object itself.
 - New IDs are allowed only for split or added refined elements. Keep IDs short and stable.
 - This task only classifies and explains; do not modify the main SVG/PPT outputs.
 - If uncertain, choose the most faithful final-source strategy and mark confidence as low or medium.
@@ -703,7 +873,7 @@ The JSON file must have this shape:
     {{"iteration": 1, "json_path": "{output_dir_rel}/refine_iteration_1.json", "visualization_path": "{output_dir_rel}/assets_visualization_iteration_1.png", "changes": "short summary"}}
   ],
   "categories": {{"svg_self_draw": 0, "crop": 0, "crop_nobg": 0}},
-  "refinement_actions": {{"unchanged": 0, "adjusted": 0, "split": 0, "added": 0}},
+  "refinement_actions": {{"unchanged": 0, "adjusted": 0, "split": 0, "added": 0, "removed": 0, "merged": 0}},
   "elements": [
     {{
       "box_id": "B001",
@@ -1194,30 +1364,64 @@ def validate_analysis(analysis: Mapping[str, Any], request: Mapping[str, Any]) -
     seen_output_ids: list[str] = []
     covered_source_ids: set[str] = set()
     added_ids: list[str] = []
+    retained_elements: list[Mapping[str, Any]] = []
+    removal_count = 0
     action_counts: Counter[str] = Counter()
-    for element in elements:
-        if not isinstance(element, Mapping):
-            raise ValueError("Every element analysis record must be an object")
-        box_id = str(element.get("box_id") or "")
-        category = str(element.get("category") or "")
-        if not box_id:
-            raise ValueError("Every element analysis record must contain box_id")
-        if category not in CATEGORIES:
-            raise ValueError(f"Unexpected category for {box_id}: {category}")
-        bbox = normalize_bbox(element.get("bbox"), allow_line=True)
-        if bbox is None:
-            raise ValueError(f"Invalid bbox for {box_id}: {element.get('bbox')!r}")
-        action = str(element.get("refinement_action") or "unchanged")
-        if action not in REFINEMENT_ACTIONS:
-            raise ValueError(f"Unexpected refinement_action for {box_id}: {action}")
-        raw_source_ids = element.get("source_candidate_ids")
+
+    def validate_source_record(record: Mapping[str, Any], box_id: str) -> list[str]:
+        raw_source_ids = record.get("source_candidate_ids")
         if isinstance(raw_source_ids, list):
-            source_ids = [str(item) for item in raw_source_ids if str(item)]
+            source_ids = validate_source_id_list(
+                raw_source_ids,
+                f"{box_id} source_candidate_ids",
+                allow_empty=True,
+            )
+        elif isinstance(record.get("removed_source_candidate_ids"), list):
+            source_ids = validate_source_id_list(
+                record.get("removed_source_candidate_ids", []),
+                f"{box_id} removed_source_candidate_ids",
+                allow_empty=True,
+            )
         else:
             source_ids = [box_id] if box_id in expected else []
         unexpected_source_ids = sorted(source_id for source_id in source_ids if source_id not in expected)
         if unexpected_source_ids:
             raise ValueError(f"Unexpected source_candidate_ids for {box_id}: {unexpected_source_ids[:20]}")
+        return source_ids
+
+    def validate_removal_record(record: Mapping[str, Any], box_id: str, action: str) -> None:
+        nonlocal removal_count
+        reason = str(record.get("removal_reason") or record.get("reason") or "").strip()
+        if not reason:
+            raise ValueError(f"{box_id} removal record must contain a reason")
+        source_ids = validate_source_record(record, box_id)
+        if not source_ids:
+            raise ValueError(f"{box_id} removal record must contain source_candidate_ids")
+        covered_source_ids.update(source_ids)
+        action_counts[action] += 1
+        removal_count += 1
+
+    for element in elements:
+        if not isinstance(element, Mapping):
+            raise ValueError("Every element analysis record must be an object")
+        box_id = str(element.get("box_id") or "")
+        if not box_id:
+            raise ValueError("Every element analysis record must contain box_id")
+        action = record_refinement_action(element) or "unchanged"
+        if action not in REFINEMENT_ACTIONS:
+            raise ValueError(f"Unexpected refinement_action for {box_id}: {action}")
+        source_ids = validate_source_record(element, box_id)
+        if action == "added" and source_ids:
+            raise ValueError(f"{box_id} added element must not include source_candidate_ids")
+        if is_removal_record(element):
+            validate_removal_record(element, box_id, action)
+            continue
+        category = str(element.get("category") or "")
+        if category not in CATEGORIES:
+            raise ValueError(f"Unexpected category for {box_id}: {category}")
+        bbox = normalize_bbox(element.get("bbox"), allow_line=True)
+        if bbox is None:
+            raise ValueError(f"Invalid bbox for {box_id}: {element.get('bbox')!r}")
         if source_ids:
             covered_source_ids.update(source_ids)
         elif action != "added":
@@ -1226,19 +1430,95 @@ def validate_analysis(analysis: Mapping[str, Any], request: Mapping[str, Any]) -
             added_ids.append(box_id)
         seen_output_ids.append(box_id)
         action_counts[action] += 1
+        retained_elements.append(element)
+    for removal_record in top_level_removal_records(analysis):
+        box_id = str(removal_record.get("box_id") or "")
+        if not box_id:
+            raise ValueError("Every removal record must contain box_id")
+        action = record_refinement_action(removal_record)
+        if action not in {"removed", "merged"}:
+            raise ValueError(f"Unexpected refinement_action for {box_id}: {action}")
+        validate_removal_record(removal_record, box_id, action)
     duplicates = sorted(box_id for box_id, count in Counter(seen_output_ids).items() if count > 1)
     missing = sorted(expected - covered_source_ids)
     if duplicates or missing:
         raise ValueError(f"Invalid element coverage. missing={missing[:20]} duplicates={duplicates[:20]}")
-    category_counts = dict(Counter(str(item.get("category")) for item in elements))
+    category_counts = dict(Counter(str(item.get("category")) for item in retained_elements))
     return {
         "schema": "drawai.codex_element_analysis_validation.v1",
         "candidate_count": len(expected),
-        "element_count": len(elements),
+        "element_count": len(retained_elements),
         "added_element_count": len(added_ids),
+        "removal_count": removal_count,
         "category_counts": {category: int(category_counts.get(category, 0)) for category in CATEGORIES},
         "refinement_action_counts": {action: int(action_counts.get(action, 0)) for action in REFINEMENT_ACTIONS},
     }
+
+
+def validate_source_id_list(
+    raw_source_ids: Sequence[Any],
+    field_name: str,
+    *,
+    allow_empty: bool = False,
+) -> list[str]:
+    if not raw_source_ids and not allow_empty:
+        raise ValueError(f"{field_name} must contain non-empty strings")
+    source_ids: list[str] = []
+    for source_id in raw_source_ids:
+        if not isinstance(source_id, str) or not source_id:
+            raise ValueError(f"{field_name} must contain non-empty strings")
+        source_ids.append(source_id)
+    return source_ids
+
+
+def write_v2_element_plans_export(
+    output_dir: Path,
+    analysis: Mapping[str, Any],
+    request: Mapping[str, Any],
+) -> dict[str, Any]:
+    expected_candidate_ids = {
+        str(candidate.get("box_id"))
+        for candidate in request.get("candidates", [])
+        if isinstance(candidate, Mapping) and candidate.get("box_id")
+    }
+    locked_geometry_by_candidate = {
+        str(candidate.get("box_id")): candidate["geometry"]
+        for candidate in request.get("candidates", [])
+        if (
+            isinstance(candidate, Mapping)
+            and candidate.get("box_id")
+            and candidate.get("geometry_locked") is True
+            and isinstance(candidate.get("geometry"), Mapping)
+        )
+    }
+    refiner = CodexElementRefiner(RefineConfig())
+    plans = refiner.convert_analysis(
+        analysis,
+        expected_candidate_ids=expected_candidate_ids,
+        locked_geometry_by_candidate=locked_geometry_by_candidate,
+    )
+    removals = codex_analysis_to_v2_removal_records(analysis)
+    payload = {
+        "schema": REFINED_ELEMENT_PLANS_EXPORT_SCHEMA,
+        "source_schema": analysis.get("schema"),
+        "provider": refiner.config.provider,
+        "validation": {
+            "candidate_count": len(expected_candidate_ids),
+            "element_count": len(plans),
+            "removal_count": len(removals),
+        },
+        "elements": [plan.to_dict() for plan in plans],
+        "removals": [
+            {
+                "action": removal["action"],
+                "source_candidate_ids": list(removal["source_candidate_ids"]),
+                "reason": removal["reason"],
+            }
+            for removal in removals
+        ],
+    }
+    write_json(output_dir / "element_plans.v2.json", payload)
+    return payload
 
 
 def current_pipeline_method(

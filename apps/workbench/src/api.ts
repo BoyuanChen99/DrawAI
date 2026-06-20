@@ -10,10 +10,45 @@ import type {
   ImageEditRequest,
   ImageGenerationRequest,
   ImageGenerationResponse,
-  SvgSourceResponse
+  SvgSourceResponse,
+  V2AssetPackage,
+  V2Compatibility,
+  V2ElementPlan,
+  V2RunPackage,
+  WorkflowNodeViewer
 } from "./types";
 
 const LOCAL_API_ORIGIN = "http://127.0.0.1:8890";
+
+export type WorkbenchRerunStage =
+  | "analysis"
+  | "asset_analyze"
+  | "materialize"
+  | "svg"
+  | "prepare"
+  | "parse_elements"
+  | "fuse_elements"
+  | "refine_elements"
+  | "plan_assets"
+  | "process_assets"
+  | "compose"
+  | "compose_svg"
+  | "export"
+  | "package_run";
+
+export class DrawAiApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "DrawAiApiError";
+    this.status = status;
+  }
+}
+
+export function isDrawAiApiStatus(error: unknown, status: number): boolean {
+  return error instanceof DrawAiApiError && error.status === status;
+}
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   try {
@@ -57,7 +92,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     ...init
   });
   if (!response.ok) {
-    throw new Error(await responseErrorMessage(response));
+    throw new DrawAiApiError(response.status, await responseErrorMessage(response));
   }
   return (await response.json()) as T;
 }
@@ -65,7 +100,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 async function fetchBlob(path: string, init?: RequestInit): Promise<Blob> {
   const response = await fetch(path, init);
   if (!response.ok) {
-    throw new Error(await responseErrorMessage(response));
+    throw new DrawAiApiError(response.status, await responseErrorMessage(response));
   }
   return response.blob();
 }
@@ -87,7 +122,7 @@ function shouldRetryLocalApi(path: string): boolean {
   if (!path.startsWith("/api")) return false;
   if (typeof window === "undefined") return false;
   const { hostname, port } = window.location;
-  return (hostname === "127.0.0.1" || hostname === "localhost") && (port === "5173" || port === "5174");
+  return (hostname === "127.0.0.1" || hostname === "localhost") && port !== "";
 }
 
 function localApiOrigin(): string {
@@ -146,7 +181,7 @@ export function runBatch(batchId: string): Promise<BatchDetail> {
   });
 }
 
-export function runCaseStage(caseId: string, stage: "analysis" | "asset_analyze" | "materialize" | "svg" | "export"): Promise<{ case: CaseDetail["case"] }> {
+export function runCaseStage(caseId: string, stage: WorkbenchRerunStage): Promise<{ case: CaseDetail["case"] }> {
   return requestJson<{ case: CaseDetail["case"] }>(`/api/cases/${caseId}/run-stage`, {
     method: "POST",
     body: JSON.stringify({ stage })
@@ -167,6 +202,71 @@ export function getCaseProgress(caseId: string): Promise<CaseProgress> {
 
 export function getAssets(caseId: string): Promise<{ asset_plan: AssetPlan }> {
   return requestJson<{ asset_plan: AssetPlan }>(`/api/cases/${caseId}/assets`);
+}
+
+export function getRunPackage(caseId: string): Promise<{ compatibility: V2Compatibility; package: V2RunPackage }> {
+  return requestJson<{ compatibility: V2Compatibility; package: V2RunPackage }>(`/api/cases/${caseId}/package`);
+}
+
+export function getElements(caseId: string): Promise<{ compatibility: V2Compatibility; elements: V2ElementPlan[] }> {
+  return requestJson<{ compatibility: V2Compatibility; elements: V2ElementPlan[] }>(`/api/cases/${caseId}/elements`);
+}
+
+export function getAssetPackage(caseId: string, elementId: string): Promise<{ compatibility: V2Compatibility; asset_package: V2AssetPackage }> {
+  return requestJson<{ compatibility: V2Compatibility; asset_package: V2AssetPackage }>(
+    `/api/cases/${caseId}/elements/${encodeURIComponent(elementId)}/asset-package`
+  );
+}
+
+export function getWorkflowNodeViewer(caseId: string, nodeId: string): Promise<WorkflowNodeViewer> {
+  return requestJson<WorkflowNodeViewer>(`/api/cases/${caseId}/workflow/nodes/${encodeURIComponent(nodeId)}/viewer`);
+}
+
+export function processV2Asset(
+  caseId: string,
+  elementId: string,
+  processor: string,
+  payload: Record<string, unknown> = {}
+): Promise<{ asset_package: V2AssetPackage; case: CaseRecord }> {
+  return requestJson<{ asset_package: V2AssetPackage; case: CaseRecord }>(
+    `/api/cases/${caseId}/elements/${encodeURIComponent(elementId)}/process`,
+    {
+      method: "POST",
+      body: JSON.stringify({ ...payload, processor })
+    }
+  );
+}
+
+export function setActiveAssetResult(
+  caseId: string,
+  elementId: string,
+  resultId: string
+): Promise<{ asset_package: V2AssetPackage; case: CaseRecord }> {
+  return requestJson<{ asset_package: V2AssetPackage; case: CaseRecord }>(
+    `/api/cases/${caseId}/elements/${encodeURIComponent(elementId)}/active-result`,
+    {
+      method: "POST",
+      body: JSON.stringify({ result_id: resultId })
+    }
+  );
+}
+
+export function composeV2Case(caseId: string): Promise<{ case: CaseRecord }> {
+  return requestJson<{ case: CaseRecord }>(`/api/cases/${caseId}/compose`, {
+    method: "POST"
+  });
+}
+
+export function exportV2Case(caseId: string): Promise<{ case: CaseRecord }> {
+  return requestJson<{ case: CaseRecord }>(`/api/cases/${caseId}/export`, {
+    method: "POST"
+  });
+}
+
+export function forkV2FromSource(caseId: string): Promise<{ case: CaseRecord }> {
+  return requestJson<{ case: CaseRecord }>(`/api/cases/${caseId}/fork-v2-from-source`, {
+    method: "POST"
+  });
 }
 
 export function getSvgSource(caseId: string): Promise<SvgSourceResponse> {

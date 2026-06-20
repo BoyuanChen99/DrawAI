@@ -32,6 +32,10 @@ flowchart LR
 | 只启动 Workbench API | `uv run drawai server api` |
 | 前端连接已有 API | `uv run drawai workbench --api http://<api-host>:8890` |
 | 配置文件全流程 | `uv run drawai run all --config configs/drawai/config.yaml` |
+| 重新处理单个元素素材 | `uv run drawai asset process <run_dir> <element_id> --processor crop` |
+| 切换元素素材结果 | `uv run drawai asset activate <run_dir> <element_id> <result_id>` |
+| 基于数据包重新生成 SVG | `uv run drawai compose <run_dir>` |
+| 基于数据包重新导出 | `uv run drawai export <run_dir>` |
 
 ## 本地 setup
 
@@ -230,6 +234,8 @@ uv run drawai workbench --api http://<api-host>:8890
 
 Workbench 前端需要 Node.js 20.19+ 或 22.12+。首次启动时脚本会在 `apps/workbench` 里自动执行 `npm ci` 或 `npm install`。
 
+Workbench 会保留旧版本运行结果的展示和下载入口。旧结果没有 v2 `drawai_package.json`，因此只能查看或下载，不能作为 `asset process`、`compose` 或 `export` 的二次处理输入。
+
 ## 模型服务
 
 启动全部模型：
@@ -308,24 +314,28 @@ uv run drawai server api \
 uv run drawai run all --config configs/drawai/config.yaml
 ```
 
+当前公开路径以 v2 数据包为主线。运行目录里的 `drawai_package.json` 是运行级索引，`elements/<element_id>/asset_package.json` 是单个元素的素材包；后续修改元素素材、重新 compose SVG 或重新 export 都围绕这些包继续。
+
 阶段列表：
 
 | 阶段 | 作用 |
 | --- | --- |
 | `prepare` | 归一化输入图片 |
-| `detect_structure` | SAM3 结构检测 |
-| `detect_text` | OCR 文本检测 |
-| `assemble_boxir` | 合并结构和文本成 BoxIR |
-| `asset_plan` | 决定哪些元素转 SVG、裁图或去背景 |
-| `asset_analyze` | Codex 分析元素和素材 |
-| `asset_materialize` | 按已调整/确认的方案生成裁图和去背景素材 |
-| `svg` | 生成、渲染、验证 SVG |
-| `export` | 导出 PPTX 烟测结果 |
+| `parse_elements` | 运行 SAM3、OCR 或其他 parser，并统一成候选元素格式 |
+| `fuse_elements` | 按优先级、IoU/NMS 阈值等规则融合候选元素 |
+| `refine_elements` | 可选 Agent 后处理，校正位置、大小和类型 |
+| `plan_assets` | 为每个元素选择处理策略，如裁图、去背景、自绘或预留图表重绘 |
+| `process_assets` | 生成每个元素的 `asset_package.json` 和可选处理结果 |
+| `compose_svg` | 基于 run package 和 asset packages 生成、渲染、验证 SVG |
+| `export` | 基于当前 SVG 和数据包导出 PPTX 报告/结果 |
+| `package_run` | 汇总最终 `drawai_package.json` |
+
+兼容旧阶段名：`detect_structure`、`detect_text`、`assemble_boxir`、`asset_plan`、`asset_analyze`、`asset_materialize`、`svg` 仍可作为 CLI alias 使用，但文档和新集成都应使用上表中的 v2 阶段。
 
 只跑一个阶段：
 
 ```bash
-uv run drawai run detect_text --config configs/drawai/config.yaml
+uv run drawai run parse_elements --config configs/drawai/config.yaml
 ```
 
 从已有产物继续：
@@ -333,9 +343,41 @@ uv run drawai run detect_text --config configs/drawai/config.yaml
 ```bash
 uv run drawai \
   --config configs/drawai/config.yaml \
-  --from-stage assets_materialized \
-  --to-stage svg_generated
+  --from-stage process_assets \
+  --to-stage compose_svg
 ```
+
+包级二次处理：
+
+```bash
+uv run drawai asset process <run_dir> E001 --processor crop
+uv run drawai asset process <run_dir> E001 --processor svg_self_draw
+uv run drawai asset activate <run_dir> E001 <result_id>
+uv run drawai compose <run_dir>
+uv run drawai export <run_dir>
+```
+
+当前注册的 processor 类型包括 `crop`、`crop_nobg`、`svg_self_draw`、`image_generate`、`image_edit`。其中 `crop_nobg` 需要 RMBG provider，图像生成/编辑类型需要对应 provider；`chart_rebuild_reserved` 是给后续图表 Agent 的预留处理类型，当前会保留在数据包语义里，但不会执行 Python 图表重绘。
+
+常用 v2 配置：
+
+```yaml
+v2:
+  parser:
+    sam3_enabled: true
+    ocr_enabled: true
+  fusion:
+    duplicate_iou_threshold: 0.85
+  refine:
+    enabled: true
+    provider: codex_element_refiner
+  processor:
+    enabled: true
+  compose:
+    enabled: true
+```
+
+`v2.refine.enabled: false` 会跳过 Agent 校验，只使用 parser/fusion 结果生成元素包。`v2.compose.enabled: false` 会生成 run package 和 asset packages，但跳过 SVG 生成与后续 export 重组，适合先做解析和素材包验收。
 
 ## 常用环境变量
 

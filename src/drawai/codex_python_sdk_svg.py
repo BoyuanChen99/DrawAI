@@ -275,10 +275,10 @@ def _host_codex_home() -> Path:
 
 
 def _codex_sdk_env(codex_home: Path, *, runtime_config: Mapping[str, Any] | None = None) -> dict[str, str]:
-    env: dict[str, str] = {"CODEX_HOME": str(codex_home)}
-    host_home = os.environ.get("DRAWAI_HOST_HOME") or os.environ.get("HOME")
-    if host_home:
-        env["HOME"] = host_home
+    env: dict[str, str] = {
+        "CODEX_HOME": str(codex_home),
+        "HOME": str(codex_home.parent),
+    }
     openai_api_key = os.environ.get("OPENAI_API_KEY")
     if openai_api_key:
         env["OPENAI_API_KEY"] = openai_api_key

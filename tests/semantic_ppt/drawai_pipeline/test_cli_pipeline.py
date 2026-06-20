@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -35,6 +36,44 @@ def _iter_manifest_paths(value):
             yield from _iter_manifest_paths(item)
 
 
+@pytest.fixture(autouse=True)
+def _stub_run0_asset_analysis(monkeypatch):
+    def fake_codex_run0_asset_analysis(_cfg, paths):
+        paths.element_analysis_dir.mkdir(parents=True, exist_ok=True)
+        paths.element_analysis_json.write_text(
+            json.dumps(
+                {
+                    "schema": "drawai.codex_element_analysis.v1",
+                    "case_dir": str(paths.root),
+                    "elements": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        paths.element_analysis_validation_json.write_text(
+            json.dumps({"schema": "drawai.codex_element_analysis_validation.v1", "status": "ok"}),
+            encoding="utf-8",
+        )
+        paths.element_analysis_status_json.write_text(
+            json.dumps({"schema": "drawai.codex_element_analysis_status.v1", "status": "ok"}),
+            encoding="utf-8",
+        )
+        paths.element_analysis_request_json.write_text(
+            json.dumps({"schema": "drawai.codex_element_analysis_request.v1"}),
+            encoding="utf-8",
+        )
+        paths.element_analysis_prompt_txt.write_text("deterministic test run0 asset analysis\n", encoding="utf-8")
+        paths.element_analysis_trace_jsonl.write_text('{"status":"ok"}\n', encoding="utf-8")
+        overlay = paths.reports_dir / "assemble_debug" / "assets" / "08_asset_plan.png"
+        overlay.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (8, 8), "white").save(overlay)
+
+    monkeypatch.setattr(
+        "drawai.pipeline._run_codex_run0_asset_analysis",
+        fake_codex_run0_asset_analysis,
+    )
+
+
 def test_pipeline_dry_run_with_fakes_writes_summary(tmp_path: Path):
     image = tmp_path / "input.png"
     Image.new("RGB", (100, 50), "white").save(image)
@@ -63,6 +102,8 @@ svg:
 svg_to_ppt:
   enabled: true
   export_pptx: false
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )
@@ -213,6 +254,8 @@ svg:
 svg_to_ppt:
   enabled: true
   export_pptx: false
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )
@@ -281,6 +324,8 @@ ocr:
 svg_to_ppt:
   enabled: true
   export_pptx: true
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )
@@ -400,6 +445,8 @@ svg:
 svg_to_ppt:
   enabled: true
   export_pptx: false
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )
@@ -474,6 +521,8 @@ svg:
 svg_to_ppt:
   enabled: true
   export_pptx: false
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )
@@ -536,6 +585,14 @@ def test_cli_dry_run_config_prints_default_summary():
         ],
         check=False,
         capture_output=True,
+        env={
+            **os.environ,
+            "PYTHONPATH": os.pathsep.join(
+                item
+                for item in [str(Path.cwd() / "src"), os.environ.get("PYTHONPATH", "")]
+                if item
+            ),
+        },
         text=True,
     )
 
@@ -556,6 +613,207 @@ def test_cli_dry_run_config_prints_default_summary():
     assert payload["model_runtime"]["reasoning_effort"] == "xhigh"
     assert payload["model_runtime"]["base_url"] == ""
     assert payload["model_runtime"]["timeout_seconds"] == 600
+
+
+def _write_minimal_cli_config(tmp_path: Path) -> Path:
+    image = tmp_path / "input.png"
+    Image.new("RGB", (64, 32), "white").save(image)
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"""
+input:
+  image: {image.name}
+  output_dir: out
+  normalization:
+    enabled: false
+sam3:
+  prompts:
+    - id: icon
+      text: icon
+      confidence_threshold: 0.3
+ocr:
+  provider: fixture
+  fixture:
+    path: ocr_fixture.json
+asset_materialization:
+  rmbg:
+    enabled: false
+v2:
+  refine:
+    enabled: false
+svg_to_ppt:
+  enabled: true
+  export_pptx: false
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / "ocr_fixture.json").write_text(
+        '{"ocr_text_boxes":[{"id":"T001","bbox":[4,5,20,14],"text":"Hello","confidence":0.9}]}',
+        encoding="utf-8",
+    )
+    return config
+
+
+def test_cli_accepts_v2_public_stage(tmp_path: Path, capsys) -> None:
+    from drawai.cli import main
+
+    config = _write_minimal_cli_config(tmp_path)
+
+    code = main(["run", "parse_elements", "--config", str(config)])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "pipeline_summary:" in captured.out or "drawai.run_package.v1" in captured.out
+
+
+def test_cli_asset_process_requires_v2_run(tmp_path: Path, capsys) -> None:
+    from drawai.cli import main
+
+    legacy = tmp_path / "legacy"
+    (legacy / "svg").mkdir(parents=True)
+    (legacy / "svg" / "semantic.svg").write_text("<svg />\n", encoding="utf-8")
+
+    code = main(["asset", "process", str(legacy), "E001", "--processor", "crop"])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "legacy_readonly" in captured.err
+
+
+def test_cli_asset_process_rejects_unsafe_element_id(tmp_path: Path, capsys) -> None:
+    from drawai.cli import main
+
+    config = _write_minimal_cli_config(tmp_path)
+    assert main(["run", "plan_assets", "--config", str(config)]) == 0
+    root = tmp_path / "out"
+
+    code = main(["asset", "process", str(root), "../E001", "--processor", "crop"])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "safe single path segment" in captured.err
+
+
+def test_cli_asset_process_updates_v2_package(tmp_path: Path, capsys) -> None:
+    from drawai.cli import main
+
+    config = _write_minimal_cli_config(tmp_path)
+    assert main(["run", "plan_assets", "--config", str(config)]) == 0
+    root = tmp_path / "out"
+
+    code = main(["asset", "process", str(root), "E001", "--processor", "crop"])
+
+    captured = capsys.readouterr()
+    assert code == 0, captured.err
+    payload = json.loads((root / "elements" / "E001" / "asset_package.json").read_text(encoding="utf-8"))
+    assert payload["status"] == "ok"
+    assert payload["processor_type"] == "crop"
+    result_path = root / payload["active_result"]["path"]
+    assert result_path.is_file()
+    run_package = json.loads((root / "drawai_package.json").read_text(encoding="utf-8"))
+    assert run_package["asset_packages"][0]["status"] == "ok"
+
+
+def test_cli_asset_process_syncs_failed_asset_package(tmp_path: Path, capsys) -> None:
+    from drawai.cli import main
+
+    config = _write_minimal_cli_config(tmp_path)
+    assert main(["run", "plan_assets", "--config", str(config)]) == 0
+    root = tmp_path / "out"
+
+    code = main(["asset", "process", str(root), "E001", "--processor", "crop_nobg"])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "rmbg_client is required" in captured.err
+    payload = json.loads((root / "elements" / "E001" / "asset_package.json").read_text(encoding="utf-8"))
+    assert payload["status"] == "failed"
+    assert payload["processor_type"] == "crop_nobg"
+    run_package = json.loads((root / "drawai_package.json").read_text(encoding="utf-8"))
+    assert run_package["asset_packages"][0]["status"] == "failed"
+    assert run_package["asset_packages"][0]["processor_type"] == "crop_nobg"
+
+
+def test_cli_asset_process_rejects_mismatched_element_plan(tmp_path: Path, capsys) -> None:
+    from drawai.cli import main
+
+    config = _write_minimal_cli_config(tmp_path)
+    assert main(["run", "plan_assets", "--config", str(config)]) == 0
+    root = tmp_path / "out"
+    plan_path = root / "elements" / "E001" / "element.json"
+    plan_payload = json.loads(plan_path.read_text(encoding="utf-8"))
+    plan_payload["element_id"] = "E999"
+    plan_path.write_text(json.dumps(plan_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    code = main(["asset", "process", str(root), "E001", "--processor", "crop"])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "does not match requested element_id" in captured.err
+    assert not (root / "elements" / "E999" / "asset_package.json").exists()
+
+
+def test_cli_asset_activate_updates_active_result(tmp_path: Path, capsys) -> None:
+    from drawai.cli import main
+
+    config = _write_minimal_cli_config(tmp_path)
+    assert main(["run", "plan_assets", "--config", str(config)]) == 0
+    root = tmp_path / "out"
+    assert main(["asset", "process", str(root), "E001", "--processor", "crop"]) == 0
+
+    package_path = root / "elements" / "E001" / "asset_package.json"
+    payload = json.loads(package_path.read_text(encoding="utf-8"))
+    alternate = dict(payload["active_result"])
+    alternate["result_id"] = "manual_result"
+    payload["all_results"].append(alternate)
+    package_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    code = main(["asset", "activate", str(root), "E001", "manual_result"])
+
+    captured = capsys.readouterr()
+    assert code == 0, captured.err
+    updated = json.loads(package_path.read_text(encoding="utf-8"))
+    assert updated["active_result"]["result_id"] == "manual_result"
+    run_package = json.loads((root / "drawai_package.json").read_text(encoding="utf-8"))
+    assert run_package["asset_packages"][0]["active_result"]["result_id"] == "manual_result"
+
+
+def test_cli_export_existing_v2_run_updates_package(tmp_path: Path, capsys) -> None:
+    from drawai.cli import main
+
+    config = _write_minimal_cli_config(tmp_path)
+    assert main(["run", "plan_assets", "--config", str(config)]) == 0
+    root = tmp_path / "out"
+
+    code = main(["export", str(root)])
+
+    captured = capsys.readouterr()
+    assert code == 0, captured.err
+    assert "pipeline_summary:" in captured.out
+    report = json.loads((root / "reports" / "svg_to_ppt_export_report.json").read_text(encoding="utf-8"))
+    assert report["status"] == "ok"
+    package = json.loads((root / "drawai_package.json").read_text(encoding="utf-8"))
+    assert package["metadata"]["last_stage"] == "export"
+    assert package["export_outputs"]["report"] == "reports/svg_to_ppt_export_report.json"
+
+
+def test_cli_export_requires_available_config(tmp_path: Path, capsys) -> None:
+    from drawai.cli import main
+
+    config = _write_minimal_cli_config(tmp_path)
+    assert main(["run", "plan_assets", "--config", str(config)]) == 0
+    root = tmp_path / "out"
+    package_path = root / "drawai_package.json"
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["metadata"]["config_path"] = str(tmp_path / "missing-config.yaml")
+    package_path.write_text(json.dumps(package, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    code = main(["export", str(root)])
+
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "pass --config" in captured.err
+    assert "missing-config.yaml" in captured.err
 
 
 def test_cli_setup_local_dry_run_prints_single_setup_flow(tmp_path: Path, capsys):
@@ -970,13 +1228,16 @@ def test_cli_setup_local_success_message_uses_uv_run(tmp_path: Path, monkeypatch
 
 def test_cli_setup_local_runs_doctor_after_full_setup(tmp_path: Path, monkeypatch, capsys):
     from drawai.cli import main
+    from drawai import local_cli
     from drawai.local_cli import DoctorCheck
 
-    commands = []
+    setup_calls = []
 
-    def fake_run(command, **kwargs):
-        commands.append(command)
-        return subprocess.CompletedProcess(command, 0)
+    def fake_download(**kwargs):
+        setup_calls.append(("download", kwargs))
+
+    def fake_bootstrap(**kwargs):
+        setup_calls.append(("bootstrap", kwargs))
 
     def fake_checks(*, runtime_root, repo_root):
         return [
@@ -985,7 +1246,8 @@ def test_cli_setup_local_runs_doctor_after_full_setup(tmp_path: Path, monkeypatc
             DoctorCheck("SVG browser renderer", "warn", "Chrome/Chromium was not found on PATH."),
         ]
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(local_cli, "download_local_models", fake_download)
+    monkeypatch.setattr(local_cli, "bootstrap_local_runtime", fake_bootstrap)
     monkeypatch.setattr("drawai.local_cli.local_runtime_checks", fake_checks)
     runtime_root = tmp_path / "runtime"
 
@@ -993,7 +1255,11 @@ def test_cli_setup_local_runs_doctor_after_full_setup(tmp_path: Path, monkeypatc
 
     captured = capsys.readouterr()
     assert result == 0
-    assert len(commands) == 2
+    assert [call[0] for call in setup_calls] == ["download", "bootstrap"]
+    assert setup_calls[0][1]["include_sam3"] is True
+    assert setup_calls[0][1]["include_paddle"] is True
+    assert setup_calls[0][1]["include_rmbg"] is True
+    assert setup_calls[1][1]["dry_run"] is False
     assert "post_setup: running uv run drawai doctor local" in captured.out
     assert "DrawAI local doctor" in captured.out
     assert "status: ok" in captured.out
@@ -1002,14 +1268,21 @@ def test_cli_setup_local_runs_doctor_after_full_setup(tmp_path: Path, monkeypatc
 
 def test_cli_setup_local_skip_doctor_keeps_manual_next_step(tmp_path: Path, monkeypatch, capsys):
     from drawai.cli import main
+    from drawai import local_cli
 
-    def fake_run(command, **kwargs):
-        return subprocess.CompletedProcess(command, 0)
+    setup_calls = []
+
+    def fake_download(**kwargs):
+        setup_calls.append(("download", kwargs))
+
+    def fake_bootstrap(**kwargs):
+        setup_calls.append(("bootstrap", kwargs))
 
     def fail_checks(**kwargs):
         raise AssertionError("local_runtime_checks should not run with --skip-doctor")
 
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(local_cli, "download_local_models", fake_download)
+    monkeypatch.setattr(local_cli, "bootstrap_local_runtime", fake_bootstrap)
     monkeypatch.setattr("drawai.local_cli.local_runtime_checks", fail_checks)
     runtime_root = tmp_path / "runtime"
 
@@ -1017,6 +1290,7 @@ def test_cli_setup_local_skip_doctor_keeps_manual_next_step(tmp_path: Path, monk
 
     captured = capsys.readouterr()
     assert result == 0
+    assert [call[0] for call in setup_calls] == ["download", "bootstrap"]
     assert "doctor: skipped (--skip-doctor)" in captured.out
     assert "next: uv run drawai doctor local" in captured.out
 
@@ -1325,6 +1599,8 @@ ocr:
 svg_to_ppt:
   enabled: true
   export_pptx: false
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )
@@ -1369,6 +1645,8 @@ svg:
 svg_to_ppt:
   enabled: true
   export_pptx: false
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )
@@ -1848,6 +2126,8 @@ svg:
 svg_to_ppt:
   enabled: true
   export_pptx: false
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )
@@ -1909,6 +2189,8 @@ svg:
 svg_to_ppt:
   enabled: true
   export_pptx: false
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )
@@ -1979,6 +2261,8 @@ ocr:
 svg_to_ppt:
   enabled: true
   export_pptx: false
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )
@@ -2039,6 +2323,8 @@ ocr:
 svg_to_ppt:
   enabled: true
   export_pptx: false
+v2:
+  enabled: false
 """,
         encoding="utf-8",
     )

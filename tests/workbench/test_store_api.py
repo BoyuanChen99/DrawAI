@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import io
+import shutil
 import threading
 import time
 import zipfile
@@ -17,10 +18,19 @@ from pptx import Presentation
 from drawai.codex_python_sdk_imagegen import CodexGeneratedImage, CodexImageGenResult
 from drawai.http_utils import is_loopback_url
 from drawai.rmbg_client import RmbgResult
+from drawai.v2.packages import write_asset_package, write_element_plan
+from drawai.v2.schema import AssetPackage, ElementPlan, ProcessingIntent, RUN_PACKAGE_SCHEMA
+from drawai.workflow.agent_execution import AgentExecutionRequest, AgentExecutionResult
 import drawai.workbench.api as workbench_api
 from drawai.workbench.api import create_app
 from drawai.workbench.models import WorkbenchSettings
-from drawai.workbench.runner import WorkbenchRunner, _archive_fs_path, _pipeline_failure_message, create_case_config
+from drawai.workbench.runner import (
+    WorkbenchRunner,
+    _archive_fs_path,
+    _pipeline_failure_message,
+    _source_metadata_canvas_size,
+    create_case_config,
+)
 from drawai.workbench.store import WorkbenchStore
 
 
@@ -72,6 +82,220 @@ def test_pipeline_failure_message_prefers_exception_message() -> None:
     }
 
     assert _pipeline_failure_message(summary) == "detailed pipeline failure"
+
+
+@pytest.mark.parametrize(
+    "existing_analysis",
+    [
+        None,
+        {
+            "schema": "drawai.codex_element_analysis.v1",
+            "source": "v2.refined_elements",
+            "elements": [],
+        },
+    ],
+)
+def test_runner_refine_stage_prepares_codex_analysis_when_required(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    existing_analysis: dict[str, object] | None,
+) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    batch = store.create_batch(
+        name="batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    case_root = Path(case.run_root)
+    config_path = create_case_config(
+        base_config_path=base_config,
+        source_image=source,
+        output_dir=case_root,
+        target_path=case_root / "drawai.config.yaml",
+    )
+    store.update_case_config_path(case.case_id, config_path)
+    case = store.get_case(case.case_id)
+    if existing_analysis is not None:
+        _write_json(
+            Path(case.run_root) / "reports" / "element_analysis_codex" / "element_analysis.json",
+            existing_analysis,
+        )
+    codex_analysis_roots: list[Path] = []
+
+    def fake_codex_analysis(cfg, paths) -> None:
+        codex_analysis_roots.append(paths.root)
+        _write_json(
+            paths.element_analysis_json,
+            {
+                "schema": "drawai.codex_element_analysis.v1",
+                "elements": [
+                    {
+                        "box_id": "B001",
+                        "source_candidate_ids": ["B001"],
+                        "bbox": [1, 1, 10, 10],
+                        "category": "crop",
+                        "type": "image",
+                    }
+                ],
+            },
+        )
+
+    def fake_run_from_stage(
+        config_path_or_config,
+        from_stage: str,
+        *,
+        to_stage: str | None = None,
+        **kwargs,
+    ) -> dict[str, object]:
+        assert config_path_or_config == case.config_path
+        assert from_stage == "refine_elements"
+        assert to_stage == "refine_elements"
+        assert codex_analysis_roots == [Path(case.run_root)]
+        return {"status": "ok", "artifacts": {}}
+
+    monkeypatch.setattr("drawai.pipeline._run_codex_run0_asset_analysis", fake_codex_analysis)
+    monkeypatch.setattr("drawai.workbench.runner.run_drawai_pipeline_from_stage", fake_run_from_stage)
+    runner = WorkbenchRunner(store, _settings(tmp_path, base_config))
+
+    runner._run_stage(case.case_id, "refine_elements")
+
+    assert codex_analysis_roots == [Path(case.run_root)]
+    saved_analysis_path = Path(case.run_root) / "reports" / "element_analysis_codex" / "element_analysis.json"
+    saved_analysis = json.loads(saved_analysis_path.read_text(encoding="utf-8"))
+    assert "source" not in saved_analysis
+
+
+def test_runner_refine_stage_reuses_existing_external_codex_analysis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    batch = store.create_batch(
+        name="batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    case_root = Path(case.run_root)
+    config_path = create_case_config(
+        base_config_path=base_config,
+        source_image=source,
+        output_dir=case_root,
+        target_path=case_root / "drawai.config.yaml",
+    )
+    store.update_case_config_path(case.case_id, config_path)
+    case = store.get_case(case.case_id)
+    _write_json(
+        Path(case.run_root) / "reports" / "element_analysis_codex" / "element_analysis.json",
+        {"schema": "drawai.codex_element_analysis.v1", "elements": []},
+    )
+
+    def unexpected_codex_analysis(cfg, paths) -> None:
+        raise AssertionError("existing external Codex analysis should be reused")
+
+    def fake_run_from_stage(
+        config_path_or_config,
+        from_stage: str,
+        *,
+        to_stage: str | None = None,
+        **kwargs,
+    ) -> dict[str, object]:
+        assert config_path_or_config == case.config_path
+        assert from_stage == "refine_elements"
+        assert to_stage == "refine_elements"
+        return {"status": "ok", "artifacts": {}}
+
+    monkeypatch.setattr("drawai.pipeline._run_codex_run0_asset_analysis", unexpected_codex_analysis)
+    monkeypatch.setattr("drawai.workbench.runner.run_drawai_pipeline_from_stage", fake_run_from_stage)
+    runner = WorkbenchRunner(store, _settings(tmp_path, base_config))
+
+    runner._run_stage(case.case_id, "refine_elements")
+
+
+def test_runner_refine_stage_regenerates_incomplete_codex_analysis(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    batch = store.create_batch(
+        name="batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    case_root = Path(case.run_root)
+    config_path = create_case_config(
+        base_config_path=base_config,
+        source_image=source,
+        output_dir=case_root,
+        target_path=case_root / "drawai.config.yaml",
+    )
+    store.update_case_config_path(case.case_id, config_path)
+    case = store.get_case(case.case_id)
+    analysis_path = Path(case.run_root) / "reports" / "element_analysis_codex" / "element_analysis.json"
+    _write_json(analysis_path, {"schema": "drawai.codex_element_analysis.v1", "elements": []})
+    _write_json(analysis_path.parent / "run_status.json", {"status": "running"})
+    codex_analysis_roots: list[Path] = []
+
+    def fake_codex_analysis(cfg, paths) -> None:
+        codex_analysis_roots.append(paths.root)
+        _write_json(
+            paths.element_analysis_json,
+            {"schema": "drawai.codex_element_analysis.v1", "elements": []},
+        )
+        _write_json(paths.element_analysis_json.parent / "run_status.json", {"status": "ok"})
+
+    def fake_run_from_stage(
+        config_path_or_config,
+        from_stage: str,
+        *,
+        to_stage: str | None = None,
+        **kwargs,
+    ) -> dict[str, object]:
+        assert config_path_or_config == case.config_path
+        assert from_stage == "refine_elements"
+        assert to_stage == "refine_elements"
+        assert codex_analysis_roots == [Path(case.run_root)]
+        return {"status": "ok", "artifacts": {}}
+
+    monkeypatch.setattr("drawai.pipeline._run_codex_run0_asset_analysis", fake_codex_analysis)
+    monkeypatch.setattr("drawai.workbench.runner.run_drawai_pipeline_from_stage", fake_run_from_stage)
+    runner = WorkbenchRunner(store, _settings(tmp_path, base_config))
+
+    runner._run_stage(case.case_id, "refine_elements")
+
+    assert codex_analysis_roots == [Path(case.run_root)]
 
 
 def test_store_rejects_artifacts_outside_case_root(tmp_path: Path) -> None:
@@ -132,24 +356,30 @@ def test_runner_completes_analysis_and_stops_for_asset_review(tmp_path: Path) ->
         observed_stages.append(stage)
         _deterministic_stage_executor(case, stage)
 
-    runner = WorkbenchRunner(store, _settings(tmp_path, base_config), stage_executor=recording_stage_executor)
+    runner = WorkbenchRunner(
+        store,
+        _settings(tmp_path, base_config),
+        stage_executor=recording_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
 
     runner.submit_batch(batch.batch_id)
     runner.wait_for_idle(timeout=5)
 
     updated = store.get_case(case.case_id)
     assert updated.status == "assets_review"
-    assert updated.stage == "asset_analyze"
+    assert updated.stage == "asset_confirm"
     assert observed_stages == [
         "prepare",
-        "detect_structure",
-        "detect_text",
-        "assemble_boxir",
-        "asset_plan",
-        "asset_analyze",
+        "parse_elements",
+        "fuse_elements",
+        "process_assets",
     ]
     assert (Path(updated.run_root) / "reports" / "workbench" / "asset_draft.json").exists()
-    assert not (Path(updated.run_root) / "svg_to_ppt" / "assets" / "asset_manifest.json").exists()
+    assert (Path(updated.run_root) / "drawai_package.json").exists()
+    assert (Path(updated.run_root) / "elements" / "E001" / "asset_package.json").exists()
+    assert (Path(updated.run_root) / "svg_to_ppt" / "assets" / "asset_manifest.json").exists()
+    assert (Path(updated.run_root) / "nodes" / "asset_confirm" / "runs" / "001" / "node_run.json").exists()
     assert store.get_batch(batch.batch_id).status == "waiting_review"
 
 
@@ -178,7 +408,12 @@ def test_runner_auto_run_approves_and_reconstructs(tmp_path: Path) -> None:
         source_image_path=source,
         config_path=config_path,
     )
-    runner = WorkbenchRunner(store, _settings(tmp_path, base_config), stage_executor=_deterministic_stage_executor)
+    runner = WorkbenchRunner(
+        store,
+        _settings(tmp_path, base_config),
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
 
     runner.submit_batch(batch.batch_id)
     runner.wait_for_idle(timeout=5)
@@ -223,10 +458,63 @@ def test_runner_svg_rerun_executes_export_by_default(tmp_path: Path) -> None:
     stages = [stage.stage_name for stage in store.list_stage_runs(case.case_id)]
     assert updated.status == "failed"
     assert "RuntimeError: export unavailable" in (updated.error_message or "")
-    assert stages == ["svg", "export"]
+    assert stages == ["process_assets", "compose_svg", "export"]
     assert "semantic_svg" in labels
     assert "rendered_png" in labels
     assert "pptx" not in labels
+
+
+def test_runner_registers_workflow_output_pptx_artifact(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    batch = store.create_batch(
+        name="batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=True,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=create_case_config(
+            base_config_path=base_config,
+            source_image=source,
+            output_dir=store.runs_root / batch.batch_id / "case_seed",
+            target_path=store.runs_root / batch.batch_id / "case_seed" / "drawai.config.yaml",
+        ),
+    )
+    root = Path(case.run_root)
+    direct_pptx = root / "nodes" / "direct_ppt_agent" / "runs" / "001" / "output" / "final.pptx"
+    direct_pptx.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(direct_pptx, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("ppt/presentation.xml", "<p:presentation/>")
+    _write_json(
+        root / "nodes" / "output" / "runs" / "001" / "output" / "final_outputs.json",
+        {
+            "schema": "drawai.final_outputs.v1",
+            "outputs": [
+                {
+                    "port_id": "pptx",
+                    "path": "nodes/direct_ppt_agent/runs/001/output/final.pptx",
+                    "format_id": "drawai.pptx.v1",
+                    "type": "pptx",
+                    "deliverable": True,
+                }
+            ],
+        },
+    )
+    runner = WorkbenchRunner(store, _settings(tmp_path, base_config), stage_executor=_deterministic_stage_executor)
+
+    runner._register_standard_artifacts(case.case_id)
+
+    pptx_artifact = next(artifact for artifact in store.list_artifacts(case.case_id) if artifact.label == "pptx")
+    assert Path(pptx_artifact.path) == direct_pptx
+    assert pptx_artifact.media_type == "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
 
 def test_runner_archives_existing_svg_outputs_before_rerun(tmp_path: Path) -> None:
@@ -267,7 +555,7 @@ def test_runner_archives_existing_svg_outputs_before_rerun(tmp_path: Path) -> No
     _write_json(root / "reports" / "svg_validation_report.json", {"status": "old"})
 
     def new_svg_executor(case_record, stage: str) -> None:
-        if stage != "svg":
+        if stage != "compose_svg":
             _deterministic_stage_executor(case_record, stage)
             return
         case_root = Path(case_record.run_root)
@@ -322,7 +610,7 @@ def test_runner_rejects_duplicate_case_jobs(tmp_path: Path) -> None:
     release = threading.Event()
 
     def blocking_stage_executor(case_record, stage: str) -> None:
-        if stage == "svg":
+        if stage == "compose_svg":
             started.set()
             release.wait(timeout=5)
         _deterministic_stage_executor(case_record, stage)
@@ -372,23 +660,147 @@ def test_runner_reports_resource_queue_activity(tmp_path: Path) -> None:
     first_codex_started = threading.Event()
     release = threading.Event()
 
-    def blocking_codex_executor(case_record, stage: str) -> None:
-        if stage == "asset_analyze" and not first_codex_started.is_set():
+    def blocking_agent_executor(request: AgentExecutionRequest) -> AgentExecutionResult:
+        if request.prompt.provider_id == "codex_sdk" and not first_codex_started.is_set():
             first_codex_started.set()
             release.wait(timeout=5)
-        _deterministic_stage_executor(case_record, stage)
+        return _deterministic_agent_executor(request)
 
-    runner = WorkbenchRunner(store, settings, stage_executor=blocking_codex_executor)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=blocking_agent_executor,
+    )
 
     runner.submit_batch(batch.batch_id)
     assert first_codex_started.wait(timeout=5)
-    assert _wait_for_resource_activity(runner, "codex", queued=1, running=1, timeout=5)
+    assert _wait_for_resource_activity(runner, "agent_provider:codex_sdk", queued=1, running=1, timeout=5)
 
     release.set()
     runner.wait_for_idle(timeout=5)
-    codex_activity = runner.resource_activity()["codex"]
+    codex_activity = runner.resource_activity()["agent_provider:codex_sdk"]
     assert codex_activity["queued"] == 0
     assert codex_activity["running"] == 0
+
+
+def test_runner_parse_elements_uses_ocr_resource_lane(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    settings = WorkbenchSettings(
+        workspace=tmp_path / "workspace",
+        default_config=base_config,
+        max_concurrent_cases=2,
+        sam_concurrency=2,
+        ocr_concurrency=1,
+    )
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    batch = store.create_batch(
+        name="batch",
+        input_mode="local_dir",
+        max_concurrent_cases=2,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    for index in range(2):
+        case_root = store.runs_root / batch.batch_id / f"case_{index}"
+        store.create_case(
+            batch_id=batch.batch_id,
+            name=f"source_{index}.png",
+            source_image_path=source,
+            config_path=create_case_config(
+                base_config_path=base_config,
+                source_image=source,
+                output_dir=case_root,
+                target_path=case_root / "drawai.config.yaml",
+            ),
+        )
+    first_parse_started = threading.Event()
+    release = threading.Event()
+
+    def blocking_parse_executor(case_record, stage: str) -> None:
+        if stage == "parse_elements" and not first_parse_started.is_set():
+            first_parse_started.set()
+            release.wait(timeout=5)
+        _deterministic_stage_executor(case_record, stage)
+
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=blocking_parse_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
+
+    runner.submit_batch(batch.batch_id)
+    assert first_parse_started.wait(timeout=5)
+    assert _wait_for_resource_activity(runner, "ocr", queued=1, running=1, timeout=5)
+
+    release.set()
+    runner.wait_for_idle(timeout=5)
+    ocr_activity = runner.resource_activity()["ocr"]
+    assert ocr_activity["queued"] == 0
+    assert ocr_activity["running"] == 0
+
+
+@pytest.mark.parametrize(
+    ("parser_ids", "expected_flags"),
+    [
+        (frozenset({"sam3_structure_parser"}), (True, False)),
+        (frozenset({"sam3_structure_parser", "ocr_text_parser"}), (True, True)),
+    ],
+)
+def test_workflow_parse_elements_uses_only_parser_nodes_declared_by_dag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    parser_ids: frozenset[str],
+    expected_flags: tuple[bool, bool],
+) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    settings = WorkbenchSettings(workspace=tmp_path / "workspace", default_config=base_config)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    batch = store.create_batch(
+        name="batch",
+        input_mode="local_dir",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=True,
+        config_path=base_config,
+    )
+    case_root = store.runs_root / batch.batch_id / "case_1"
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=create_case_config(
+            base_config_path=base_config,
+            source_image=source,
+            output_dir=case_root,
+            target_path=case_root / "drawai.config.yaml",
+        ),
+    )
+    captured_flags: list[tuple[bool, bool]] = []
+
+    def fake_run_drawai_pipeline_from_stage(config, from_stage: str, *, to_stage: str | None = None, **_kwargs):
+        captured_flags.append((config.v2.parser.sam3_enabled, config.v2.parser.ocr_enabled))
+        return {"status": "ok", "completed_stages": [from_stage], "to_stage": to_stage}
+
+    monkeypatch.setattr(
+        "drawai.workbench.runner.run_drawai_pipeline_from_stage",
+        fake_run_drawai_pipeline_from_stage,
+    )
+
+    runner = WorkbenchRunner(store, settings)
+    runner._run_workflow_parse_elements(case, parser_ids)
+
+    assert captured_flags == [expected_flags]
+    assert store.list_stage_runs(case.case_id)[0].status == "ok"
+
+
+def test_workflow_canvas_size_uses_v2_normalized_source_metadata() -> None:
+    assert _source_metadata_canvas_size({"normalized_size": [2048, 1449]}) == (2048.0, 1449.0)
+    assert _source_metadata_canvas_size({"width": 24, "height": 12}) == (24.0, 12.0)
 
 
 def test_runner_marks_interrupted_running_case_failed_on_startup(tmp_path: Path) -> None:
@@ -464,6 +876,50 @@ def test_runner_marks_interrupted_running_stage_run_failed_on_startup(tmp_path: 
     assert "interrupted" in updated_stage.error_message
 
 
+def test_runner_wait_for_idle_refreshes_stale_running_batch(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    batch = store.create_batch(
+        name="batch",
+        input_mode="upload",
+        max_concurrent_cases=2,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    for index in range(2):
+        case_root = store.runs_root / batch.batch_id / f"case_{index}"
+        case = store.create_case(
+            batch_id=batch.batch_id,
+            name=f"source_{index}.png",
+            source_image_path=source,
+            config_path=create_case_config(
+                base_config_path=base_config,
+                source_image=source,
+                output_dir=case_root,
+                target_path=case_root / "drawai.config.yaml",
+            ),
+        )
+        store.update_case_status(
+            case.case_id,
+            status="assets_review",
+            phase="analysis",
+            stage="plan_assets",
+        )
+    store.update_batch_status(batch.batch_id, "running")
+    runner = WorkbenchRunner(
+        store,
+        _settings(tmp_path, base_config),
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
+
+    runner.wait_for_idle(timeout=1)
+
+    assert store.get_batch(batch.batch_id).status == "waiting_review"
+
+
 def test_runner_copies_case_failure_to_batch_error(tmp_path: Path) -> None:
     store = WorkbenchStore(tmp_path / "workspace")
     base_config = _base_config(tmp_path)
@@ -499,6 +955,467 @@ def test_runner_copies_case_failure_to_batch_error(tmp_path: Path) -> None:
     assert "detector unavailable" in updated.error_message
 
 
+def test_api_exposes_v2_package_and_asset_package(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    settings = _settings(tmp_path, base_config)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
+    app = create_app(settings, store=store, runner=runner)
+    client = TestClient(app)
+    batch = store.create_batch(
+        name="v2 batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    _write_minimal_v2_package(Path(case.run_root), case.case_id)
+
+    package_response = client.get(f"/api/cases/{case.case_id}/package")
+    elements_response = client.get(f"/api/cases/{case.case_id}/elements")
+    asset_response = client.get(f"/api/cases/{case.case_id}/elements/E001/asset-package")
+    case_response = client.get(f"/api/cases/{case.case_id}")
+
+    assert package_response.status_code == 200
+    assert package_response.json()["package"]["schema"] == "drawai.run_package.v1"
+    assert package_response.json()["compatibility"]["mode"] == "v2"
+    assert elements_response.status_code == 200
+    assert elements_response.json()["elements"][0]["element_id"] == "E001"
+    assert asset_response.status_code == 200
+    assert asset_response.json()["asset_package"]["element_id"] == "E001"
+    assert case_response.status_code == 200
+    assert case_response.json()["case"]["compatibility_mode"] == "v2"
+    assert case_response.json()["case"]["can_fork_from_source"] is True
+
+
+def test_api_exposes_workflow_node_viewer_for_parser_candidates(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    settings = _settings(tmp_path, base_config)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
+    app = create_app(settings, store=store, runner=runner)
+    client = TestClient(app)
+    batch = store.create_batch(
+        name="viewer batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    _write_minimal_v2_package(Path(case.run_root), case.case_id)
+    _write_workflow_node_run(
+        Path(case.run_root),
+        "sam_parser",
+        output_type="element_candidates",
+        format_id="drawai.element_candidates.v1",
+        output_payload={
+            "candidates": [
+                {
+                    "schema": "drawai.element_candidate.v1",
+                    "candidate_id": "sam3:B001",
+                    "source_parser": "sam3_structure_parser",
+                    "element_type": "icon",
+                    "bbox": [2, 3, 8, 9],
+                    "geometry": {"kind": "bbox", "bbox": [2, 3, 10, 12]},
+                    "confidence": 0.875,
+                    "text": "",
+                }
+            ]
+        },
+        output_name="candidates.json",
+    )
+
+    response = client.get(f"/api/cases/{case.case_id}/workflow/nodes/sam_parser/viewer")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is True
+    assert payload["kind"] == "element_candidates"
+    assert payload["source_image"]["url"].endswith("/inputs/figure.png")
+    assert payload["elements"][0]["element_id"] == "sam3:B001"
+    assert payload["elements"][0]["bbox"] == [2.0, 3.0, 8.0, 9.0]
+    assert payload["elements"][0]["processing_intent"]["processing_type"] == "sam3_structure_parser"
+    assert payload["files"][0]["relative_path"] == "nodes/sam_parser/runs/001/output/candidates.json"
+
+
+def test_api_exposes_workflow_node_viewer_for_planned_elements(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    settings = _settings(tmp_path, base_config)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
+    app = create_app(settings, store=store, runner=runner)
+    client = TestClient(app)
+    batch = store.create_batch(
+        name="viewer batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    _write_minimal_v2_package(Path(case.run_root), case.case_id)
+    package_payload = json.loads((Path(case.run_root) / "drawai_package.json").read_text(encoding="utf-8"))
+    _write_workflow_node_run(
+        Path(case.run_root),
+        "asset_planner",
+        output_type="element_plans",
+        format_id="drawai.element_plans.v1",
+        output_payload=package_payload,
+        output_name="elements.json",
+    )
+
+    response = client.get(f"/api/cases/{case.case_id}/workflow/nodes/asset_planner/viewer")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is True
+    assert payload["kind"] == "element_plans"
+    assert payload["elements"][0]["element_id"] == "E001"
+    assert payload["elements"][0]["processing_intent"]["processing_type"] == "crop"
+
+
+def test_api_exposes_workflow_node_viewer_for_analysis_xyxy_bboxes(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    settings = _settings(tmp_path, base_config)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
+    app = create_app(settings, store=store, runner=runner)
+    client = TestClient(app)
+    batch = store.create_batch(
+        name="viewer batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    _write_minimal_v2_package(Path(case.run_root), case.case_id)
+    _write_workflow_node_run(
+        Path(case.run_root),
+        "asset_refine_agent",
+        output_type="element_analysis",
+        format_id="drawai.codex_element_analysis.v1",
+        output_payload={
+            "schema": "drawai.codex_element_analysis.v1",
+            "elements": [
+                {
+                    "box_id": "R0_A001",
+                    "source_candidate_ids": ["sam3:B001"],
+                    "category": "crop",
+                    "confidence": "high",
+                    "reason": "Retained crop.",
+                    "bbox": [2, 3, 10, 12],
+                    "type": "picture",
+                }
+            ],
+        },
+        output_name="element_analysis.json",
+    )
+
+    response = client.get(f"/api/cases/{case.case_id}/workflow/nodes/asset_refine_agent/viewer")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is True
+    assert payload["kind"] == "element_analysis"
+    assert payload["elements"][0]["element_id"] == "R0_A001"
+    assert payload["elements"][0]["bbox"] == [2.0, 3.0, 8.0, 9.0]
+    assert payload["elements"][0]["processing_intent"]["processing_type"] == "crop"
+
+
+def test_api_workflow_node_viewer_reports_unavailable_node_output(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    settings = _settings(tmp_path, base_config)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
+    app = create_app(settings, store=store, runner=runner)
+    client = TestClient(app)
+    batch = store.create_batch(
+        name="viewer batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    _write_minimal_v2_package(Path(case.run_root), case.case_id)
+
+    response = client.get(f"/api/cases/{case.case_id}/workflow/nodes/svg_to_ppt/viewer")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is False
+    assert payload["elements"] == []
+    assert "还没有运行记录" in payload["message"]
+
+
+def test_api_asset_process_marks_downstream_outputs_stale(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    settings = _settings(tmp_path, base_config)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
+    app = create_app(settings, store=store, runner=runner)
+    client = TestClient(app)
+    batch = store.create_batch(
+        name="v2 batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    _write_minimal_v2_package(Path(case.run_root), case.case_id)
+    package_path = Path(case.run_root) / "drawai_package.json"
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["compose_outputs"] = {"semantic_svg": "svg/semantic.svg"}
+    package["export_outputs"] = {"report": "reports/svg_to_ppt_export_report.json"}
+    package_path.write_text(json.dumps(package, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    store.update_case_status(case.case_id, status="completed", phase="reconstruction", stage="completed")
+
+    response = client.post(
+        f"/api/cases/{case.case_id}/elements/E001/process",
+        json={"processor": "crop"},
+    )
+
+    assert response.status_code == 200
+    updated_package = json.loads(package_path.read_text(encoding="utf-8"))
+    assert "compose_outputs" not in updated_package
+    assert "export_outputs" not in updated_package
+    updated_case = store.get_case(case.case_id)
+    assert updated_case.status == "assets_review"
+    assert updated_case.stale_from_stage == "compose_svg"
+
+
+def test_api_failed_asset_process_marks_downstream_outputs_stale(tmp_path: Path) -> None:
+    class FailingRmbgClient:
+        def remove_background(self, *_args: object, **_kwargs: object) -> RmbgResult:
+            raise RuntimeError("rmbg unavailable")
+
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    settings = _settings(tmp_path, base_config)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
+    app = create_app(settings, store=store, runner=runner, rmbg_client=FailingRmbgClient())
+    client = TestClient(app)
+    batch = store.create_batch(
+        name="v2 batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    _write_minimal_v2_package(Path(case.run_root), case.case_id)
+    package_path = Path(case.run_root) / "drawai_package.json"
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["compose_outputs"] = {"semantic_svg": "svg/semantic.svg"}
+    package["export_outputs"] = {"report": "reports/svg_to_ppt_export_report.json"}
+    package_path.write_text(json.dumps(package, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    store.update_case_status(case.case_id, status="completed", phase="reconstruction", stage="completed")
+
+    response = client.post(
+        f"/api/cases/{case.case_id}/elements/E001/process",
+        json={"processor": "crop_nobg"},
+    )
+
+    assert response.status_code == 400
+    updated_package = json.loads(package_path.read_text(encoding="utf-8"))
+    assert updated_package["asset_packages"][0]["status"] == "failed"
+    assert "compose_outputs" not in updated_package
+    assert "export_outputs" not in updated_package
+    updated_case = store.get_case(case.case_id)
+    assert updated_case.status == "assets_review"
+    assert updated_case.stale_from_stage == "compose_svg"
+
+
+def test_api_asset_process_file_error_marks_downstream_outputs_stale(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    settings = _settings(tmp_path, base_config)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
+    app = create_app(settings, store=store, runner=runner)
+    client = TestClient(app)
+    batch = store.create_batch(
+        name="v2 batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    _write_minimal_v2_package(Path(case.run_root), case.case_id)
+    package_path = Path(case.run_root) / "drawai_package.json"
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["source_image"] = str(Path(case.run_root) / "inputs" / "missing.png")
+    package["compose_outputs"] = {"semantic_svg": "svg/semantic.svg"}
+    package["export_outputs"] = {"report": "reports/svg_to_ppt_export_report.json"}
+    package_path.write_text(json.dumps(package, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    store.update_case_status(case.case_id, status="completed", phase="reconstruction", stage="completed")
+
+    response = client.post(
+        f"/api/cases/{case.case_id}/elements/E001/process",
+        json={"processor": "crop"},
+    )
+
+    assert response.status_code == 400
+    updated_package = json.loads(package_path.read_text(encoding="utf-8"))
+    assert updated_package["asset_packages"][0]["status"] == "failed"
+    assert "compose_outputs" not in updated_package
+    assert "export_outputs" not in updated_package
+    updated_case = store.get_case(case.case_id)
+    assert updated_case.status == "assets_review"
+    assert updated_case.stale_from_stage == "compose_svg"
+
+
+def test_legacy_case_mutation_is_rejected_but_can_fork_from_source(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    settings = _settings(tmp_path, base_config)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
+    app = create_app(settings, store=store, runner=runner)
+    client = TestClient(app)
+    batch = store.create_batch(
+        name="legacy batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    root = Path(case.run_root)
+    (root / "inputs").mkdir(parents=True)
+    shutil.copy2(source, root / "inputs" / "figure.png")
+    (root / "svg").mkdir()
+    (root / "svg" / "semantic.svg").write_text("<svg />\n", encoding="utf-8")
+
+    process_response = client.post(
+        f"/api/cases/{case.case_id}/elements/E001/process",
+        json={"processor": "crop"},
+    )
+    retry_response = client.post(f"/api/cases/{case.case_id}/retry")
+    fork_response = client.post(f"/api/cases/{case.case_id}/fork-v2-from-source")
+
+    assert process_response.status_code == 409
+    assert process_response.json()["detail"] == "legacy_readonly_case"
+    assert retry_response.status_code == 409
+    assert retry_response.json()["detail"] == "legacy_readonly_case"
+    assert fork_response.status_code == 200
+    forked_case = fork_response.json()["case"]
+    assert forked_case["case_id"] != case.case_id
+    runner.wait_for_idle(timeout=5)
+    assert (Path(forked_case["run_root"]) / "drawai_package.json").exists()
+
+
 def test_api_creates_batch_polls_assets_and_approves(tmp_path: Path) -> None:
     store = WorkbenchStore(tmp_path / "workspace")
     base_config = _base_config(tmp_path)
@@ -506,7 +1423,12 @@ def test_api_creates_batch_polls_assets_and_approves(tmp_path: Path) -> None:
     image_dir.mkdir()
     Image.new("RGB", (24, 24), "white").save(image_dir / "source.png")
     settings = _settings(tmp_path, base_config)
-    runner = WorkbenchRunner(store, settings, stage_executor=_deterministic_stage_executor)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
     app = create_app(settings, store=store, runner=runner)
     client = TestClient(app)
 
@@ -545,18 +1467,36 @@ def test_api_creates_batch_polls_assets_and_approves(tmp_path: Path) -> None:
     assert case_payload["status"] == "assets_review"
     assert case_payload["stage"] == "approved_asset_plan"
     assert "approved_asset_plan" in labels
-    assert "asset_manifest" not in labels
-    assert not (Path(case_payload["run_root"]) / "svg_to_ppt" / "assets" / "asset_manifest.json").exists()
+    assert "asset_manifest" in labels
+    assert (Path(case_payload["run_root"]) / "svg_to_ppt" / "assets" / "asset_manifest.json").exists()
 
 
-def test_api_approve_with_run_svg_enters_running_state_immediately(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_api_approve_with_run_svg_enters_running_state_immediately(tmp_path: Path) -> None:
     store = WorkbenchStore(tmp_path / "workspace")
     base_config = _base_config(tmp_path)
     image_dir = tmp_path / "images"
     image_dir.mkdir()
     Image.new("RGB", (24, 24), "white").save(image_dir / "source.png")
     settings = _settings(tmp_path, base_config)
-    runner = WorkbenchRunner(store, settings, stage_executor=_deterministic_stage_executor)
+    started = threading.Event()
+    release = threading.Event()
+    process_assets_runs = 0
+
+    def blocking_process_assets(case_record, stage: str) -> None:
+        nonlocal process_assets_runs
+        if stage == "process_assets":
+            process_assets_runs += 1
+            if process_assets_runs == 2:
+                started.set()
+                release.wait(timeout=5)
+        _deterministic_stage_executor(case_record, stage)
+
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=blocking_process_assets,
+        agent_executor=_deterministic_agent_executor,
+    )
     app = create_app(settings, store=store, runner=runner)
     client = TestClient(app)
 
@@ -575,21 +1515,12 @@ def test_api_approve_with_run_svg_enters_running_state_immediately(tmp_path: Pat
     case_id = response.json()["cases"][0]["case_id"]
     runner.wait_for_idle(timeout=5)
 
-    started = threading.Event()
-    release = threading.Event()
-
-    def blocking_materialize(*_: object, **__: object) -> dict[str, object]:
-        started.set()
-        release.wait(timeout=5)
-        return {"assets": []}
-
-    monkeypatch.setattr("drawai.workbench.runner.materialize_approved_assets", blocking_materialize)
     approve_response = client.post(f"/api/cases/{case_id}/approve-assets", json={"run_svg": True})
 
     assert approve_response.status_code == 200
     case_payload = approve_response.json()["case"]
     assert case_payload["status"] == "svg_running"
-    assert case_payload["stage"] == "materialize"
+    assert case_payload["stage"] == "process_assets"
     assert started.wait(timeout=5)
     assert store.get_batch(case_payload["batch_id"]).status == "running"
 
@@ -606,7 +1537,16 @@ def test_api_renames_and_deletes_batch(tmp_path: Path) -> None:
     source = tmp_path / "source.png"
     Image.new("RGB", (24, 24), "white").save(source)
     settings = _settings(tmp_path, base_config)
-    app = create_app(settings, store=store, runner=WorkbenchRunner(store, settings, stage_executor=_deterministic_stage_executor))
+    app = create_app(
+        settings,
+        store=store,
+        runner=WorkbenchRunner(
+            store,
+            settings,
+            stage_executor=_deterministic_stage_executor,
+            agent_executor=_deterministic_agent_executor,
+        ),
+    )
     client = TestClient(app)
     batch = store.create_batch(
         name="old task",
@@ -667,7 +1607,12 @@ def test_api_run_batch_approves_asset_drafts_and_generates_svg(tmp_path: Path) -
         config_path=config_path,
     )
     settings = _settings(tmp_path, base_config)
-    runner = WorkbenchRunner(store, settings, stage_executor=_deterministic_stage_executor)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
     app = create_app(settings, store=store, runner=runner)
     client = TestClient(app)
     runner.submit_batch(batch.batch_id)
@@ -690,7 +1635,16 @@ def test_api_downloads_completed_batch_as_merged_pptx(tmp_path: Path) -> None:
     source = tmp_path / "source.png"
     Image.new("RGB", (24, 24), "white").save(source)
     settings = _settings(tmp_path, base_config)
-    app = create_app(settings, store=store, runner=WorkbenchRunner(store, settings, stage_executor=_deterministic_stage_executor))
+    app = create_app(
+        settings,
+        store=store,
+        runner=WorkbenchRunner(
+            store,
+            settings,
+            stage_executor=_deterministic_stage_executor,
+            agent_executor=_deterministic_agent_executor,
+        ),
+    )
     client = TestClient(app)
     batch = store.create_batch(
         name="paper figures",
@@ -725,7 +1679,12 @@ def test_api_creates_batch_from_uploaded_zip(tmp_path: Path) -> None:
     store = WorkbenchStore(tmp_path / "workspace")
     base_config = _base_config(tmp_path)
     settings = WorkbenchSettings(workspace=tmp_path / "workspace", default_config=base_config)
-    runner = WorkbenchRunner(store, settings, stage_executor=_deterministic_stage_executor)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
     app = create_app(settings, store=store, runner=runner)
     client = TestClient(app)
     image_bytes = io.BytesIO()
@@ -760,7 +1719,12 @@ def test_api_creates_batch_from_multiple_uploaded_images(tmp_path: Path) -> None
     store = WorkbenchStore(tmp_path / "workspace")
     base_config = _base_config(tmp_path)
     settings = WorkbenchSettings(workspace=tmp_path / "workspace", default_config=base_config)
-    runner = WorkbenchRunner(store, settings, stage_executor=_deterministic_stage_executor)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
     app = create_app(settings, store=store, runner=runner)
     client = TestClient(app)
     first = io.BytesIO()
@@ -796,7 +1760,12 @@ def test_api_creates_batch_from_generated_image_data_url(tmp_path: Path) -> None
     store = WorkbenchStore(tmp_path / "workspace")
     base_config = _base_config(tmp_path)
     settings = WorkbenchSettings(workspace=tmp_path / "workspace", default_config=base_config)
-    runner = WorkbenchRunner(store, settings, stage_executor=_deterministic_stage_executor)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
     app = create_app(settings, store=store, runner=runner)
     client = TestClient(app)
     image_bytes = io.BytesIO()
@@ -897,7 +1866,12 @@ def test_api_writes_model_runtime_urls_into_case_config(tmp_path: Path) -> None:
         rmbg_base_url="http://model-a:18080",
         ocr_timeout_seconds=600,
     )
-    runner = WorkbenchRunner(store, settings, stage_executor=_deterministic_stage_executor)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
     app = create_app(settings, store=store, runner=runner)
     client = TestClient(app)
 
@@ -972,7 +1946,12 @@ def test_rerun_refreshes_case_runtime_config(tmp_path: Path) -> None:
         ocr_base_url="http://model-a:18080",
         ocr_timeout_seconds=600,
     )
-    runner = WorkbenchRunner(store, settings, stage_executor=_deterministic_stage_executor)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
 
     runner.submit_rerun(case.case_id, "analysis")
     runner.wait_for_idle(timeout=5)
@@ -982,13 +1961,57 @@ def test_rerun_refreshes_case_runtime_config(tmp_path: Path) -> None:
     assert payload["ocr"]["remote_paddleocr"]["timeout_seconds"] == 600
 
 
+def test_api_run_stage_accepts_v2_boundary_stage_names(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    settings = _settings(tmp_path, base_config)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
+    app = create_app(settings, store=store, runner=runner)
+    client = TestClient(app)
+    batch = store.create_batch(
+        name="v2 retry names",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+
+    prepare_response = client.post(f"/api/cases/{case.case_id}/run-stage", json={"stage": "prepare"})
+    runner.wait_for_idle(timeout=5)
+    package_response = client.post(f"/api/cases/{case.case_id}/run-stage", json={"stage": "package_run"})
+    runner.wait_for_idle(timeout=5)
+
+    assert prepare_response.status_code == 200
+    assert package_response.status_code == 200
+    assert store.list_stage_runs(case.case_id)[0].stage_name == "prepare"
+    assert any(stage.stage_name == "export" for stage in store.list_stage_runs(case.case_id))
+
+
 def test_api_case_list_uses_source_image_preview_before_artifacts(tmp_path: Path) -> None:
     store = WorkbenchStore(tmp_path / "workspace")
     base_config = _base_config(tmp_path)
     source = tmp_path / "source.png"
     Image.new("RGB", (24, 24), "white").save(source)
     settings = _settings(tmp_path, base_config)
-    runner = WorkbenchRunner(store, settings, stage_executor=_deterministic_stage_executor)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
     app = create_app(settings, store=store, runner=runner)
     client = TestClient(app)
     batch = store.create_batch(
@@ -1005,7 +2028,8 @@ def test_api_case_list_uses_source_image_preview_before_artifacts(tmp_path: Path
         config_path=base_config,
     )
     _deterministic_stage_executor(case, "prepare")
-    _deterministic_stage_executor(case, "svg")
+    _write_minimal_v2_package(Path(case.run_root), case.case_id)
+    _deterministic_stage_executor(case, "compose_svg")
     store.register_artifact(case.case_id, label="figure", path=Path(case.run_root) / "inputs" / "figure.png", media_type="image/png")
     store.register_artifact(case.case_id, label="rendered_png", path=Path(case.run_root) / "svg" / "rendered.png", media_type="image/png")
 
@@ -1026,7 +2050,12 @@ def test_api_health_reports_runtime_services(tmp_path: Path) -> None:
     app = create_app(
         settings,
         store=store,
-        runner=WorkbenchRunner(store, settings, stage_executor=_deterministic_stage_executor),
+        runner=WorkbenchRunner(
+            store,
+            settings,
+            stage_executor=_deterministic_stage_executor,
+            agent_executor=_deterministic_agent_executor,
+        ),
         runtime_probe=lambda name, base_url: {
             "name": name,
             "base_url": base_url,
@@ -1069,7 +2098,12 @@ def test_api_health_is_degraded_when_any_runtime_service_is_offline(tmp_path: Pa
     app = create_app(
         settings,
         store=store,
-        runner=WorkbenchRunner(store, settings, stage_executor=_deterministic_stage_executor),
+        runner=WorkbenchRunner(
+            store,
+            settings,
+            stage_executor=_deterministic_stage_executor,
+            agent_executor=_deterministic_agent_executor,
+        ),
         runtime_probe=probe,
     )
     client = TestClient(app)
@@ -1100,7 +2134,8 @@ def test_api_case_progress_exposes_case_files(tmp_path: Path) -> None:
         source_image_path=source,
         config_path=base_config,
     )
-    _deterministic_stage_executor(case, "svg")
+    _write_minimal_v2_package(Path(case.run_root), case.case_id)
+    _deterministic_stage_executor(case, "compose_svg")
     app = create_app(_settings(tmp_path, base_config), store=store, runner=WorkbenchRunner(store, _settings(tmp_path, base_config)))
     client = TestClient(app)
 
@@ -1166,7 +2201,13 @@ def test_api_reads_and_updates_svg_source(tmp_path: Path) -> None:
         source_image_path=source,
         config_path=base_config,
     )
-    _deterministic_stage_executor(case, "svg")
+    _write_minimal_v2_package(Path(case.run_root), case.case_id)
+    _deterministic_stage_executor(case, "compose_svg")
+    package_path = Path(case.run_root) / "drawai_package.json"
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    package["compose_outputs"] = {"semantic_svg": "svg/semantic.svg"}
+    package["export_outputs"] = {"report": "reports/svg_to_ppt_export_report.json"}
+    package_path.write_text(json.dumps(package, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     store.update_case_status(case.case_id, status="completed", phase="reconstruction", stage="completed")
     store.update_batch_status(batch.batch_id, "completed")
     app = create_app(_settings(tmp_path, base_config), store=store, runner=WorkbenchRunner(store, _settings(tmp_path, base_config)))
@@ -1187,6 +2228,9 @@ def test_api_reads_and_updates_svg_source(tmp_path: Path) -> None:
     updated_case = client.get(f"/api/cases/{case.case_id}").json()["case"]
     assert updated_case["stage"] == "svg_edit"
     assert updated_case["stale_from_stage"] == "export"
+    updated_package = json.loads(package_path.read_text(encoding="utf-8"))
+    assert updated_package["compose_outputs"] == {"semantic_svg": "svg/semantic.svg"}
+    assert "export_outputs" not in updated_package
     labels = {artifact["label"] for artifact in client.get(f"/api/cases/{case.case_id}").json()["artifacts"]}
     assert "semantic_svg" in labels
 
@@ -1209,7 +2253,8 @@ def test_api_rejects_unsafe_svg_source(tmp_path: Path) -> None:
         source_image_path=source,
         config_path=base_config,
     )
-    _deterministic_stage_executor(case, "svg")
+    _write_minimal_v2_package(Path(case.run_root), case.case_id)
+    _deterministic_stage_executor(case, "compose_svg")
     app = create_app(_settings(tmp_path, base_config), store=store, runner=WorkbenchRunner(store, _settings(tmp_path, base_config)))
     client = TestClient(app)
 
@@ -1676,7 +2721,12 @@ def test_api_accepts_single_local_image_path(tmp_path: Path) -> None:
     source = tmp_path / "single.png"
     Image.new("RGB", (24, 24), "white").save(source)
     settings = _settings(tmp_path, base_config)
-    runner = WorkbenchRunner(store, settings, stage_executor=_deterministic_stage_executor)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
     app = create_app(settings, store=store, runner=runner)
     client = TestClient(app)
 
@@ -1705,7 +2755,12 @@ def test_api_marks_batch_failed_when_local_path_has_no_images(tmp_path: Path) ->
     bad_source = tmp_path / "notes.txt"
     bad_source.write_text("not an image", encoding="utf-8")
     settings = _settings(tmp_path, base_config)
-    runner = WorkbenchRunner(store, settings, stage_executor=_deterministic_stage_executor)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
     app = create_app(settings, store=store, runner=runner)
     client = TestClient(app)
 
@@ -1778,7 +2833,13 @@ def _deterministic_stage_executor(case, stage: str) -> None:
         Image.new("RGB", (24, 24), "white").save(root / "inputs" / "figure.png")
         Image.new("RGB", (24, 24), "white").save(root / "inputs" / "original.png")
         _write_json(root / "inputs" / "source_metadata.json", {"width": 24, "height": 24})
-    elif stage == "asset_analyze":
+    elif stage == "parse_elements":
+        _write_json(root / "reports" / "parser_outputs" / "element_candidates.json", {"candidates": []})
+    elif stage == "fuse_elements":
+        _write_minimal_v2_package(root, case.case_id)
+        _write_json(root / "trace" / "v2_fusion_trace.json", {"schema": "drawai.v2.fusion_trace.v1"})
+    elif stage in {"refine_elements", "asset_analyze"}:
+        _write_json(root / "trace" / "v2_refine_trace.json", {"schema": "drawai.v2.refine_trace.v1"})
         _write_json(
             root / "reports" / "element_analysis_codex" / "element_analysis.json",
             {
@@ -1801,7 +2862,15 @@ def _deterministic_stage_executor(case, stage: str) -> None:
                 ],
             },
         )
-    elif stage == "svg":
+    elif stage == "plan_assets":
+        _write_minimal_v2_package(root, case.case_id)
+    elif stage == "process_assets":
+        _write_minimal_v2_package(root, case.case_id)
+        _write_json(
+            root / "svg_to_ppt" / "assets" / "asset_manifest.json",
+            {"schema": "drawai.asset_manifest.v1", "assets": []},
+        )
+    elif stage in {"compose_svg", "svg"}:
         (root / "svg").mkdir(parents=True, exist_ok=True)
         (root / "svg" / "semantic.svg").write_text(
             '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"></svg>\n',
@@ -1811,7 +2880,9 @@ def _deterministic_stage_executor(case, stage: str) -> None:
         _write_json(root / "reports" / "svg_validation_report.json", {"status": "ok"})
     elif stage == "export":
         (root / "svg_to_ppt").mkdir(parents=True, exist_ok=True)
-        (root / "svg_to_ppt" / "semantic.svg_to_ppt.pptx").write_bytes(b"pptx")
+        with zipfile.ZipFile(root / "svg_to_ppt" / "semantic.svg_to_ppt.pptx", "w") as archive:
+            archive.writestr("[Content_Types].xml", "<Types/>")
+            archive.writestr("ppt/presentation.xml", "<p:presentation/>")
         _write_json(
             root / "reports" / "svg_to_ppt_export_report.json",
             {
@@ -1825,8 +2896,176 @@ def _deterministic_stage_executor(case, stage: str) -> None:
         )
 
 
+def _deterministic_agent_executor(request: AgentExecutionRequest) -> AgentExecutionResult:
+    request.workdir.mkdir(parents=True, exist_ok=True)
+    output_dir = request.workdir / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    prompt_path = request.workdir / "prompt.md"
+    stdout_path = request.workdir / "agent_stdout.txt"
+    trace_path = request.workdir / "agent_trace.jsonl"
+    execution_path = request.workdir / "agent_execution.json"
+    prompt_path.write_text(request.prompt.text, encoding="utf-8")
+    stdout_path.write_text("deterministic agent completed\n", encoding="utf-8")
+    for output in request.prompt.outputs:
+        path = request.workdir / str(output["path"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        format_id = str(output["format_id"])
+        if format_id == "drawai.codex_element_analysis.v1":
+            _write_json(
+                path,
+                {
+                    "schema": "drawai.codex_element_analysis.v1",
+                    "case_dir": str(request.run_root),
+                    "source": "deterministic_agent",
+                    "strategy_summary": "Deterministic test analysis.",
+                    "refinement_summary": "One retained picture element.",
+                    "categories": {"crop": 1},
+                    "refinement_actions": {"unchanged": 1},
+                    "elements": [
+                        {
+                            "box_id": "E001",
+                            "source_candidate_ids": ["fixture:E001"],
+                            "refinement_action": "unchanged",
+                            "category": "crop",
+                            "confidence": "high",
+                            "visual_role": "picture",
+                            "reason": "Workbench test fixture.",
+                            "evidence": ["deterministic fixture"],
+                            "bbox": [2, 2, 14, 14],
+                            "type": "picture",
+                            "current_pipeline_method": "crop",
+                            "recommended_asset_source": "crop",
+                        }
+                    ],
+                    "notes": [],
+                },
+            )
+        elif format_id == "drawai.semantic_svg.v1":
+            path.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"></svg>\n',
+                encoding="utf-8",
+            )
+        else:
+            _write_json(path, {})
+    _write_json(
+        trace_path,
+        {
+            "provider_id": request.prompt.provider_id,
+            "node_id": request.node_id,
+            "prompt_path": str(prompt_path),
+            "inputs": [dict(item) for item in request.prompt.inputs],
+            "outputs": [dict(item) for item in request.prompt.outputs],
+        },
+    )
+    _write_json(
+        execution_path,
+        {
+            "schema": "drawai.workflow_agent_execution.v1",
+            "provider_id": request.prompt.provider_id,
+            "node_id": request.node_id,
+        },
+    )
+    return AgentExecutionResult(
+        provider_id=request.prompt.provider_id,
+        prompt_path=prompt_path,
+        stdout_path=stdout_path,
+        trace_path=trace_path,
+        execution_manifest_path=execution_path,
+    )
+
+
+def _write_minimal_v2_package(root: Path, case_id: str) -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    figure_path = root / "inputs" / "figure.png"
+    figure_path.parent.mkdir(parents=True, exist_ok=True)
+    if not figure_path.exists():
+        Image.new("RGB", (24, 24), "white").save(figure_path)
+    _write_json(root / "inputs" / "source_metadata.json", {"width": 24, "height": 24})
+    plan = ElementPlan(
+        element_id="E001",
+        source_candidate_ids=("fixture:E001",),
+        element_type="picture",
+        bbox=(2.0, 2.0, 12.0, 12.0),
+        geometry={"kind": "bbox", "bbox": [2, 2, 12, 12]},
+        z_order=1,
+        confidence="high",
+        processing_intent=ProcessingIntent(
+            object_type="picture",
+            processing_type="crop",
+            parameters={},
+        ),
+        review_status="deterministic",
+        created_by_stage="plan_assets",
+        change_reason="Workbench test fixture.",
+    )
+    asset_package = AssetPackage.empty(
+        asset_id="A001",
+        element_id="E001",
+        processor_type="crop",
+    )
+    write_element_plan(root, plan)
+    write_asset_package(root, asset_package)
+    _write_json(
+        root / "drawai_package.json",
+        {
+            "schema": RUN_PACKAGE_SCHEMA,
+            "run_id": case_id,
+            "root": str(root),
+            "source_image": str(figure_path),
+            "canvas": {"width": 24, "height": 24},
+            "created_at": "2026-06-18T00:00:00Z",
+            "metadata": {"last_stage": "plan_assets", "v2_enabled": True},
+            "elements": [plan.to_dict()],
+            "asset_packages": [asset_package.to_dict()],
+        },
+    )
+
+
+def _write_workflow_node_run(
+    root: Path,
+    node_id: str,
+    *,
+    output_type: str,
+    format_id: str,
+    output_payload: object,
+    output_name: str,
+) -> None:
+    run_dir = root / "nodes" / node_id / "runs" / "001"
+    output_relative_path = Path("nodes") / node_id / "runs" / "001" / "output" / output_name
+    _write_json(root / output_relative_path, output_payload)
+    _write_json(
+        run_dir / "node_run.json",
+        {
+            "schema": "drawai.workflow_node_run.v1",
+            "node_id": node_id,
+            "node_type": "parser" if output_type == "element_candidates" else "processor",
+            "attempt_id": "001",
+            "status": "ok",
+            "workdir": f"nodes/{node_id}/runs/001",
+            "inputs": [],
+            "outputs": [
+                {
+                    "port_id": "output",
+                    "path": output_relative_path.as_posix(),
+                    "format_id": format_id,
+                    "type": output_type,
+                    "exit_code": 0,
+                    "source_node_id": node_id,
+                    "source_port_id": "output",
+                }
+            ],
+            "started_at": "2026-06-18T00:00:00Z",
+            "ended_at": "2026-06-18T00:00:01Z",
+            "duration_ms": 1000,
+            "exit_code": 0,
+            "error": None,
+        },
+    )
+    _write_json(run_dir / "input_manifest.json", {"schema": "drawai.workflow_input_manifest.v1", "inputs": []})
+
+
 def _failing_stage_executor(case, stage: str) -> None:
-    if stage == "detect_structure":
+    if stage == "parse_elements":
         raise RuntimeError("detector unavailable")
     _deterministic_stage_executor(case, stage)
 

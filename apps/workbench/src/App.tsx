@@ -2,24 +2,38 @@ import { DragEvent, MouseEvent, PointerEvent, WheelEvent, useCallback, useEffect
 import { createPortal } from "react-dom";
 import {
   approveAssets,
+  composeV2Case,
   createUploadBatch,
   deleteBatch,
   downloadBatchPptx,
+  forkV2FromSource,
+  getAssetPackage,
   getAssets,
   getBatch,
   getCase,
   getCaseArtifacts,
   getCaseProgress,
+  getElements,
   getHealth,
+  getRunPackage,
   getSvgSource,
+  getWorkflowNodeViewer,
+  isDrawAiApiStatus,
   listBatches,
   processAssetElements,
+  processV2Asset,
   renameBatch,
   runCaseStage,
   runBatch,
   saveAssetDraft,
+  setActiveAssetResult,
+  type WorkbenchRerunStage,
 } from "./api";
 import ImageGenStudio, { type ImageGenConnectionSettings } from "./ImageGenStudio";
+import WorkflowWorkspace from "./WorkflowWorkspace";
+import { buildWorkflowPreviewLayout, type WorkflowPreviewLayout } from "./workflowPreviewLayout";
+import { WorkflowNodeIcon } from "./workflowNodeIcons";
+import { listWorkflowTemplates } from "./workflowApi";
 import type {
   ArtifactRecord,
   AssetElement,
@@ -34,15 +48,25 @@ import type {
   RuntimeActivityStatus,
   RuntimeServiceStatus,
   SourceStrategy,
-  StageRunRecord
+  StageRunRecord,
+  RunCompatibilityMode,
+  V2AssetPackage,
+  V2AssetResult,
+  V2AssetStatus,
+  V2ElementPlan,
+  V2RunPackage,
+  WorkflowNodeViewer
 } from "./types";
+import type { WorkflowTemplate } from "./workflowTypes";
 
-type AppView = "board" | "editor" | "svg";
-type BoardMode = "generate" | "process";
+type AppView = "board" | "editor" | "svg" | "nodeArtifact";
+type BoardMode = "generate" | "process" | "workflow";
 type CanvasMode = "select" | "add" | "polygon";
 type AssetEditorView = "extraction" | "processing";
 type PipelineNodeState = "waiting" | "running" | "done" | "failed" | "review" | "stale";
 type AssetPlanChangeOptions = { track?: boolean };
+type V2ElementFilter = { query: string; elementType: string; processingType: string; status: string };
+type V2ProcessorType = "crop" | "crop_nobg" | "image_generate" | "image_edit" | "chart_rebuild_reserved";
 type SvgEditableElement = { path: string; tag: string; label: string; detail: string; text: string; textEditable: boolean };
 type SvgDragState =
   | { kind: "move"; path: string; baseText: string; startClientX: number; startClientY: number; scaleX: number; scaleY: number }
@@ -115,59 +139,58 @@ const strategyClass: Record<SourceStrategy, string> = {
 const EDITOR_SOURCE_STRATEGIES = ["crop", "crop_nobg"] as const;
 type EditorSourceStrategy = (typeof EDITOR_SOURCE_STRATEGIES)[number];
 type AssetProcessingMode = EditorSourceStrategy | "gen";
-type WorkbenchRerunStage = "analysis" | "asset_analyze" | "materialize" | "svg" | "export";
 
 const ASSET_PROCESSING_MODES: Array<{ mode: AssetProcessingMode; label: string; disabled?: boolean }> = [
   { mode: "crop", label: "保留背景" },
   { mode: "crop_nobg", label: "去背景" },
   { mode: "gen", label: "生成", disabled: true }
 ];
+const V2_PROCESSABLE_PROCESSORS: V2ProcessorType[] = ["crop", "crop_nobg", "image_generate", "image_edit"];
 const SUPPORTED_UPLOAD_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".zip"];
 const WORKBENCH_PROCESSING_APPLIED_REASON = "工作台处理结果为";
 const WORKBENCH_PROCESSING_MODE_REASON = "工作台处理模式设为";
+const EMPTY_V2_ELEMENT_FILTER: V2ElementFilter = { query: "", elementType: "", processingType: "", status: "" };
 
 const PIPELINE_GROUPS = [
   {
-    title: "预处理",
-    subtitle: "规范化图像并收集基础信号",
+    title: "元素解析",
+    subtitle: "统一输入并融合解析器结果",
     nodes: [
-      { stage: "prepare", title: "图像预处理", detail: "工作图", description: "归一化输入图像，生成统一尺寸的工作图，作为后续所有阶段的基准。" },
-      { stage: "detect_structure", title: "提取结构（SAM）", detail: "版面候选", description: "用 SAM 对图像分割，提出版面结构候选区域。" },
-      { stage: "detect_text", title: "OCR解析", detail: "文本框", description: "OCR 识别图中文字，输出带位置的文本框。" }
+      { stage: "prepare", title: "准备输入", detail: "统一画布", description: "归一化源图像和画布尺寸，生成 v2 run 的基础运行上下文。" },
+      { stage: "parse_elements", title: "元素解析", detail: "SAM / OCR", description: "调用一个或多个解析器，输出统一格式的候选元素。" },
+      { stage: "fuse_elements", title: "候选融合", detail: "优先级 / NMS", description: "按融合规则合并候选框，保留来源、置信度和几何信息。" }
     ]
   },
   {
-    title: "素材规划",
-    subtitle: "合并信号并调整素材方案",
+    title: "Assets 规划",
+    subtitle: "校正类型并生成资产计划",
     nodes: [
-      { stage: "assemble_boxir", title: "素材合并", detail: "SAM + OCR 合并", description: "合并 SAM 结构与 OCR 文本，整理成统一的素材集合。" },
-      { stage: "asset_plan", title: "素材规划", detail: "初始策略", description: "判断哪些区域适合 SVG 自绘，哪些区域需要保留为位图素材。" },
-      { stage: "asset_analyze", title: "素材调整", detail: "Codex 素材复核", description: "由 Codex 复核并调整素材方案，修正分类与边界。" }
+      { stage: "refine_elements", title: "Agent 校验", detail: "可选 refine", description: "可选地用 Agent 校正元素位置、大小和类型。" },
+      { stage: "plan_assets", title: "资产计划", detail: "处理意图", description: "为每个元素写入处理类型和资产初始状态。" },
+      { stage: "process_assets", title: "资产处理", detail: "裁剪 / 去背景 / 生成", description: "按元素级处理器写入可追踪结果，单个资产失败不会吞掉错误。" }
     ]
   },
   {
     title: "可编辑输出",
-    subtitle: "用已确认素材生成可编辑 SVG",
+    subtitle: "组合、导出并封装运行包",
     nodes: [
-      { stage: "approved_asset_plan", title: "素材确认", detail: "人工确认方案", description: "等待人工确认素材方案，确认后才继续生成。" },
-      { stage: "asset_materialize", title: "素材处理", detail: "裁剪 / 去背景", description: "按已确认方案裁剪素材、去背景，并生成最终素材清单。" },
-      { stage: "svg", title: "SVG生成", detail: "可编辑重建", description: "将已确认的素材重建为可编辑的 SVG 结果。" },
-      { stage: "export", title: "PPT导出", detail: "PPTX", description: "将生成的 SVG 导出为 PPTX 文件。" }
+      { stage: "compose_svg", title: "SVG 组合", detail: "可编辑重建", description: "基于 active asset result 组合可编辑 SVG 与预览图。" },
+      { stage: "export", title: "PPT 导出", detail: "PPTX", description: "将 SVG 输出为 PPTX；默认拒绝 failed / unsupported 资产。" },
+      { stage: "package_run", title: "运行包封装", detail: "完整数据包", description: "保留最终渲染结果、资产记录和后续可修改的运行上下文。" }
     ]
   }
 ] as const;
 
 const PIPELINE_STAGE_ORDER = [
   "prepare",
-  "detect_structure",
-  "detect_text",
-  "assemble_boxir",
-  "asset_plan",
-  "asset_analyze",
-  "approved_asset_plan",
-  "asset_materialize",
-  "svg",
-  "export"
+  "parse_elements",
+  "fuse_elements",
+  "refine_elements",
+  "plan_assets",
+  "process_assets",
+  "compose_svg",
+  "export",
+  "package_run"
 ] as const;
 
 export default function App() {
@@ -180,8 +203,18 @@ export default function App() {
   const [assetPlan, setAssetPlan] = useState<AssetPlan | null>(null);
   const [undoStack, setUndoStack] = useState<AssetPlan[]>([]);
   const [selectedAssetId, setSelectedAssetId] = useState("");
+  const [runPackage, setRunPackage] = useState<V2RunPackage | null>(null);
+  const [runCompatibility, setRunCompatibility] = useState<RunCompatibilityMode>("none");
+  const [canForkV2FromSource, setCanForkV2FromSource] = useState(false);
+  const [v2Elements, setV2Elements] = useState<V2ElementPlan[]>([]);
+  const [selectedV2ElementId, setSelectedV2ElementId] = useState("");
+  const [selectedAssetPackage, setSelectedAssetPackage] = useState<V2AssetPackage | null>(null);
+  const [v2PackageError, setV2PackageError] = useState("");
+  const [v2AssetLoadingElementId, setV2AssetLoadingElementId] = useState("");
+  const [v2ActionPending, setV2ActionPending] = useState("");
+  const [nodeArtifactViewer, setNodeArtifactViewer] = useState<WorkflowNodeViewer | null>(null);
   const [activeView, setActiveView] = useState<AppView>("board");
-  const [boardMode, setBoardMode] = useState<BoardMode>("process");
+  const [boardMode, setBoardMode] = useState<BoardMode>(() => initialBoardMode());
   const [submitOpen, setSubmitOpen] = useState(false);
   const [imageGenSettingsOpen, setImageGenSettingsOpen] = useState(false);
   const [imageGenConnection, setImageGenConnection] = useState<ImageGenConnectionSettings>(() => loadImageGenConnectionSettings());
@@ -253,19 +286,113 @@ export default function App() {
     return assets.asset_plan;
   }
 
-  async function selectCase(caseId: string): Promise<{ detail: CaseDetail; hasAssetPlan: boolean }> {
-    const detail = await getCase(caseId);
-    setActiveCase(detail);
-    setCaseProgress(await getCaseProgress(caseId));
+  function clearV2PackageState() {
+    setRunPackage(null);
+    setRunCompatibility("none");
+    setCanForkV2FromSource(false);
+    setV2Elements([]);
+    setSelectedV2ElementId("");
+    setSelectedAssetPackage(null);
+    setV2PackageError("");
+    setV2AssetLoadingElementId("");
+  }
+
+  function clearAssetEditingState() {
     setAssetPlan(null);
     setSelectedAssetId("");
     setUndoStack([]);
+    clearV2PackageState();
+  }
+
+  function applyLegacyCompatibility(detail: CaseDetail) {
+    setRunPackage(null);
+    setRunCompatibility("legacy_readonly");
+    setCanForkV2FromSource(Boolean(detail.case.can_fork_from_source));
+    setV2Elements([]);
+    setSelectedV2ElementId("");
+    setSelectedAssetPackage(null);
+    setV2PackageError("");
+  }
+
+  async function loadV2PackageForCase(caseId: string, preferredElementId = "", options: { quiet?: boolean } = {}): Promise<boolean> {
+    try {
+      const packagePayload = await getRunPackage(caseId);
+      const elementsPayload = await getElements(caseId);
+      const elements = elementsPayload.elements.length > 0 ? elementsPayload.elements : packagePayload.package.elements || [];
+      const nextElementId = preferredElementId && elements.some((element) => element.element_id === preferredElementId)
+        ? preferredElementId
+        : elements[0]?.element_id || "";
+      const packageFromRun = nextElementId ? assetPackageFromRunPackage(packagePayload.package, nextElementId) : null;
+      let nextAssetPackage = packageFromRun;
+      if (nextElementId) {
+        setV2AssetLoadingElementId(nextElementId);
+        try {
+          nextAssetPackage = (await getAssetPackage(caseId, nextElementId)).asset_package;
+        } finally {
+          setV2AssetLoadingElementId((current) => (current === nextElementId ? "" : current));
+        }
+      }
+      setRunPackage(packagePayload.package);
+      setRunCompatibility(packagePayload.compatibility.mode === "v2" ? "v2" : packagePayload.compatibility.mode);
+      setCanForkV2FromSource(packagePayload.compatibility.can_fork_from_source);
+      setV2Elements(elements);
+      setSelectedV2ElementId(nextElementId);
+      setSelectedAssetPackage(nextAssetPackage);
+      setV2PackageError("");
+      return true;
+    } catch (err) {
+      setV2AssetLoadingElementId("");
+      if (isDrawAiApiStatus(err, 404)) {
+        return false;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      setV2PackageError(message);
+      if (!options.quiet) throw err;
+      return false;
+    }
+  }
+
+  async function selectV2Element(elementId: string) {
+    if (!activeCase || !runPackage) return;
+    setSelectedV2ElementId(elementId);
+    setV2PackageError("");
+    setV2AssetLoadingElementId(elementId);
+    try {
+      const response = await getAssetPackage(activeCase.case.case_id, elementId);
+      setSelectedAssetPackage(response.asset_package);
+    } catch (err) {
+      if (isDrawAiApiStatus(err, 404)) {
+        setSelectedAssetPackage(assetPackageFromRunPackage(runPackage, elementId));
+        return;
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      setV2PackageError(message);
+      throw err;
+    } finally {
+      setV2AssetLoadingElementId((current) => (current === elementId ? "" : current));
+    }
+  }
+
+  async function selectCase(caseId: string): Promise<{ detail: CaseDetail; hasAssetPlan: boolean; compatibility: RunCompatibilityMode }> {
+    const detail = await getCase(caseId);
+    setActiveCase(detail);
+    setCaseProgress(await getCaseProgress(caseId));
+    setNodeArtifactViewer(null);
+    clearAssetEditingState();
+    const hasV2Package = await loadV2PackageForCase(caseId);
+    if (hasV2Package) {
+      return { detail, hasAssetPlan: false, compatibility: "v2" };
+    }
+    if (detail.case.compatibility_mode === "legacy_readonly" || caseHasLegacyArtifacts(detail)) {
+      applyLegacyCompatibility(detail);
+      return { detail, hasAssetPlan: false, compatibility: "legacy_readonly" };
+    }
     try {
       await loadAssetsForCase(caseId);
-      return { detail, hasAssetPlan: true };
+      return { detail, hasAssetPlan: true, compatibility: "none" };
     } catch {
       setAssetPlan(null);
-      return { detail, hasAssetPlan: false };
+      return { detail, hasAssetPlan: false, compatibility: "none" };
     }
   }
 
@@ -295,35 +422,47 @@ export default function App() {
           const detail = await getCase(activeCase.case.case_id);
           setActiveCase(detail);
           setCaseProgress(await getCaseProgress(activeCase.case.case_id));
+          if (detail.case.compatibility_mode === "v2" || runCompatibility === "v2") {
+            await loadV2PackageForCase(activeCase.case.case_id, selectedV2ElementId, { quiet: true });
+          } else if (detail.case.compatibility_mode === "legacy_readonly" && runCompatibility !== "legacy_readonly") {
+            applyLegacyCompatibility(detail);
+          }
         }
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     }, 2500);
     return () => window.clearInterval(timer);
-  }, [activeBatch?.batch.batch_id, activeCase?.case.case_id]);
+  }, [activeBatch?.batch.batch_id, activeCase?.case.case_id, runCompatibility, selectedV2ElementId]);
 
   const activeAssetPlan = activeCase && assetPlan?.case_id === activeCase.case.case_id ? assetPlan : null;
+  const activeRunPackage = activeCase && runPackage?.run_id === activeCase.case.case_id ? runPackage : null;
+  const legacyReadOnly = runCompatibility === "legacy_readonly";
+  const v2PackageReady = Boolean(activeCase && activeRunPackage && runCompatibility === "v2");
   const selectedAsset = activeAssetPlan?.elements.find((item) => item.box_id === selectedAssetId) || null;
   const figureArtifact = latestArtifact(activeCase?.artifacts || [], "figure");
   const renderedArtifact = latestArtifact(activeCase?.artifacts || [], "rendered_png");
   const activeBatchCase = activeBatch?.cases.find((item) => item.case_id === activeCase?.case.case_id) || null;
   const activeCaseRunning = Boolean(
     activeCase &&
-      (isCaseActivelyRunning(activeCase, caseProgress) || assetsRunPendingCaseId === activeCase.case.case_id)
+      (isCaseActivelyRunning(activeCase, caseProgress) ||
+        assetsRunPendingCaseId === activeCase.case.case_id ||
+        Boolean(v2ActionPending))
   );
   const assetsReady = Boolean(
     activeCase &&
-      (activeAssetPlan ||
+      !legacyReadOnly &&
+      (v2PackageReady ||
+        activeAssetPlan ||
         activeBatchCase?.editor_ready ||
         latestProgressFile(caseProgress, "asset_draft")?.exists ||
         latestArtifact(activeCase.artifacts, "asset_draft"))
   );
   const canvasReady = Boolean(activeCase && caseCanOpenCanvas(activeCase, caseProgress) && !activeCaseRunning);
-  const canRunFromAssets = Boolean(activeCase && assetsReady && !activeCaseRunning);
+  const canRunFromAssets = Boolean(activeCase && assetsReady && !activeCaseRunning && !legacyReadOnly);
 
   useEffect(() => {
-    if (!activeCase || activeAssetPlan || !assetsReady || activeCaseRunning) return;
+    if (!activeCase || activeAssetPlan || !assetsReady || activeCaseRunning || runCompatibility !== "none") return;
     let canceled = false;
     getAssets(activeCase.case.case_id)
       .then((assets) => {
@@ -338,7 +477,7 @@ export default function App() {
     return () => {
       canceled = true;
     };
-  }, [activeCase?.case.case_id, activeAssetPlan, activeCaseRunning, activeView, assetsReady, selectedAssetId]);
+  }, [activeCase?.case.case_id, activeAssetPlan, activeCaseRunning, activeView, assetsReady, runCompatibility, selectedAssetId]);
 
   const deleteSelectedAsset = useCallback(() => {
     if (!activeAssetPlan || !selectedAsset) return;
@@ -395,10 +534,99 @@ export default function App() {
     return response.asset_plan;
   }
 
+  async function refreshCaseAfterV2Mutation(caseId: string, preferredElementId = selectedV2ElementId) {
+    const detail = await getCase(caseId);
+    setActiveCase(detail);
+    setCaseProgress(await getCaseProgress(caseId));
+    if (activeBatch?.batch.batch_id === detail.case.batch_id) {
+      setActiveBatch(await getBatch(detail.case.batch_id));
+    }
+    await refreshBatches();
+    await loadV2PackageForCase(caseId, preferredElementId, { quiet: true });
+    return detail;
+  }
+
+  async function processSelectedV2Asset(processor: V2ProcessorType, elementId = selectedV2ElementId) {
+    if (!activeCase || !elementId || processor === "chart_rebuild_reserved") return;
+    const caseId = activeCase.case.case_id;
+    setSelectedV2ElementId(elementId);
+    setV2ActionPending(`process:${elementId}:${processor}`);
+    setV2PackageError("");
+    try {
+      const response = await processV2Asset(caseId, elementId, processor);
+      setSelectedAssetPackage(response.asset_package);
+      mergeCaseStatus(response.case);
+      await refreshCaseAfterV2Mutation(caseId, elementId);
+    } catch (err) {
+      await loadV2PackageForCase(caseId, elementId, { quiet: true });
+      const message = err instanceof Error ? err.message : String(err);
+      setV2PackageError(message);
+      throw err;
+    } finally {
+      setV2ActionPending("");
+    }
+  }
+
+  async function activateV2AssetResult(resultId: string) {
+    if (!activeCase || !selectedV2ElementId) return;
+    const caseId = activeCase.case.case_id;
+    setV2ActionPending(`active:${resultId}`);
+    setV2PackageError("");
+    try {
+      const response = await setActiveAssetResult(caseId, selectedV2ElementId, resultId);
+      setSelectedAssetPackage(response.asset_package);
+      mergeCaseStatus(response.case);
+      await refreshCaseAfterV2Mutation(caseId, selectedV2ElementId);
+    } finally {
+      setV2ActionPending("");
+    }
+  }
+
+  async function composeActiveV2Case() {
+    if (!activeCase || runCompatibility !== "v2") return;
+    const caseId = activeCase.case.case_id;
+    setV2ActionPending("compose");
+    setAssetsRunPendingCaseId(caseId);
+    setV2PackageError("");
+    try {
+      const response = await composeV2Case(caseId);
+      mergeCaseStatus(response.case);
+      await refreshCaseAfterV2Mutation(caseId, selectedV2ElementId);
+    } finally {
+      setV2ActionPending("");
+      setAssetsRunPendingCaseId((current) => (current === caseId ? "" : current));
+    }
+  }
+
+  async function forkActiveCaseToV2() {
+    if (!activeCase || !canForkV2FromSource) return;
+    const currentCase = activeCase.case;
+    setV2ActionPending("fork");
+    setV2PackageError("");
+    try {
+      const response = await forkV2FromSource(currentCase.case_id);
+      const batchDetail = await getBatch(response.case.batch_id);
+      setActiveBatch(batchDetail);
+      await refreshBatches();
+      await selectCase(response.case.case_id);
+      setActiveView("board");
+    } finally {
+      setV2ActionPending("");
+    }
+  }
+
   async function runFromAssets() {
     if (!activeCase) return;
     if (activeCaseRunning) {
       setError("这张图正在运行。");
+      return;
+    }
+    if (runCompatibility === "legacy_readonly") {
+      setError("这是历史只读结果。请先从源图创建 v2 run，再进行处理。");
+      return;
+    }
+    if (runCompatibility === "v2") {
+      await composeActiveV2Case();
       return;
     }
     if (!assetsReady) {
@@ -435,16 +663,36 @@ export default function App() {
     runFromAssets().catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }
 
-  async function openAssetsEditor() {
-    if (!activeCase) return;
-    if (!assetsReady) {
+  async function openAssetsEditorForCase(caseId: string) {
+    const selected = activeCase?.case.case_id === caseId;
+    const selection = selected
+      ? { hasAssetPlan: Boolean(activeAssetPlan), compatibility: runCompatibility }
+      : await selectCase(caseId);
+    if (selection.compatibility === "legacy_readonly") {
+      setError("这是历史只读结果，不能继续编辑素材。");
+      return;
+    }
+    if (selection.compatibility === "v2") {
+      setActiveView("editor");
+      return;
+    }
+    if (selected && !activeAssetPlan) {
+      await loadAssetsForCase(caseId, selectedAssetId);
+    } else if (!selected && !selection.hasAssetPlan) {
       setError("素材还没准备好。");
       return;
     }
-    if (!activeAssetPlan) {
-      await loadAssetsForCase(activeCase.case.case_id, selectedAssetId);
-    }
     setActiveView("editor");
+  }
+
+  async function openWorkflowNodeArtifactCanvas(caseId: string, nodeId: string) {
+    const selected = activeCase?.case.case_id === caseId;
+    if (!selected) {
+      await selectCase(caseId);
+    }
+    const viewer = await getWorkflowNodeViewer(caseId, nodeId);
+    setNodeArtifactViewer(viewer);
+    setActiveView("nodeArtifact");
   }
 
   async function renameTaskBatch(batchId: string, name: string) {
@@ -474,9 +722,7 @@ export default function App() {
     setActiveBatch(null);
     setActiveCase(null);
     setCaseProgress(null);
-    setAssetPlan(null);
-    setSelectedAssetId("");
-    setUndoStack([]);
+    clearAssetEditingState();
   }
 
   async function runTaskBatch(batchId: string) {
@@ -594,9 +840,7 @@ export default function App() {
     } else {
       setActiveCase(null);
       setCaseProgress(null);
-      setAssetPlan(null);
-      setSelectedAssetId("");
-      setUndoStack([]);
+      clearAssetEditingState();
     }
   }
 
@@ -628,6 +872,15 @@ export default function App() {
                 onClick={() => setBoardMode("process")}
               >
                 处理
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={boardMode === "workflow"}
+                className={boardMode === "workflow" ? "active" : ""}
+                onClick={() => setBoardMode("workflow")}
+              >
+                Workflow
               </button>
             </div>
           )}
@@ -685,6 +938,8 @@ export default function App() {
               onError={setError}
             />
           </main>
+        ) : boardMode === "workflow" ? (
+          <WorkflowWorkspace onError={setError} />
         ) : (
         <BoardWorkspace
           batches={batches}
@@ -695,12 +950,21 @@ export default function App() {
           canvasReady={canvasReady}
           runInProgress={activeCaseRunning}
           canRunFromAssets={canRunFromAssets}
+          runCompatibility={runCompatibility}
+          runPackage={activeRunPackage}
+          v2Elements={v2Elements}
+          selectedV2ElementId={selectedV2ElementId}
+          selectedAssetPackage={selectedAssetPackage}
+          v2PackageError={v2PackageError}
+          v2AssetLoadingElementId={v2AssetLoadingElementId}
+          v2ActionPending={v2ActionPending}
+          canForkV2FromSource={canForkV2FromSource}
           caseActionPendingId={assetsRunPendingCaseId}
           pptxExportPendingCaseId={pptxExportPendingCaseId}
           batchPptxDownloadPendingId={batchPptxDownloadPendingId}
           batchRunPendingId={batchRunPendingId}
           onOpenSubmit={() => setSubmitOpen(true)}
-          onOpenAssetsEditor={() => openAssetsEditor().catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+          onOpenCaseAssets={(caseId) => openAssetsEditorForCase(caseId).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
           onOpenSvgEditor={() => setActiveView("svg")}
           onRenameBatch={(batch) => setTaskRenameTarget({ batchId: batch.batch_id, name: batch.name })}
           onDeleteBatch={(batch) => setTaskDeleteTarget({ batchId: batch.batch_id, name: batch.name })}
@@ -713,8 +977,37 @@ export default function App() {
           onExportPptx={(caseId) => exportPptxForCase(caseId)}
           onDownloadPptx={(caseId, artifact) => downloadPptxArtifactForCase(caseId, artifact).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
           onDownloadBatchPptx={(batchId) => downloadBatchPptxForBatch(batchId)}
+          onSelectV2Element={(elementId) => selectV2Element(elementId).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+          onProcessV2Asset={(processor, elementId) => processSelectedV2Asset(processor, elementId).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+          onSetActiveV2Result={(resultId) => activateV2AssetResult(resultId).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+          onForkV2FromSource={() => forkActiveCaseToV2().catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+          onOpenWorkflowNodeArtifact={(caseId, nodeId) => openWorkflowNodeArtifactCanvas(caseId, nodeId).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
         />
         )
+      ) : activeView === "editor" && runCompatibility === "v2" ? (
+        <V2AssetsWorkspace
+          activeCase={activeCase}
+          runPackage={activeRunPackage}
+          elements={v2Elements}
+          selectedElementId={selectedV2ElementId}
+          selectedAssetPackage={selectedAssetPackage}
+          packageError={v2PackageError}
+          loadingElementId={v2AssetLoadingElementId}
+          actionPending={v2ActionPending}
+          figureUrl={figureArtifact?.url || activeCase?.case.preview_url || ""}
+          runInProgress={activeCaseRunning}
+          onBackToBoard={() => setActiveView("board")}
+          onSelectElement={(elementId) => selectV2Element(elementId).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+          onProcessAsset={(processor, elementId) => processSelectedV2Asset(processor, elementId).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+          onSetActiveResult={(resultId) => activateV2AssetResult(resultId).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+          onRun={runFromEditor}
+        />
+      ) : activeView === "nodeArtifact" && nodeArtifactViewer ? (
+        <WorkflowNodeArtifactWorkspace
+          viewer={nodeArtifactViewer}
+          activeCase={activeCase}
+          onBackToBoard={() => setActiveView("board")}
+        />
       ) : activeView === "editor" ? (
         <EditorWorkspace
           activeCase={activeCase}
@@ -744,6 +1037,7 @@ export default function App() {
           canRunFromAssets={canRunFromAssets}
           runInProgress={activeCaseRunning}
           onRunFromAssets={() => runFromAssets().catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+          readOnly={legacyReadOnly}
         />
       )}
       {submitOpen && (
@@ -795,12 +1089,21 @@ function BoardWorkspace({
   canvasReady,
   runInProgress,
   canRunFromAssets,
+  runCompatibility,
+  runPackage,
+  v2Elements,
+  selectedV2ElementId,
+  selectedAssetPackage,
+  v2PackageError,
+  v2AssetLoadingElementId,
+  v2ActionPending,
+  canForkV2FromSource,
   caseActionPendingId,
   pptxExportPendingCaseId,
   batchPptxDownloadPendingId,
   batchRunPendingId,
   onOpenSubmit,
-  onOpenAssetsEditor,
+  onOpenCaseAssets,
   onOpenSvgEditor,
   onRenameBatch,
   onDeleteBatch,
@@ -812,7 +1115,12 @@ function BoardWorkspace({
   onRetryCase,
   onExportPptx,
   onDownloadPptx,
-  onDownloadBatchPptx
+  onDownloadBatchPptx,
+  onSelectV2Element,
+  onProcessV2Asset,
+  onSetActiveV2Result,
+  onForkV2FromSource,
+  onOpenWorkflowNodeArtifact
 }: {
   batches: BatchRecord[];
   activeBatch: BatchDetail | null;
@@ -822,12 +1130,21 @@ function BoardWorkspace({
   canvasReady: boolean;
   runInProgress: boolean;
   canRunFromAssets: boolean;
+  runCompatibility: RunCompatibilityMode;
+  runPackage: V2RunPackage | null;
+  v2Elements: V2ElementPlan[];
+  selectedV2ElementId: string;
+  selectedAssetPackage: V2AssetPackage | null;
+  v2PackageError: string;
+  v2AssetLoadingElementId: string;
+  v2ActionPending: string;
+  canForkV2FromSource: boolean;
   caseActionPendingId: string;
   pptxExportPendingCaseId: string;
   batchPptxDownloadPendingId: string;
   batchRunPendingId: string;
   onOpenSubmit: () => void;
-  onOpenAssetsEditor: () => void;
+  onOpenCaseAssets: (caseId: string) => void;
   onOpenSvgEditor: () => void;
   onRenameBatch: (batch: BatchRecord) => void;
   onDeleteBatch: (batch: BatchRecord) => void;
@@ -840,6 +1157,11 @@ function BoardWorkspace({
   onExportPptx: (caseId: string) => Promise<ArtifactRecord[]>;
   onDownloadPptx: (caseId: string, artifact: ArtifactRecord) => void | Promise<void>;
   onDownloadBatchPptx: (batchId: string) => void | Promise<void>;
+  onSelectV2Element: (elementId: string) => void;
+  onProcessV2Asset: (processor: V2ProcessorType, elementId?: string) => void;
+  onSetActiveV2Result: (resultId: string) => void;
+  onForkV2FromSource: () => void;
+  onOpenWorkflowNodeArtifact: (caseId: string, nodeId: string) => void;
 }) {
   return (
     <main className="board-workspace">
@@ -852,12 +1174,13 @@ function BoardWorkspace({
           canvasReady={canvasReady}
           runInProgress={runInProgress}
           canRunFromAssets={canRunFromAssets}
+          runCompatibility={runCompatibility}
           caseActionPendingId={caseActionPendingId}
           pptxExportPendingCaseId={pptxExportPendingCaseId}
           batchPptxDownloadPendingId={batchPptxDownloadPendingId}
           batchRunPendingId={batchRunPendingId}
           onOpenSubmit={onOpenSubmit}
-          onOpenAssetsEditor={onOpenAssetsEditor}
+          onOpenCaseAssets={onOpenCaseAssets}
           onOpenSvgEditor={onOpenSvgEditor}
           onRenameBatch={onRenameBatch}
           onDeleteBatch={onDeleteBatch}
@@ -874,6 +1197,22 @@ function BoardWorkspace({
         <TaskDetailPanel
           caseDetail={activeCase}
           progress={caseProgress}
+          workflowTemplateId={activeBatch?.batch.workflow_template_id || ""}
+          runCompatibility={runCompatibility}
+          runPackage={runPackage}
+          v2Elements={v2Elements}
+          selectedV2ElementId={selectedV2ElementId}
+          selectedAssetPackage={selectedAssetPackage}
+          v2PackageError={v2PackageError}
+          v2AssetLoadingElementId={v2AssetLoadingElementId}
+          v2ActionPending={v2ActionPending}
+          canForkV2FromSource={canForkV2FromSource}
+          onSelectV2Element={onSelectV2Element}
+          onProcessV2Asset={onProcessV2Asset}
+          onSetActiveV2Result={onSetActiveV2Result}
+          onForkV2FromSource={onForkV2FromSource}
+          onOpenCaseAssets={onOpenCaseAssets}
+          onOpenWorkflowNodeArtifact={onOpenWorkflowNodeArtifact}
         />
       </div>
     </main>
@@ -1107,10 +1446,42 @@ function TaskDeleteDialog({
 
 function TaskDetailPanel({
   caseDetail,
-  progress
+  progress,
+  workflowTemplateId,
+  runCompatibility,
+  runPackage,
+  v2Elements,
+  selectedV2ElementId,
+  selectedAssetPackage,
+  v2PackageError,
+  v2AssetLoadingElementId,
+  v2ActionPending,
+  canForkV2FromSource,
+  onSelectV2Element,
+  onProcessV2Asset,
+  onSetActiveV2Result,
+  onForkV2FromSource,
+  onOpenCaseAssets,
+  onOpenWorkflowNodeArtifact
 }: {
   caseDetail: CaseDetail | null;
   progress: CaseProgress | null;
+  workflowTemplateId: string;
+  runCompatibility: RunCompatibilityMode;
+  runPackage: V2RunPackage | null;
+  v2Elements: V2ElementPlan[];
+  selectedV2ElementId: string;
+  selectedAssetPackage: V2AssetPackage | null;
+  v2PackageError: string;
+  v2AssetLoadingElementId: string;
+  v2ActionPending: string;
+  canForkV2FromSource: boolean;
+  onSelectV2Element: (elementId: string) => void;
+  onProcessV2Asset: (processor: V2ProcessorType, elementId?: string) => void;
+  onSetActiveV2Result: (resultId: string) => void;
+  onForkV2FromSource: () => void;
+  onOpenCaseAssets: (caseId: string) => void;
+  onOpenWorkflowNodeArtifact: (caseId: string, nodeId: string) => void;
 }) {
   if (!caseDetail) {
     return (
@@ -1121,9 +1492,1076 @@ function TaskDetailPanel({
   }
   return (
     <aside className="task-detail-panel">
-      <PipelineProgressPanel caseDetail={caseDetail} progress={progress} />
+      <DagRunPanel
+        caseDetail={caseDetail}
+        progress={progress}
+        workflowTemplateId={workflowTemplateId}
+        onOpenAssetsReview={() => onOpenCaseAssets(caseDetail.case.case_id)}
+        onOpenNodeArtifact={(nodeId) => onOpenWorkflowNodeArtifact(caseDetail.case.case_id, nodeId)}
+      />
+      {runCompatibility === "legacy_readonly" && (
+        <LegacyReadOnlyBanner
+          canForkV2FromSource={canForkV2FromSource}
+          actionPending={v2ActionPending === "fork"}
+          onForkV2FromSource={onForkV2FromSource}
+        />
+      )}
+      {runCompatibility === "v2" && v2PackageError && <p className="detail-error">{shortenError(v2PackageError)}</p>}
       {caseDetail.case.error_message && <p className="detail-error">{shortenError(caseDetail.case.error_message)}</p>}
     </aside>
+  );
+}
+
+type DagNodeView = {
+  node: WorkflowTemplate["nodes"][number];
+  state: PipelineNodeState;
+  stage: string;
+  meta: string;
+  error: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+function DagRunPanel({
+  caseDetail,
+  progress,
+  workflowTemplateId,
+  onOpenAssetsReview,
+  onOpenNodeArtifact
+}: {
+  caseDetail: CaseDetail;
+  progress: CaseProgress | null;
+  workflowTemplateId: string;
+  onOpenAssetsReview: () => void;
+  onOpenNodeArtifact: (nodeId: string) => void | Promise<void>;
+}) {
+  const [templates, setTemplates] = useState<WorkflowTemplate[]>([]);
+  const [loadError, setLoadError] = useState("");
+  const [selectedNodeId, setSelectedNodeId] = useState("");
+  const [viewerError, setViewerError] = useState("");
+  const [viewerLoadingNodeId, setViewerLoadingNodeId] = useState("");
+
+  useEffect(() => {
+    let canceled = false;
+    listWorkflowTemplates()
+      .then((response) => {
+        if (canceled) return;
+        setTemplates(response.templates);
+        setLoadError("");
+      })
+      .catch((err) => {
+        if (canceled) return;
+        setLoadError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      canceled = true;
+    };
+  }, [workflowTemplateId]);
+
+  const template = templates.find((item) => item.template_id === workflowTemplateId) || templates.find((item) => item.template_id === "default_drawai_dag") || null;
+  const stageRuns = stageRunList(progress?.stage_runs || caseDetail.stage_runs);
+  const files = progress?.files || [];
+  const layout = useMemo(() => (template ? buildWorkflowPreviewLayout(template) : null), [template]);
+  const views = useMemo(() => buildDagNodeViews(template, layout, caseDetail, stageRuns, files), [template, layout, caseDetail, stageRuns, files]);
+  const selectedView = views.find((item) => item.node.node_id === selectedNodeId) || views.find((item) => item.state === "running") || views.find((item) => item.state === "review") || views[0] || null;
+  const viewByNodeId = useMemo(() => new Map(views.map((view) => [view.node.node_id, view])), [views]);
+  useEffect(() => {
+    setSelectedNodeId("");
+    setViewerError("");
+    setViewerLoadingNodeId("");
+  }, [caseDetail.case.case_id, workflowTemplateId]);
+
+  useEffect(() => {
+    setViewerError("");
+    setViewerLoadingNodeId("");
+  }, [selectedView?.node.node_id]);
+
+  async function openNodeViewer(nodeId: string) {
+    setViewerLoadingNodeId(nodeId);
+    setViewerError("");
+    try {
+      await onOpenNodeArtifact(nodeId);
+    } catch (err) {
+      setViewerError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setViewerLoadingNodeId((current) => (current === nodeId ? "" : current));
+    }
+  }
+
+  return (
+    <section className="dag-run-card">
+      <header className="dag-run-head">
+        <div>
+          <span>Workflow run</span>
+          <strong>{template?.name || workflowTemplateId || "Default DrawAI DAG"}</strong>
+        </div>
+        <em>{caseDetail.case.name}</em>
+      </header>
+      {loadError && <p className="detail-error">{shortenError(loadError)}</p>}
+      <div className="dag-run-body">
+        <div className="dag-run-canvas">
+          {layout ? (
+            <>
+              <svg className="dag-run-edges" viewBox={`0 0 ${layout.width} ${layout.height}`} preserveAspectRatio="none" aria-hidden="true">
+                {layout.edges.map((edgeLayout) => {
+                  const source = viewByNodeId.get(edgeLayout.edge.source_node_id);
+                  const target = viewByNodeId.get(edgeLayout.edge.target_node_id);
+                  const sourceState = source?.state || "waiting";
+                  const targetState = target?.state || "waiting";
+                  const edgeState =
+                    sourceState === "running" || targetState === "running"
+                      ? "running"
+                      : sourceState === "done" && targetState === "done"
+                        ? "done"
+                        : "waiting";
+                  return <path key={edgeLayout.edge.edge_id} className={edgeState} d={edgeLayout.d} />;
+                })}
+              </svg>
+              {views.map((view) => (
+                <button
+                  type="button"
+                  key={view.node.node_id}
+                  className={`dag-run-node ${view.state} node-${view.node.node_type} ${selectedView?.node.node_id === view.node.node_id ? "active" : ""}`}
+                  style={{
+                    left: `${toPercent(view.x, layout.width)}%`,
+                    top: `${toPercent(view.y, layout.height)}%`,
+                    width: `${toPercent(view.width, layout.width)}%`,
+                    height: `${toPercent(view.height, layout.height)}%`
+                  }}
+                  onClick={() => setSelectedNodeId(view.node.node_id)}
+                >
+                  <span className="dag-node-icon">
+                    <WorkflowNodeIcon nodeType={view.node.node_type} />
+                  </span>
+                  <strong>{view.node.title}</strong>
+                  <em>{stateLabel(view.state)}</em>
+                </button>
+              ))}
+            </>
+          ) : (
+            <EmptyState label="还没有 Workflow 节点" />
+          )}
+        </div>
+        <aside className="dag-node-detail">
+          {selectedView ? (
+            <>
+              <div className="dag-node-detail-head">
+                <span>{selectedView.node.node_type}</span>
+                <strong>{selectedView.node.title}</strong>
+                <em className={selectedView.state}>{stateLabel(selectedView.state)}</em>
+              </div>
+              <dl>
+                <div><dt>Stage</dt><dd>{selectedView.stage ? humanize(selectedView.stage) : "Workflow node"}</dd></div>
+                <div><dt>Node ID</dt><dd>{selectedView.node.node_id}</dd></div>
+                <div><dt>Runtime</dt><dd>{selectedView.meta}</dd></div>
+                <div><dt>Inputs</dt><dd>{selectedView.node.inputs.map((portItem) => portItem.types.join("/")).join(", ") || "-"}</dd></div>
+                <div><dt>Outputs</dt><dd>{selectedView.node.outputs.map((portItem) => portItem.types.join("/")).join(", ") || "-"}</dd></div>
+              </dl>
+              {selectedView.error && <p className="detail-error">{shortenError(selectedView.error)}</p>}
+              <div className="dag-node-actions">
+                <button
+                  type="button"
+                  onClick={() => openNodeViewer(selectedView.node.node_id)}
+                  disabled={viewerLoadingNodeId === selectedView.node.node_id}
+                >
+                  {viewerLoadingNodeId === selectedView.node.node_id ? "加载中" : "查看产物"}
+                </button>
+                {selectedView.node.node_type === "human_review" && String(selectedView.node.config.review_surface || "assets") === "assets" && (
+                  <button type="button" className="primary" onClick={onOpenAssetsReview}>
+                    Open assets review
+                  </button>
+                )}
+                {selectedView.node.node_type === "output" && caseDetail.artifacts.length > 0 && (
+                  <a href={caseDetail.artifacts[0].url} target="_blank" rel="noreferrer">
+                    Open output
+                  </a>
+                )}
+              </div>
+              {viewerError && <p className="detail-error">{shortenError(viewerError)}</p>}
+            </>
+          ) : (
+            <EmptyState label="还没有 Workflow 节点" />
+          )}
+        </aside>
+      </div>
+    </section>
+  );
+}
+
+function nodeViewerKindLabel(kind: string): string {
+  if (kind === "element_candidates") return "候选框";
+  if (kind === "element_plans") return "元素计划";
+  if (kind === "element_analysis") return "Agent 分析";
+  return "文件";
+}
+
+function WorkflowNodeArtifactWorkspace({
+  viewer,
+  activeCase,
+  onBackToBoard
+}: {
+  viewer: WorkflowNodeViewer;
+  activeCase: CaseDetail | null;
+  onBackToBoard: () => void;
+}) {
+  const editorRef = useRef<HTMLElement | null>(null);
+  const [zoom, setZoom] = useState(0.72);
+  const [selectedElementId, setSelectedElementId] = useState(viewer.elements[0]?.element_id || "");
+  const [elementFilter, setElementFilter] = useState<V2ElementFilter>(EMPTY_V2_ELEMENT_FILTER);
+  const filteredElements = useMemo(
+    () => filterV2Elements(viewer.elements, elementFilter, null, viewer.kind),
+    [viewer.elements, elementFilter, viewer.kind]
+  );
+  const fileLinks = viewer.files.filter((file) => file.exists && file.url);
+
+  const changeZoom = useCallback((delta: number) => {
+    setZoom((value) => clamp(Number((value + delta).toFixed(2)), 0.25, 2.5));
+  }, []);
+
+  useEffect(() => {
+    setZoom(0.72);
+    setSelectedElementId(viewer.elements[0]?.element_id || "");
+    setElementFilter(EMPTY_V2_ELEMENT_FILTER);
+  }, [viewer.case_id, viewer.node_id, viewer.attempt_id, viewer.source_path]);
+
+  useEffect(() => {
+    if (!filteredElements.length) return;
+    if (!filteredElements.some((element) => element.element_id === selectedElementId)) {
+      setSelectedElementId(filteredElements[0].element_id);
+    }
+  }, [filteredElements, selectedElementId]);
+
+  useEffect(() => {
+    const root = editorRef.current;
+    if (!root) return;
+
+    function handleWheel(event: globalThis.WheelEvent) {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      if (event.target instanceof Element && event.target.closest(".canvas-stage")) {
+        changeZoom(event.deltaY < 0 ? 0.03 : -0.03);
+      }
+    }
+
+    root.addEventListener("wheel", handleWheel, { passive: false, capture: true });
+    return () => root.removeEventListener("wheel", handleWheel, { capture: true });
+  }, [changeZoom]);
+
+  const topbarTarget = typeof document !== "undefined" ? document.getElementById("drawai-view-controls") : null;
+  const topbarPortal = topbarTarget
+    ? createPortal(
+        <div className="editor-banner-controls node-artifact-banner-controls">
+          <button className="home-button" title="返回任务" aria-label="返回任务" onClick={onBackToBoard}>
+            <HomeIcon />
+          </button>
+          <div className="editor-title">
+            <div>
+              <strong>{activeCase?.case.name || viewer.title || viewer.node_id}</strong>
+              <span>
+                {viewer.node_id} · {viewer.attempt_id ? `run ${viewer.attempt_id}` : "not run"} · {filteredElements.length}/{viewer.elements.length} 框
+              </span>
+            </div>
+          </div>
+          <div className="artifact-kind-pill">{nodeViewerKindLabel(viewer.kind)}</div>
+          <div className="editor-toolbar">
+            <V2ElementFilterControls
+              elements={viewer.elements}
+              filter={elementFilter}
+              onChange={setElementFilter}
+              packageByElementId={null}
+              statusFallback={viewer.kind}
+              showStatus={false}
+            />
+          </div>
+          <div className="editor-actions">
+            <div className="tool-group">
+              <button className="icon-button" title="缩小" onClick={() => changeZoom(-0.1)}>−</button>
+              <span className="zoom-readout">{Math.round(zoom * 100)}%</span>
+              <button className="icon-button" title="放大" onClick={() => changeZoom(0.1)}>+</button>
+            </div>
+          </div>
+        </div>,
+        topbarTarget
+      )
+    : null;
+
+  return (
+    <>
+      {topbarPortal}
+      <main ref={editorRef} className="editor-workspace v2-assets-workspace node-artifact-workspace">
+        <div className="asset-stage v2-assets-stage" data-asset-view="extraction">
+          {viewer.available && viewer.source_image.url ? (
+            <V2AssetCanvas
+              activeCase={activeCase}
+              runPackage={null}
+              elements={viewer.elements}
+              selectedElementId={selectedElementId}
+              selectedAssetPackage={null}
+              figureUrl={viewer.source_image.url}
+              zoom={zoom}
+              filter={elementFilter}
+              statusFallback={viewer.kind}
+              onSelectElement={setSelectedElementId}
+            />
+          ) : (
+            <section className="canvas-layout v2-assets-layout node-artifact-empty">
+              <div className="canvas-stage v2-assets-canvas">
+                <EmptyState label={viewer.message || "这个节点没有可视化产物"} />
+              </div>
+            </section>
+          )}
+        </div>
+        <div className="node-artifact-file-strip" aria-label="节点产物文件">
+          <span>来源：{viewer.source_path || viewer.source_image.relative_path || "-"}</span>
+          <span>工作目录：{viewer.workdir || "-"}</span>
+          {fileLinks.slice(0, 5).map((file) => (
+            <a key={file.relative_path} href={file.url} target="_blank" rel="noreferrer">
+              {file.label}
+            </a>
+          ))}
+        </div>
+      </main>
+    </>
+  );
+}
+
+function LegacyReadOnlyBanner({
+  canForkV2FromSource,
+  actionPending,
+  onForkV2FromSource
+}: {
+  canForkV2FromSource: boolean;
+  actionPending: boolean;
+  onForkV2FromSource: () => void;
+}) {
+  return (
+    <section className="legacy-readonly-banner">
+      <div>
+        <strong>历史结果只读</strong>
+        <span>可以继续预览和下载已有 SVG / PPTX，但素材处理、SVG 编辑、重新组合和导出已关闭。</span>
+      </div>
+      {canForkV2FromSource ? (
+        <button type="button" className={actionPending ? "running" : ""} disabled={actionPending} onClick={onForkV2FromSource}>
+          {actionPending && <ButtonSpinner />}
+          {actionPending ? "创建中" : "从源图创建 v2 run"}
+        </button>
+      ) : (
+        <em>源图不可用，无法创建 v2 run</em>
+      )}
+    </section>
+  );
+}
+
+function V2AssetPackagePanel({
+  activeCase,
+  runPackage,
+  elements,
+  totalElementCount,
+  selectedElementId,
+  selectedAssetPackage,
+  loadingElementId,
+  packageError,
+  actionPending,
+  onSelectElement,
+  onProcessAsset,
+  onSetActiveResult
+}: {
+  activeCase: CaseDetail | null;
+  runPackage: V2RunPackage | null;
+  elements: V2ElementPlan[];
+  totalElementCount: number;
+  selectedElementId: string;
+  selectedAssetPackage: V2AssetPackage | null;
+  loadingElementId: string;
+  packageError: string;
+  actionPending: string;
+  onSelectElement: (elementId: string) => void;
+  onProcessAsset: (processor: V2ProcessorType, elementId?: string) => void;
+  onSetActiveResult: (resultId: string) => void;
+}) {
+  const selectedElement = elements.find((element) => element.element_id === selectedElementId) || null;
+  const packageByElementId = useMemo(() => {
+    const items = new Map<string, V2AssetPackage>();
+    (runPackage?.asset_packages || []).forEach((assetPackage) => {
+      items.set(assetPackage.element_id, assetPackage);
+    });
+    if (selectedAssetPackage) {
+      items.set(selectedAssetPackage.element_id, selectedAssetPackage);
+    }
+    return items;
+  }, [runPackage, selectedAssetPackage]);
+  const selectedPackage = selectedElement ? packageByElementId.get(selectedElement.element_id) || null : null;
+  const packageStatus = selectedPackage?.status || "pending";
+  const packageStatusClass = v2AssetStatusClass(packageStatus);
+  const activeResultId = selectedPackage?.active_result?.result_id || "";
+  const activeResultUrl = v2AssetResultUrl(activeCase, selectedPackage?.active_result || null);
+  const processedCount = elements.filter((element) => packageByElementId.get(element.element_id)?.status === "ok").length;
+  const pendingCount = elements.filter((element) => {
+    const status = packageByElementId.get(element.element_id)?.status || "pending";
+    return status === "pending" || status === "running";
+  }).length;
+  const canProcess = Boolean(selectedElement && !actionPending);
+  const activeProcessAction = (elementId: string, processor: V2ProcessorType) => actionPending === `process:${elementId}:${processor}`;
+  const activeAction = (prefix: string) => actionPending.startsWith(prefix);
+
+  return (
+    <section className="v2-package-panel">
+      <header className="v2-package-head">
+        <div>
+          <span>Assets 处理</span>
+          <strong>{elements.length}/{totalElementCount} 个元素 · {processedCount} 已处理 · {pendingCount} 待处理</strong>
+        </div>
+      </header>
+
+      {packageError && <p className="detail-error">{shortenError(packageError)}</p>}
+
+      <div className="v2-asset-table-wrap" aria-label="v2 assets 表格">
+        {elements.length > 0 ? (
+          <table className="v2-asset-table">
+            <thead>
+              <tr>
+                <th>Asset</th>
+                <th>类型</th>
+                <th>处理</th>
+                <th>状态</th>
+                <th>结果</th>
+                <th>操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              {elements.map((element) => {
+                const assetPackage = packageByElementId.get(element.element_id) || null;
+                const status = assetPackage?.status || "pending";
+                const plannedProcessor = v2PlannedProcessor(element);
+                const activeResult = assetPackage?.active_result || null;
+                const rowPending = plannedProcessor ? activeProcessAction(element.element_id, plannedProcessor) : false;
+                const rowSelected = element.element_id === selectedElementId;
+                const rowLoading = loadingElementId === element.element_id;
+                return (
+                  <tr
+                    key={element.element_id}
+                    className={rowSelected ? "active" : ""}
+                    onClick={() => onSelectElement(element.element_id)}
+                  >
+                    <td>
+                      <strong>{element.element_id}</strong>
+                      <span>{bboxText(element.bbox)}</span>
+                    </td>
+                    <td>{humanize(element.element_type)}</td>
+                    <td>{humanize(element.processing_intent.processing_type)}</td>
+                    <td>
+                      <span className={`v2-asset-status-pill ${v2AssetStatusClass(status)}`}>{rowLoading ? "加载中" : humanize(status)}</span>
+                    </td>
+                    <td>
+                      <span>{activeResult ? v2ResultLabel(activeResult) : "未生成"}</span>
+                    </td>
+                    <td>
+                      {plannedProcessor ? (
+                        <button
+                          type="button"
+                          className={rowPending ? "running" : ""}
+                          disabled={Boolean(actionPending)}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onProcessAsset(plannedProcessor, element.element_id);
+                          }}
+                        >
+                          {rowPending && <ButtonSpinner />}
+                          处理
+                        </button>
+                      ) : element.processing_intent.processing_type === "chart_rebuild_reserved" ? (
+                        <button type="button" disabled title="图表 Agent 接口已预留，当前版本不执行">
+                          预留
+                        </button>
+                      ) : (
+                        <button type="button" disabled>
+                          自绘
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        ) : (
+          <EmptyState label={totalElementCount > 0 ? "筛选后没有 v2 元素" : "还没有 v2 元素"} />
+        )}
+      </div>
+
+      <div className="v2-asset-drawer">
+        {selectedElement ? (
+          <>
+            <div className="v2-asset-summary">
+              <div>
+                <span>类型</span>
+                <strong>{humanize(selectedElement.element_type)}</strong>
+              </div>
+              <div>
+                <span>XYWH</span>
+                <strong>{bboxText(selectedElement.bbox)}</strong>
+              </div>
+              <div>
+                <span>处理</span>
+                <strong>{humanize(selectedElement.processing_intent.processing_type)}</strong>
+              </div>
+              <div className={packageStatusClass}>
+                <span>状态</span>
+                <strong>{humanize(packageStatus)}</strong>
+              </div>
+            </div>
+            <div className={activeResultUrl ? "v2-result-preview" : "v2-result-preview is-empty"}>
+              {activeResultUrl ? (
+                <a href={activeResultUrl} target="_blank" rel="noreferrer">
+                  <img src={activeResultUrl} alt="" />
+                </a>
+              ) : (
+                <span>还没有 active result</span>
+              )}
+            </div>
+            <div className="v2-asset-intent">
+              <span>{selectedElement.processing_intent.object_type}</span>
+              <code>{compactJson(selectedElement.processing_intent.parameters)}</code>
+            </div>
+
+            <div className="v2-processor-toolbar" aria-label="v2 资产处理器">
+              {V2_PROCESSABLE_PROCESSORS.map((processor) => (
+                <button
+                  type="button"
+                  key={processor}
+                  disabled={!canProcess || activeAction("process:")}
+                  onClick={() => onProcessAsset(processor, selectedElement.element_id)}
+                >
+                  {activeProcessAction(selectedElement.element_id, processor) && <ButtonSpinner />}
+                  {v2ProcessorLabel(processor)}
+                </button>
+              ))}
+              <button type="button" className="asset-status-unsupported" disabled title="图表 Agent 接口已预留，当前版本不执行">
+                Chart Agent
+              </button>
+            </div>
+
+            {selectedPackage?.failure && (
+              <p className="asset-status-failed">{shortenError(selectedPackage.failure)}</p>
+            )}
+
+            <div className="v2-result-list">
+              <div className="v2-subhead">
+                <span>处理结果</span>
+                <strong>{activeResultId || "未设置"}</strong>
+              </div>
+              {(selectedPackage?.all_results || []).map((result) => {
+                const resultUrl = v2AssetResultUrl(activeCase, result);
+                return (
+                  <div className="v2-result-row" key={result.result_id}>
+                    <div>
+                      <strong>{result.result_id}</strong>
+                      <span>{humanize(result.processor_type)} · {humanize(result.kind)}{result.path ? ` · ${result.path}` : ""}</span>
+                    </div>
+                    <div className="v2-result-actions">
+                      {resultUrl && <a href={resultUrl} target="_blank" rel="noreferrer">查看</a>}
+                      {result.result_id === activeResultId ? (
+                        <em>Active</em>
+                      ) : (
+                        <button type="button" disabled={Boolean(actionPending)} onClick={() => onSetActiveResult(result.result_id)}>
+                          {actionPending === `active:${result.result_id}` && <ButtonSpinner />}
+                          设为 Active
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+              {(!selectedPackage || selectedPackage.all_results.length === 0) && <EmptyState label="还没有处理结果" />}
+            </div>
+
+            <div className="v2-processor-history">
+              <div className="v2-subhead">
+                <span>处理历史</span>
+                <strong>{selectedPackage?.processor_runs.length || 0}</strong>
+              </div>
+              {(selectedPackage?.processor_runs || []).slice().reverse().map((run, index) => (
+                <div className="v2-history-row" key={`${run.processor_type}-${run.started_at}-${index}`}>
+                  <div>
+                    <strong>{humanize(run.processor_type)}</strong>
+                    <span>{durationText(run.started_at, run.ended_at)}</span>
+                  </div>
+                  <em className={run.status === "failed" ? "asset-status-failed" : run.status === "unsupported" ? "asset-status-unsupported" : ""}>
+                    {humanize(run.status)}
+                  </em>
+                </div>
+              ))}
+              {(!selectedPackage || selectedPackage.processor_runs.length === 0) && <EmptyState label="还没有处理历史" />}
+            </div>
+          </>
+        ) : (
+          <EmptyState label="选择一个 v2 元素" />
+        )}
+      </div>
+    </section>
+  );
+}
+
+function V2AssetsWorkspace({
+  activeCase,
+  runPackage,
+  elements,
+  selectedElementId,
+  selectedAssetPackage,
+  packageError,
+  loadingElementId,
+  actionPending,
+  figureUrl,
+  runInProgress,
+  onBackToBoard,
+  onSelectElement,
+  onProcessAsset,
+  onSetActiveResult,
+  onRun
+}: {
+  activeCase: CaseDetail | null;
+  runPackage: V2RunPackage | null;
+  elements: V2ElementPlan[];
+  selectedElementId: string;
+  selectedAssetPackage: V2AssetPackage | null;
+  packageError: string;
+  loadingElementId: string;
+  actionPending: string;
+  figureUrl: string;
+  runInProgress: boolean;
+  onBackToBoard: () => void;
+  onSelectElement: (elementId: string) => void;
+  onProcessAsset: (processor: V2ProcessorType, elementId?: string) => void;
+  onSetActiveResult: (resultId: string) => void;
+  onRun: () => void;
+}) {
+  const editorRef = useRef<HTMLElement | null>(null);
+  const [zoom, setZoom] = useState(0.72);
+  const [assetView, setAssetView] = useState<AssetEditorView>("extraction");
+  const [elementFilter, setElementFilter] = useState<V2ElementFilter>(EMPTY_V2_ELEMENT_FILTER);
+  const runPending = runInProgress || actionPending === "compose";
+  const canRun = Boolean(runPackage && !runPending && !actionPending && !hasBlockingAssetPackage(runPackage));
+  const packageByElementId = useMemo(() => {
+    const items = new Map<string, V2AssetPackage>();
+    (runPackage?.asset_packages || []).forEach((assetPackage) => {
+      items.set(assetPackage.element_id, assetPackage);
+    });
+    if (selectedAssetPackage) {
+      items.set(selectedAssetPackage.element_id, selectedAssetPackage);
+    }
+    return items;
+  }, [runPackage, selectedAssetPackage]);
+  const filteredElements = useMemo(
+    () => filterV2Elements(elements, elementFilter, packageByElementId, "pending"),
+    [elements, elementFilter, packageByElementId]
+  );
+
+  const changeZoom = useCallback((delta: number) => {
+    setZoom((value) => clamp(Number((value + delta).toFixed(2)), 0.25, 2.5));
+  }, []);
+
+  useEffect(() => {
+    if (!filteredElements.length) return;
+    if (!filteredElements.some((element) => element.element_id === selectedElementId)) {
+      onSelectElement(filteredElements[0].element_id);
+    }
+  }, [filteredElements, selectedElementId, onSelectElement]);
+
+  useEffect(() => {
+    const root = editorRef.current;
+    if (!root) return;
+
+    function handleWheel(event: globalThis.WheelEvent) {
+      if (!event.ctrlKey && !event.metaKey) return;
+      event.preventDefault();
+      if (event.target instanceof Element && event.target.closest(".canvas-stage")) {
+        changeZoom(event.deltaY < 0 ? 0.03 : -0.03);
+      }
+    }
+
+    root.addEventListener("wheel", handleWheel, { passive: false, capture: true });
+    return () => root.removeEventListener("wheel", handleWheel, { capture: true });
+  }, [changeZoom]);
+
+  const topbarTarget = typeof document !== "undefined" ? document.getElementById("drawai-view-controls") : null;
+  const topbarPortal = topbarTarget
+    ? createPortal(
+        <div className="editor-banner-controls assets-banner-controls">
+          <button className="home-button" title="返回任务" aria-label="返回任务" onClick={onBackToBoard}>
+            <HomeIcon />
+          </button>
+          <div className="editor-title">
+            <div>
+              <strong>{activeCase?.case.name || "未选择图片"}</strong>
+              <span>{humanize(activeCase?.case.status || "idle")} · {humanize(activeCase?.case.stage || "select a case")} · {filteredElements.length}/{elements.length} 框</span>
+            </div>
+          </div>
+          <div className={`asset-type-switch is-${assetView}`} role="tablist" aria-label="v2 assets 查看模式">
+            <span className="asset-type-switch__thumb" aria-hidden="true" />
+            <button
+              type="button"
+              role="tab"
+              aria-selected={assetView === "extraction"}
+              className={assetView === "extraction" ? "active" : ""}
+              onClick={() => setAssetView("extraction")}
+            >
+              <span className="asset-type-switch__index">1</span>
+              提取
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={assetView === "processing"}
+              className={assetView === "processing" ? "active" : ""}
+              onClick={() => setAssetView("processing")}
+            >
+              <span className="asset-type-switch__index">2</span>
+              处理
+            </button>
+          </div>
+          <div className="editor-toolbar">
+            {assetView === "extraction" ? (
+              <>
+                <V2ElementFilterControls
+                  elements={elements}
+                  filter={elementFilter}
+                  onChange={setElementFilter}
+                  packageByElementId={packageByElementId}
+                  statusFallback="pending"
+                />
+                <div className="tool-group">
+                  <button className="icon-button" title="缩小" onClick={() => changeZoom(-0.1)}>−</button>
+                  <span className="zoom-readout">{Math.round(zoom * 100)}%</span>
+                  <button className="icon-button" title="放大" onClick={() => changeZoom(0.1)}>+</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <V2ElementFilterControls
+                  elements={elements}
+                  filter={elementFilter}
+                  onChange={setElementFilter}
+                  packageByElementId={packageByElementId}
+                  statusFallback="pending"
+                />
+                <div className="toolbar-note">查看处理结果并切换 active result</div>
+              </>
+            )}
+          </div>
+          <div className="editor-actions">
+            <button
+              type="button"
+              className={runPending ? "primary run-button running" : "primary run-button"}
+              disabled={!canRun}
+              onClick={onRun}
+            >
+              {runPending && <ButtonSpinner />}
+              {runPending ? "运行中" : "运行"}
+            </button>
+          </div>
+        </div>,
+        topbarTarget
+      )
+    : null;
+
+  return (
+    <>
+      {topbarPortal}
+      <main ref={editorRef} className="editor-workspace v2-assets-workspace">
+        <div className="asset-stage v2-assets-stage" key={assetView} data-asset-view={assetView}>
+          {assetView === "extraction" ? (
+            <V2AssetCanvas
+              activeCase={activeCase}
+              runPackage={runPackage}
+              elements={elements}
+              selectedElementId={selectedElementId}
+              selectedAssetPackage={selectedAssetPackage}
+              figureUrl={figureUrl}
+              zoom={zoom}
+              filter={elementFilter}
+              statusFallback="pending"
+              onSelectElement={onSelectElement}
+            />
+          ) : (
+            <section className="v2-assets-processing-stage">
+              <V2AssetPackagePanel
+                activeCase={activeCase}
+                runPackage={runPackage}
+                elements={filteredElements}
+                totalElementCount={elements.length}
+                selectedElementId={selectedElementId}
+                selectedAssetPackage={selectedAssetPackage}
+                loadingElementId={loadingElementId}
+                packageError={packageError}
+                actionPending={actionPending}
+                onSelectElement={onSelectElement}
+                onProcessAsset={onProcessAsset}
+                onSetActiveResult={onSetActiveResult}
+              />
+            </section>
+          )}
+        </div>
+      </main>
+    </>
+  );
+}
+
+function V2ElementFilterControls({
+  elements,
+  filter,
+  onChange,
+  packageByElementId,
+  statusFallback,
+  showStatus = true
+}: {
+  elements: V2ElementPlan[];
+  filter: V2ElementFilter;
+  onChange: (filter: V2ElementFilter) => void;
+  packageByElementId: Map<string, V2AssetPackage> | null;
+  statusFallback: string;
+  showStatus?: boolean;
+}) {
+  const elementTypeOptions = useMemo(
+    () => uniqueSorted(elements.map((element) => element.element_type).filter(Boolean)),
+    [elements]
+  );
+  const processingOptions = useMemo(
+    () => uniqueSorted(elements.map((element) => element.processing_intent.processing_type).filter(Boolean)),
+    [elements]
+  );
+  const statusOptions = useMemo(
+    () => showStatus
+      ? uniqueSorted(elements.map((element) => v2ElementFilterStatus(element, packageByElementId, statusFallback)).filter(Boolean))
+      : [],
+    [elements, packageByElementId, statusFallback, showStatus]
+  );
+  const active = Boolean(filter.query || filter.elementType || filter.processingType || filter.status);
+
+  function update(patch: Partial<V2ElementFilter>) {
+    onChange({ ...filter, ...patch });
+  }
+
+  return (
+    <div className="element-filter-bar" aria-label="筛选框">
+      <input
+        value={filter.query}
+        onChange={(event) => update({ query: event.target.value })}
+        placeholder="筛选框"
+      />
+      <select value={filter.elementType} onChange={(event) => update({ elementType: event.target.value })} aria-label="元素类型">
+        <option value="">全部类型</option>
+        {elementTypeOptions.map((value) => (
+          <option key={value} value={value}>{humanize(value)}</option>
+        ))}
+      </select>
+      <select value={filter.processingType} onChange={(event) => update({ processingType: event.target.value })} aria-label="处理类型">
+        <option value="">全部处理</option>
+        {processingOptions.map((value) => (
+          <option key={value} value={value}>{humanize(value)}</option>
+        ))}
+      </select>
+      {showStatus && (
+        <select value={filter.status} onChange={(event) => update({ status: event.target.value })} aria-label="资产状态">
+          <option value="">全部状态</option>
+          {statusOptions.map((value) => (
+            <option key={value} value={value}>{humanize(value)}</option>
+          ))}
+        </select>
+      )}
+      {active && (
+        <button type="button" className="element-filter-clear" onClick={() => onChange(EMPTY_V2_ELEMENT_FILTER)}>
+          清除
+        </button>
+      )}
+    </div>
+  );
+}
+
+function V2AssetCanvas({
+  activeCase,
+  runPackage,
+  elements,
+  selectedElementId,
+  selectedAssetPackage,
+  figureUrl,
+  zoom,
+  filter = EMPTY_V2_ELEMENT_FILTER,
+  statusFallback = "pending",
+  onSelectElement
+}: {
+  activeCase: CaseDetail | null;
+  runPackage: V2RunPackage | null;
+  elements: V2ElementPlan[];
+  selectedElementId: string;
+  selectedAssetPackage: V2AssetPackage | null;
+  figureUrl: string;
+  zoom: number;
+  filter?: V2ElementFilter;
+  statusFallback?: string;
+  onSelectElement: (elementId: string) => void;
+}) {
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const [naturalSize, setNaturalSize] = useState({ width: 1, height: 1 });
+  const [hoveredElementId, setHoveredElementId] = useState("");
+  const selectedElement = elements.find((element) => element.element_id === selectedElementId) || null;
+  const canvasWidth = naturalSize.width > 1 ? Math.max(320, Math.round(naturalSize.width * zoom)) : undefined;
+  const currentElementIds = useMemo(() => new Set(elements.map((element) => element.element_id)), [elements]);
+  const sourceElements = (runPackage?.source_elements || []).filter((element) => !currentElementIds.has(element.element_id));
+  const packageByElementId = useMemo(() => {
+    const items = new Map<string, V2AssetPackage>();
+    (runPackage?.asset_packages || []).forEach((assetPackage) => {
+      items.set(assetPackage.element_id, assetPackage);
+    });
+    if (selectedAssetPackage) {
+      items.set(selectedAssetPackage.element_id, selectedAssetPackage);
+    }
+    return items;
+  }, [runPackage, selectedAssetPackage]);
+  const visibleElements = [
+    ...sourceElements.map((element, originalIndex) => ({ element, originalIndex, area: v2BBoxArea(element.bbox), sourceOnly: true })),
+    ...elements.map((element, originalIndex) => ({ element, originalIndex: sourceElements.length + originalIndex, area: v2BBoxArea(element.bbox), sourceOnly: false }))
+  ]
+    .filter(({ element, sourceOnly }) => v2ElementMatchesFilter(element, filter, packageByElementId, sourceOnly ? "source" : statusFallback))
+    .sort((left, right) => right.area - left.area || left.originalIndex - right.originalIndex);
+  const hoveredElement = visibleElements.find(({ element }) => element.element_id === hoveredElementId)?.element || null;
+  const hoveredSourceOnly = visibleElements.find(({ element }) => element.element_id === hoveredElementId)?.sourceOnly || false;
+  const selectedStatus = selectedElement ? packageByElementId.get(selectedElement.element_id)?.status || "pending" : "";
+  const activeResultId = selectedElement ? packageByElementId.get(selectedElement.element_id)?.active_result?.result_id || "" : "";
+
+  return (
+    <section className="canvas-layout v2-assets-layout">
+      <div className="canvas-stage v2-assets-canvas">
+        {figureUrl ? (
+          <div className="image-overlay-wrap v2-image-overlay-wrap" style={canvasWidth ? { width: `${canvasWidth}px` } : undefined}>
+            <img
+              ref={imageRef}
+              src={figureUrl}
+              alt=""
+              draggable={false}
+              onLoad={(event) => setNaturalSize({ width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })}
+            />
+            {visibleElements.map(({ element, sourceOnly }, layerIndex) => {
+              const assetPackage = packageByElementId.get(element.element_id);
+              return (
+                <V2ElementBox
+                  key={element.element_id}
+                  element={element}
+                  naturalSize={naturalSize}
+                  selected={!sourceOnly && element.element_id === selectedElementId}
+                  status={assetPackage?.status || "pending"}
+                  sourceOnly={sourceOnly}
+                  zIndex={layerIndex + 1}
+                  onSelect={() => {
+                    if (!sourceOnly) onSelectElement(element.element_id);
+                  }}
+                  onHover={() => setHoveredElementId(element.element_id)}
+                  onLeave={() => setHoveredElementId((id) => (id === element.element_id ? "" : id))}
+                />
+              );
+            })}
+            {hoveredElement && (
+              <V2ElementTooltip
+                element={hoveredElement}
+                naturalSize={naturalSize}
+                status={packageByElementId.get(hoveredElement.element_id)?.status || "pending"}
+                sourceOnly={hoveredSourceOnly}
+              />
+            )}
+          </div>
+        ) : (
+          <EmptyState label="原图还没准备好" />
+        )}
+      </div>
+      {selectedElement && (
+        <div className="selection-bar v2-selection-bar">
+          <strong>{selectedElement.element_id}</strong>
+          <span>{humanize(selectedElement.element_type)} · {humanize(selectedElement.processing_intent.processing_type)}</span>
+          <em className={selectedStatus === "failed" ? "asset-status-failed" : selectedStatus === "unsupported" ? "asset-status-unsupported" : ""}>
+            {humanize(selectedStatus)}
+          </em>
+          {activeResultId && <code>{activeResultId}</code>}
+        </div>
+      )}
+      {!activeCase && <EmptyState label="请选择一张图" />}
+    </section>
+  );
+}
+
+function V2ElementBox({
+  element,
+  naturalSize,
+  selected,
+  status,
+  sourceOnly,
+  zIndex,
+  onSelect,
+  onHover,
+  onLeave
+}: {
+  element: V2ElementPlan;
+  naturalSize: { width: number; height: number };
+  selected: boolean;
+  status: V2AssetStatus;
+  sourceOnly: boolean;
+  zIndex: number;
+  onSelect: () => void;
+  onHover: () => void;
+  onLeave: () => void;
+}) {
+  const style = { ...v2BBoxStyle(element.bbox, naturalSize), zIndex };
+  const statusClass = status === "failed" ? "v2-asset-box-failed" : status === "unsupported" ? "v2-asset-box-unsupported" : "";
+  return (
+    <div
+      className={`asset-box v2-asset-box ${v2ElementProcessingClass(element)} ${statusClass} ${sourceOnly ? "v2-asset-box-source-only" : ""} ${selected ? "selected" : ""}`}
+      data-asset-id={element.element_id}
+      role={sourceOnly ? undefined : "button"}
+      tabIndex={sourceOnly ? undefined : 0}
+      style={style}
+      onPointerDown={(event) => {
+        event.stopPropagation();
+        if (sourceOnly) return;
+        onSelect();
+      }}
+      onPointerEnter={onHover}
+      onPointerLeave={onLeave}
+      onMouseEnter={onHover}
+      onMouseLeave={onLeave}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          if (sourceOnly) return;
+          onSelect();
+        }
+      }}
+    >
+      <span className="asset-badge">
+        {element.element_id} · {humanize(element.element_type)} · {humanize(element.processing_intent.processing_type)}
+      </span>
+      <span className="v2-asset-status-chip">{sourceOnly ? "来源" : humanize(status)}</span>
+    </div>
+  );
+}
+
+function V2ElementTooltip({
+  element,
+  naturalSize,
+  status,
+  sourceOnly
+}: {
+  element: V2ElementPlan;
+  naturalSize: { width: number; height: number };
+  status: V2AssetStatus;
+  sourceOnly: boolean;
+}) {
+  return (
+    <div className={`canvas-tooltip ${v2ElementProcessingClass(element)}`} style={v2TooltipStyle(element.bbox, naturalSize)}>
+      <strong>{element.element_id}</strong>
+      <em>{humanize(element.element_type)} · {humanize(element.processing_intent.object_type)}</em>
+      <small>{humanize(element.processing_intent.processing_type)} · {sourceOnly ? "来源展示" : humanize(status)} · {element.confidence}</small>
+      <p>{element.change_reason || bboxText(element.bbox)}</p>
+    </div>
   );
 }
 
@@ -1137,7 +2575,8 @@ function SvgWorkspace({
   pptxExporting,
   canRunFromAssets,
   runInProgress,
-  onRunFromAssets
+  onRunFromAssets,
+  readOnly
 }: {
   activeCase: CaseDetail | null;
   progress: CaseProgress | null;
@@ -1149,6 +2588,7 @@ function SvgWorkspace({
   canRunFromAssets: boolean;
   runInProgress: boolean;
   onRunFromAssets: () => void;
+  readOnly: boolean;
 }) {
   return (
     <main className="svg-workspace">
@@ -1164,6 +2604,7 @@ function SvgWorkspace({
           canRunFromAssets={canRunFromAssets}
           runInProgress={runInProgress}
           onRunFromAssets={onRunFromAssets}
+          readOnly={readOnly}
           standalone
         />
       ) : (
@@ -1188,6 +2629,7 @@ function SvgResultStudio({
   canRunFromAssets,
   runInProgress,
   onRunFromAssets,
+  readOnly,
   standalone = false
 }: {
   caseDetail: CaseDetail;
@@ -1200,6 +2642,7 @@ function SvgResultStudio({
   canRunFromAssets: boolean;
   runInProgress: boolean;
   onRunFromAssets: () => void;
+  readOnly: boolean;
   standalone?: boolean;
 }) {
   const caseId = caseDetail.case.case_id;
@@ -1294,6 +2737,7 @@ function SvgResultStudio({
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       if (isEditableTarget(event.target)) return;
+      if (readOnly) return;
       if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === "z") {
         event.preventDefault();
         undoSvgEdit();
@@ -1307,7 +2751,7 @@ function SvgResultStudio({
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [draftText, selectedPath]);
+  }, [draftText, readOnly, selectedPath]);
 
   function changeCanvasZoom(delta: number) {
     setZoom((value) => clamp(Number((value + delta).toFixed(2)), 0.3, 4));
@@ -1334,7 +2778,7 @@ function SvgResultStudio({
   }
 
   function beginSvgDrag(event: PointerEvent<HTMLDivElement>) {
-    if (!draftText || model.error || showOriginalCompare) return;
+    if (readOnly || !draftText || model.error || showOriginalCompare) return;
     if (event.target instanceof Element && event.target.closest(".svg-resize-handle, .svg-inline-text-editor")) return;
     const target = event.target instanceof Element ? event.target.closest("[data-drawai-path]") : null;
     if (!target) {
@@ -1363,7 +2807,7 @@ function SvgResultStudio({
   }
 
   function beginSvgResize(event: PointerEvent<HTMLButtonElement>) {
-    if (!selectedPath || !draftText || model.error) return;
+    if (readOnly || !selectedPath || !draftText || model.error) return;
     event.preventDefault();
     event.stopPropagation();
     recordSvgUndo();
@@ -1408,12 +2852,12 @@ function SvgResultStudio({
   }
 
   function updateSelectedText(value: string) {
-    if (!selectedPath || !draftText || model.error) return;
+    if (readOnly || !selectedPath || !draftText || model.error) return;
     setDraftText(updateSvgElementText(draftText, selectedPath, value));
   }
 
   function deleteSvgElement(path = selectedPath) {
-    if (!path || !draftText || model.error) return;
+    if (readOnly || !path || !draftText || model.error) return;
     recordSvgUndo();
     setDraftText(removeSvgElement(draftText, path));
     setSelectedPath("");
@@ -1421,6 +2865,7 @@ function SvgResultStudio({
   }
 
   function onSvgContextMenu(event: MouseEvent<HTMLDivElement>) {
+    if (readOnly) return;
     const target = event.target instanceof Element ? event.target.closest("[data-drawai-path]") : null;
     if (!target) return;
     const path = target.getAttribute("data-drawai-path") || "";
@@ -1478,7 +2923,7 @@ function SvgResultStudio({
           </button>
           <div className="editor-title">
             <strong>{caseDetail.case.name}</strong>
-            <span>{dirty ? "有未保存的本地修改" : `${humanize(caseDetail.case.status)} · ${humanize(caseDetail.case.phase)} / ${humanize(caseDetail.case.stage)}`}</span>
+            <span>{readOnly ? "历史只读结果" : dirty ? "有未保存的本地修改" : `${humanize(caseDetail.case.status)} · ${humanize(caseDetail.case.phase)} / ${humanize(caseDetail.case.stage)}`}</span>
           </div>
           {svgUrl ? (
             <div className="editor-toolbar" aria-label="SVG 画布工具">
@@ -1486,9 +2931,11 @@ function SvgResultStudio({
                 <button className="icon-button" title="缩小" disabled={zoom <= 0.3} onClick={() => changeCanvasZoom(-0.1)}>-</button>
                 <span className="zoom-readout">{Math.round(zoom * 100)}%</span>
                 <button className="icon-button" title="放大" disabled={zoom >= 4} onClick={() => changeCanvasZoom(0.1)}>+</button>
-                <button className="icon-button" title="撤销 Command+Z" disabled={undoStack.length === 0} onClick={undoSvgEdit} aria-label="撤销">
-                  <UndoToolIcon />
-                </button>
+                {!readOnly && (
+                  <button className="icon-button" title="撤销 Command+Z" disabled={undoStack.length === 0} onClick={undoSvgEdit} aria-label="撤销">
+                    <UndoToolIcon />
+                  </button>
+                )}
                 <button
                   className="compare-preview-button"
                   title={originalImageUrl ? "按住显示原图，松开恢复 SVG" : "原图还没准备好"}
@@ -1516,6 +2963,9 @@ function SvgResultStudio({
           ) : (
             <div className="toolbar-note">SVG 结果还没准备好</div>
           )}
+          {readOnly ? (
+            <div className="toolbar-note">历史结果只读，可在任务卡下载已有文件</div>
+          ) : (
           <div className="editor-actions">
             <button className={runInProgress ? "running" : ""} disabled={!canRunFromAssets} onClick={onRunFromAssets}>
               {runInProgress && <ButtonSpinner />}
@@ -1540,6 +2990,7 @@ function SvgResultStudio({
               </div>
             </div>
           </div>
+          )}
         </div>,
         topbarTarget
       )
@@ -1580,7 +3031,7 @@ function SvgResultStudio({
               ) : (
                 <div dangerouslySetInnerHTML={{ __html: model.svg }} />
               )}
-              {!showOriginalCompare && selectedElement && selectionOverlay && (
+              {!readOnly && !showOriginalCompare && selectedElement && selectionOverlay && (
                 <>
                   <div className="svg-selection-box" style={svgOverlayStyle(selectionOverlay)}>
                     {["nw", "ne", "sw", "se"].map((handle) => (
@@ -1611,7 +3062,7 @@ function SvgResultStudio({
 }
 
 function PipelineProgressPanel({ caseDetail, progress }: { caseDetail: CaseDetail; progress: CaseProgress | null }) {
-  const stageRuns = progress?.stage_runs || caseDetail.stage_runs;
+  const stageRuns = stageRunList(progress?.stage_runs || caseDetail.stage_runs);
   const files = progress?.files || [];
   return (
     <section className="pipeline-card">
@@ -1653,6 +3104,128 @@ function PipelineNodeRow({
   );
 }
 
+function buildDagNodeViews(
+  template: WorkflowTemplate | null,
+  layout: WorkflowPreviewLayout | null,
+  caseDetail: CaseDetail,
+  stageRuns: StageRunRecord[],
+  files: CaseProgress["files"]
+): DagNodeView[] {
+  if (!template || !layout) return [];
+  const layoutByNodeId = new Map(layout.nodes.map((nodeLayout) => [nodeLayout.node.node_id, nodeLayout]));
+  return template.nodes.map((node) => {
+    const nodeLayout = layoutByNodeId.get(node.node_id);
+    const runtime = workflowNodeRuntimeState(node, caseDetail, stageRuns, files, caseDetail.artifacts);
+    return {
+      node,
+      ...runtime,
+      x: nodeLayout?.x || 0,
+      y: nodeLayout?.y || 0,
+      width: nodeLayout?.width || 138,
+      height: nodeLayout?.height || 62
+    };
+  });
+}
+
+function toPercent(value: number, total: number): number {
+  if (!Number.isFinite(value) || !Number.isFinite(total) || total <= 0) return 0;
+  return (value / total) * 100;
+}
+
+function workflowNodeRuntimeState(
+  node: WorkflowTemplate["nodes"][number],
+  caseDetail: CaseDetail,
+  stageRuns: StageRunRecord[],
+  files: CaseProgress["files"],
+  artifacts: ArtifactRecord[]
+): Pick<DagNodeView, "state" | "stage" | "meta" | "error"> {
+  const stage = workflowStageForNode(node);
+  const current = caseDetail.case;
+  if (node.node_type === "human_review") {
+    if (current.status === "assets_review") {
+      return { stage, state: "review", meta: "等待人工确认", error: "" };
+    }
+    if (
+      current.status === "completed" ||
+      stageIsAfterOrEqual(current.stage, "compose_svg") ||
+      artifactOrFileReady(["approved_asset_plan", "semantic_svg", "pptx"], files, artifacts)
+    ) {
+      return { stage, state: "done", meta: "人工确认已完成或下游已解锁", error: "" };
+    }
+    if (current.status === "failed" && stageIsAfterOrEqual(current.stage, "plan_assets")) {
+      return { stage, state: "failed", meta: "失败", error: current.error_message };
+    }
+    return { stage, state: "waiting", meta: "等待上游资产处理", error: "" };
+  }
+
+  if (node.node_type === "output") {
+    if (current.status === "completed" || artifactOrFileReady(["semantic_svg", "pptx", "pptx_export_report"], files, artifacts)) {
+      return { stage, state: "done", meta: "输出文件已准备", error: "" };
+    }
+    if (current.status === "failed" && stageIsAfterOrEqual(current.stage, "export")) {
+      return { stage, state: "failed", meta: "失败", error: current.error_message };
+    }
+    return { stage, state: "waiting", meta: "等待 SVG / PPT 输出", error: "" };
+  }
+
+  if (!stage) {
+    return {
+      stage: "",
+      state: current.status === "completed" ? "done" : "waiting",
+      meta: node.description || "Workflow node",
+      error: ""
+    };
+  }
+
+  const view = pipelineNodeState(
+    {
+      stage,
+      title: node.title,
+      detail: node.node_type,
+      description: node.description
+    } as PipelineNodeSpec,
+    caseDetail,
+    stageRuns,
+    files,
+    artifacts
+  );
+  return {
+    stage,
+    state: view.state,
+    meta: view.meta,
+    error: view.error
+  };
+}
+
+function workflowStageForNode(node: WorkflowTemplate["nodes"][number]): string {
+  const configuredStage = typeof node.config.stage === "string" ? node.config.stage : "";
+  if (configuredStage) return configuredStage;
+  if (node.node_type === "input") return "prepare";
+  if (node.node_type === "parser") return "parse_elements";
+  if (node.node_type === "fusion") return "fuse_elements";
+  if (node.node_type === "human_review") return "asset_confirm";
+  if (node.node_type === "export") return "export";
+  if (node.node_type === "output") return "output";
+  if (node.node_type === "processor") {
+    const processorId = String(node.config.processor_id || "");
+    if (processorId === "asset_planner") return "plan_assets";
+    return "process_assets";
+  }
+  if (node.node_type === "agent") {
+    const presetId = String(node.config.preset_id || "");
+    if (presetId === "svg_generation") return "compose_svg";
+    return "refine_elements";
+  }
+  return "";
+}
+
+function stageIsAfterOrEqual(currentStage: string, targetStage: string): boolean {
+  const current = canonicalPipelineStage(currentStage);
+  const target = canonicalPipelineStage(targetStage);
+  if (!current || !target) return false;
+  return PIPELINE_STAGE_ORDER.indexOf(current) >= PIPELINE_STAGE_ORDER.indexOf(target);
+}
+
 function TaskSelectionWorkspace({
   batches,
   activeBatch,
@@ -1661,12 +3234,13 @@ function TaskSelectionWorkspace({
   canvasReady,
   runInProgress,
   canRunFromAssets,
+  runCompatibility,
   caseActionPendingId,
   pptxExportPendingCaseId,
   batchPptxDownloadPendingId,
   batchRunPendingId,
   onOpenSubmit,
-  onOpenAssetsEditor,
+  onOpenCaseAssets,
   onOpenSvgEditor,
   onRenameBatch,
   onDeleteBatch,
@@ -1687,12 +3261,13 @@ function TaskSelectionWorkspace({
   canvasReady: boolean;
   runInProgress: boolean;
   canRunFromAssets: boolean;
+  runCompatibility: RunCompatibilityMode;
   caseActionPendingId: string;
   pptxExportPendingCaseId: string;
   batchPptxDownloadPendingId: string;
   batchRunPendingId: string;
   onOpenSubmit: () => void;
-  onOpenAssetsEditor: () => void;
+  onOpenCaseAssets: (caseId: string) => void;
   onOpenSvgEditor: () => void;
   onRenameBatch: (batch: BatchRecord) => void;
   onDeleteBatch: (batch: BatchRecord) => void;
@@ -1713,9 +3288,19 @@ function TaskSelectionWorkspace({
   const [artifactLoading, setArtifactLoading] = useState<Record<string, boolean>>({});
   const contextCase = contextMenu ? cases.find((item) => item.case_id === contextMenu.caseId) || null : null;
   const contextSelected = Boolean(contextCase && activeCase?.case.case_id === contextCase.case_id);
-  const contextAssetsReady = contextSelected && assetsReady;
+  const contextCompatibility = contextSelected ? runCompatibility : contextCase?.compatibility_mode || "none";
+  const contextReadOnly = contextCompatibility === "legacy_readonly";
+  const contextAssetsReady = Boolean(
+    contextCase &&
+      !contextReadOnly &&
+      (contextCompatibility === "v2"
+        ? contextCase.editor_ready
+        : contextSelected
+          ? assetsReady
+          : contextCase.editor_ready)
+  );
   const contextCanvasReady = contextSelected && canvasReady;
-  const contextRunReady = contextSelected && canRunFromAssets;
+  const contextRunReady = contextSelected && canRunFromAssets && !contextReadOnly;
   const batchContextBusy = Boolean(batchContextMenu && (batchContextMenu.running || batchRunPendingId === batchContextMenu.batchId));
   const batchDownloadReady = Boolean(activeBatch && cases.length > 0 && cases.every((item) => item.status === "completed"));
   const batchDownloadPending = Boolean(activeBatch && batchPptxDownloadPendingId === activeBatch.batch.batch_id);
@@ -1801,14 +3386,15 @@ function TaskSelectionWorkspace({
 
   async function runContextAction(action: "assets" | "canvas" | "run") {
     if (!contextCase) return;
+    if (action === "assets") {
+      setContextMenu(null);
+      onOpenCaseAssets(contextCase.case_id);
+      return;
+    }
     if (activeCase?.case.case_id !== contextCase.case_id) {
       await onFocusCase(contextCase.case_id);
     }
     setContextMenu(null);
-    if (action === "assets") {
-      onOpenAssetsEditor();
-      return;
-    }
     if (action === "canvas") {
       onOpenSvgEditor();
       return;
@@ -1893,13 +3479,17 @@ function TaskSelectionWorkspace({
             const artifactsLoading = Boolean(artifactLoading[item.case_id]);
             const pptxExporting = pptxExportPendingCaseId === item.case_id;
             const pptxExportBlocked = Boolean(pptxExportPendingCaseId);
-            const pptxExportable = Boolean(svgArtifact || item.status === "completed");
+            const itemCompatibility = selected ? runCompatibility : item.compatibility_mode || "none";
+            const itemReadOnly = itemCompatibility === "legacy_readonly";
+            const itemV2 = itemCompatibility === "v2";
+            const pptxExportable = !itemReadOnly && Boolean(svgArtifact || item.status === "completed");
             const failed = item.status === "failed";
             const needsAssetReview = item.status === "assets_review" && item.stage !== "approved_asset_plan";
             const retryStage = retryStageForCase(item);
             const taskActionRunning = caseActionPendingId === item.case_id || pptxExporting || (selected && runInProgress);
-            const taskActionEnabled = failed ? !taskActionRunning : actionsEnabled && canRunFromAssets;
+            const taskActionEnabled = failed ? !taskActionRunning && !itemReadOnly : actionsEnabled && canRunFromAssets && !itemReadOnly;
             const taskActionLabel = taskActionRunning ? "运行中" : failed ? `重试（从 ${humanize(retryStage)} 开始）` : "运行";
+            const taskAssetsEnabled = itemV2 ? editorReady && !itemReadOnly : actionsEnabled && assetsReady && !itemReadOnly;
             return (
               <article
                 key={item.case_id}
@@ -1931,9 +3521,15 @@ function TaskSelectionWorkspace({
                     onClick={(event) => event.stopPropagation()}
                     onPointerDown={(event) => event.stopPropagation()}
                   >
-                    <button className={needsAssetReview ? "task-thumb-action needs-review" : "task-thumb-action"} disabled={!actionsEnabled || !assetsReady} onClick={onOpenAssetsEditor}>
-                      <span className="task-thumb-action__zh">素材</span>
-                      <span className="task-thumb-action__en">编辑</span>
+                    <button
+                      className={needsAssetReview ? "task-thumb-action needs-review" : "task-thumb-action"}
+                      disabled={!taskAssetsEnabled}
+                      onClick={() => {
+                        onOpenCaseAssets(item.case_id);
+                      }}
+                    >
+                      <span className="task-thumb-action__zh">{itemV2 ? "Assets" : "素材"}</span>
+                      <span className="task-thumb-action__en">{itemV2 ? "查看" : "编辑"}</span>
                     </button>
                     <button className="task-thumb-action" disabled={!actionsEnabled || !canvasReady} onClick={onOpenSvgEditor}>
                       <span className="task-thumb-action__zh">结果</span>
@@ -2089,8 +3685,8 @@ function TaskSelectionWorkspace({
               void runContextAction("assets");
             }}
           >
-            <span>素材</span>
-            <em>{contextSelected ? "编辑素材" : "正在选择"}</em>
+            <span>{contextCompatibility === "v2" ? "Assets" : "素材"}</span>
+            <em>{contextReadOnly ? "历史只读" : contextCompatibility === "v2" ? "打开画布" : contextSelected ? "编辑素材" : "正在选择"}</em>
           </button>
           <button
             type="button"
@@ -2115,7 +3711,7 @@ function TaskSelectionWorkspace({
           >
             <PlayIcon />
             <span>{runInProgress && contextSelected ? "运行中" : "运行"}</span>
-            <em>{contextSelected ? "从素材继续" : "正在选择"}</em>
+            <em>{contextReadOnly ? "历史只读" : contextSelected ? "从素材继续" : "正在选择"}</em>
           </button>
         </div>
       )}
@@ -2316,8 +3912,28 @@ function NewBatchForm({
   const [preparingUpload, setPreparingUpload] = useState(false);
   const [pendingUpload, setPendingUpload] = useState<UploadConfirmation | null>(null);
   const [manualAssetReview, setManualAssetReview] = useState(false);
+  const [workflowTemplates, setWorkflowTemplates] = useState<WorkflowTemplate[]>([]);
+  const [selectedWorkflowTemplateId, setSelectedWorkflowTemplateId] = useState("default_drawai_dag");
   const [uploadError, setUploadError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let canceled = false;
+    listWorkflowTemplates()
+      .then((response) => {
+        if (canceled) return;
+        setWorkflowTemplates(response.templates);
+        if (!response.templates.some((template) => template.template_id === selectedWorkflowTemplateId)) {
+          setSelectedWorkflowTemplateId(response.templates[0]?.template_id || "default_drawai_dag");
+        }
+      })
+      .catch((err) => {
+        if (!canceled) onError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      canceled = true;
+    };
+  }, []);
 
   async function handleDrop(event: DragEvent<HTMLElement>) {
     event.preventDefault();
@@ -2360,6 +3976,7 @@ function NewBatchForm({
       form.set("input_mode", "upload");
       form.set("max_concurrent_cases", "10");
       form.set("auto_run_svg_after_analysis", manualAssetReview ? "false" : "true");
+      form.set("workflow_template_id", selectedWorkflowTemplateId);
       pendingUpload.files.forEach((item) => form.append("files", item.file, item.relativePath));
       const detail = await createUploadBatch(form);
       await onCreated(detail);
@@ -2398,6 +4015,20 @@ function NewBatchForm({
                 {pendingUpload.zipErrors.map((warning) => <span key={warning}>{warning}</span>)}
               </div>
             )}
+            <label className="upload-workflow-select">
+              <span>Workflow</span>
+              <select
+                value={selectedWorkflowTemplateId}
+                disabled={submitting || workflowTemplates.length === 0}
+                onChange={(event) => setSelectedWorkflowTemplateId(event.currentTarget.value)}
+              >
+                {workflowTemplates.map((template) => (
+                  <option value={template.template_id} key={template.template_id}>
+                    {template.name}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label className="upload-review-toggle">
               <input
                 type="checkbox"
@@ -3440,10 +5071,10 @@ function ButtonSpinner() {
 
 function ProgressView({ progress, caseDetail }: { progress: CaseProgress | null; caseDetail: CaseDetail | null }) {
   if (!caseDetail) return <EmptyState label="请选择一张图" />;
-  const stageRuns = progress?.stage_runs || caseDetail.stage_runs;
+  const stageRuns = stageRunList(progress?.stage_runs || caseDetail.stage_runs);
   const running = latestStageRun(stageRuns, (stage) => stage.status === "running");
   const semanticFile = latestProgressFile(progress, "semantic_svg");
-  const hasSvgOk = stageRuns.some((stage) => stage.stage_name === "svg" && stage.status === "ok");
+  const hasSvgOk = stageRuns.some((stage) => stageMatchesNode(stage.stage_name, "compose_svg") && stage.status === "ok");
   return (
     <div className="progress-view">
       <section className="progress-hero">
@@ -3487,9 +5118,9 @@ function SvgStatusPanel({
   caseDetail: CaseDetail;
   stageRuns: StageRunRecord[];
 }) {
-  const runningSvg = latestStageRun(stageRuns, (stage) => stage.stage_name === "svg" && stage.status === "running");
-  const latestSvg = latestStageRun(stageRuns, (stage) => stage.stage_name === "svg");
-  const latestFailedSvg = latestStageRun(stageRuns, (stage) => stage.stage_name === "svg" && stage.status === "failed");
+  const runningSvg = latestStageRun(stageRuns, (stage) => stageMatchesNode(stage.stage_name, "compose_svg") && stage.status === "running");
+  const latestSvg = latestStageRun(stageRuns, (stage) => stageMatchesNode(stage.stage_name, "compose_svg"));
+  const latestFailedSvg = latestStageRun(stageRuns, (stage) => stageMatchesNode(stage.stage_name, "compose_svg") && stage.status === "failed");
   const status = runningSvg ? "running" : latestSvg?.status === "failed" ? "failed" : latestSvg?.status || caseDetail.case.status;
   const title = runningSvg
     ? "SVG 运行中"
@@ -3586,31 +5217,41 @@ function pipelineNodeState(
   files: CaseProgress["files"],
   artifacts: ArtifactRecord[]
 ): PipelineNodeView {
-  const latest = latestStageRun(stageRuns, (stage) => stage.stage_name === node.stage);
+  const latest = latestStageRun(stageRuns, (stage) => stageMatchesNode(stage.stage_name, node.stage));
   const current = caseDetail.case;
   let state: PipelineNodeState = "waiting";
   let meta: string = node.detail;
   let error = "";
 
-  if (node.stage === "approved_asset_plan") {
-    const approved = artifactOrFileReady(["approved_asset_plan"], files, artifacts);
-    if (approved || current.stage === "svg" || current.stage === "export" || current.stage === "completed" || current.status === "completed") {
+  if (node.stage === "plan_assets") {
+    const planned = artifactOrFileReady(["asset_manifest", "approved_asset_plan", "asset_draft"], files, artifacts);
+    if (planned || current.stage === "process_assets" || current.stage === "compose_svg" || current.stage === "export" || current.stage === "completed" || current.status === "completed") {
       state = "done";
-      meta = approved ? "素材方案已确认" : "已确认";
+      meta = planned ? "资产计划已写入" : "已计划";
     } else if (current.status === "assets_review") {
       state = "review";
-      meta = "等待人工确认";
+      meta = "等待资产确认";
     }
-  } else if (node.stage === "asset_materialize") {
-    const approved = artifactOrFileReady(["approved_asset_plan"], files, artifacts);
-    const materialized = artifactOrFileReady(["asset_manifest"], files, artifacts);
-    if (!approved) {
-      state = "waiting";
-      meta = "等待素材确认";
-    } else if (materialized) {
+  } else if (node.stage === "process_assets") {
+    const planned = artifactOrFileReady(["asset_manifest", "approved_asset_plan"], files, artifacts);
+    if (!planned) {
+      meta = "等待资产计划";
+    } else if (latest) {
+      if (latest.status === "ok") {
+        state = "done";
+        meta = durationText(latest.started_at, latest.ended_at);
+      } else if (latest.status === "running") {
+        state = "running";
+        meta = durationText(latest.started_at, "");
+      } else if (latest.status === "failed") {
+        state = "failed";
+        meta = "失败";
+        error = latest.error_message;
+      }
+    } else if (current.stage === "compose_svg" || current.stage === "export" || current.status === "completed") {
       state = "done";
       meta = "素材已处理";
-    } else if (current.stage === "materialize") {
+    } else if (stageMatchesNode(current.stage, node.stage)) {
       if (current.status === "failed") {
         state = "failed";
         meta = "失败";
@@ -3638,7 +5279,7 @@ function pipelineNodeState(
   } else if (current.status === "completed") {
     state = "done";
     meta = "已完成";
-  } else if (current.stage === node.stage) {
+  } else if (stageMatchesNode(current.stage, node.stage)) {
     if (current.status === "failed") {
       state = "failed";
       meta = "失败";
@@ -3667,10 +5308,12 @@ function pipelineNodeState(
 
 function stageReadyLabels(stage: string): string[] {
   if (stage === "prepare") return ["figure"];
-  if (stage === "asset_analyze") return ["asset_draft", "element_analysis"];
-  if (stage === "approved_asset_plan") return ["approved_asset_plan"];
-  if (stage === "asset_materialize") return ["asset_manifest"];
-  if (stage === "svg") return ["semantic_svg", "rendered_png", "svg_validation_report"];
+  if (stage === "parse_elements") return ["raw_regions", "ocr_boxes", "parser_outputs"];
+  if (stage === "fuse_elements") return ["box_ir", "fusion_trace"];
+  if (stage === "refine_elements") return ["element_analysis", "refine_trace", "asset_draft"];
+  if (stage === "plan_assets") return ["asset_manifest", "approved_asset_plan"];
+  if (stage === "process_assets") return ["processor_trace"];
+  if (stage === "compose_svg") return ["semantic_svg", "rendered_png", "svg_validation_report"];
   if (stage === "export") return ["pptx", "pptx_export_report"];
   return [];
 }
@@ -3684,9 +5327,36 @@ function artifactOrFileReady(labels: string[], files: CaseProgress["files"], art
 function isStaleStage(staleFromStage: string, stage: string): boolean {
   if (!staleFromStage) return false;
   const stageOrder = PIPELINE_STAGE_ORDER as readonly string[];
-  const staleIndex = stageOrder.indexOf(staleFromStage);
-  const stageIndex = stageOrder.indexOf(stage);
+  const staleIndex = stageOrder.indexOf(canonicalPipelineStage(staleFromStage));
+  const stageIndex = stageOrder.indexOf(canonicalPipelineStage(stage));
   return staleIndex >= 0 && stageIndex >= staleIndex;
+}
+
+function canonicalPipelineStage(stage: string): (typeof PIPELINE_STAGE_ORDER)[number] | "" {
+  const aliases: Record<string, (typeof PIPELINE_STAGE_ORDER)[number]> = {
+    analysis: "prepare",
+    detect_structure: "parse_elements",
+    detect_text: "parse_elements",
+    assemble_boxir: "fuse_elements",
+    asset_analyze: "refine_elements",
+    asset_plan: "plan_assets",
+    approved_asset_plan: "plan_assets",
+    materialize: "process_assets",
+    asset_materialize: "process_assets",
+    asset_processing: "process_assets",
+    svg: "compose_svg",
+    compose: "compose_svg",
+    svg_edit: "compose_svg",
+    package: "package_run"
+  };
+  if ((PIPELINE_STAGE_ORDER as readonly string[]).includes(stage)) {
+    return stage as (typeof PIPELINE_STAGE_ORDER)[number];
+  }
+  return aliases[stage] || "";
+}
+
+function stageMatchesNode(stageName: string, nodeStage: string): boolean {
+  return canonicalPipelineStage(stageName) === canonicalPipelineStage(nodeStage);
 }
 
 function stateLabel(state: PipelineNodeState): string {
@@ -3701,8 +5371,81 @@ function stateLabel(state: PipelineNodeState): string {
   return labels[state];
 }
 
+function initialBoardMode(): BoardMode {
+  if (typeof window === "undefined") return "process";
+  const value = new URLSearchParams(window.location.search).get("mode");
+  if (value === "generate" || value === "process" || value === "workflow") return value;
+  return "process";
+}
+
 function EmptyState({ label }: { label: string }) {
   return <div className="empty-state">{label}</div>;
+}
+
+function assetPackageFromRunPackage(runPackage: V2RunPackage | null, elementId: string): V2AssetPackage | null {
+  return (runPackage?.asset_packages || []).find((assetPackage) => assetPackage.element_id === elementId) || null;
+}
+
+function hasBlockingAssetPackage(runPackage: V2RunPackage): boolean {
+  return (runPackage.asset_packages || []).some((assetPackage) => assetPackage.status === "failed" || assetPackage.status === "unsupported");
+}
+
+function v2PlannedProcessor(element: V2ElementPlan): V2ProcessorType | null {
+  const processor = element.processing_intent.processing_type as V2ProcessorType;
+  return V2_PROCESSABLE_PROCESSORS.includes(processor) ? processor : null;
+}
+
+function v2ProcessorLabel(processor: V2ProcessorType): string {
+  const labels: Record<V2ProcessorType, string> = {
+    crop: "Crop",
+    crop_nobg: "No BG",
+    image_generate: "Generate",
+    image_edit: "Edit",
+    chart_rebuild_reserved: "Chart Agent"
+  };
+  return labels[processor];
+}
+
+function v2AssetStatusClass(status: string): string {
+  if (status === "failed") return "asset-status-failed";
+  if (status === "unsupported") return "asset-status-unsupported";
+  if (status === "ok") return "asset-status-ok";
+  if (status === "running") return "asset-status-running";
+  return "";
+}
+
+function v2AssetResultUrl(activeCase: CaseDetail | null, result: V2AssetResult | null): string {
+  if (!result?.path) return "";
+  if (/^https?:\/\//i.test(result.path)) return result.path;
+  if (!activeCase) return "";
+  return caseFileUrl(activeCase.case.case_id, result.path, result.created_at || result.result_id);
+}
+
+function v2ResultLabel(result: V2AssetResult): string {
+  if (result.path) {
+    const parts = result.path.split("/");
+    return parts[parts.length - 1] || result.result_id;
+  }
+  return result.result_id;
+}
+
+function v2ElementProcessingClass(element: V2ElementPlan): string {
+  const processing = element.processing_intent.processing_type;
+  if (processing === "crop_nobg") return "strategy-nobg";
+  if (processing === "crop") return "strategy-crop";
+  return "strategy-svg";
+}
+
+function caseHasLegacyArtifacts(detail: CaseDetail): boolean {
+  if (detail.case.compatibility_mode === "legacy_readonly") return true;
+  const legacyLabels = new Set(["asset_draft", "approved_asset_plan", "asset_manifest", "semantic_svg", "rendered_png", "pptx"]);
+  return detail.artifacts.some((artifact) => legacyLabels.has(artifact.label));
+}
+
+function compactJson(value: Record<string, unknown>): string {
+  const keys = Object.keys(value || {});
+  if (keys.length === 0) return "{}";
+  return JSON.stringify(value);
 }
 
 function shortenError(value: string): string {
@@ -3728,6 +5471,14 @@ function humanize(value: string): string {
     analysis: "分析",
     reconstruction: "重建",
     prepare: "图像预处理",
+    parse_elements: "元素解析",
+    fuse_elements: "候选融合",
+    refine_elements: "Agent 校验",
+    plan_assets: "资产计划",
+    process_assets: "资产处理",
+    compose: "SVG 组合",
+    compose_svg: "SVG 组合",
+    package_run: "运行包封装",
     detect_structure: "提取结构（SAM）",
     detect_text: "OCR解析",
     assemble_boxir: "素材合并",
@@ -3741,10 +5492,84 @@ function humanize(value: string): string {
     svg: "SVG生成",
     svg_edit: "SVG 编辑",
     export: "导出",
+    crop: "裁剪",
+    crop_nobg: "去背景",
+    svg_self_draw: "SVG 自绘",
+    image_generate: "生成图",
+    image_edit: "编辑图",
+    chart_rebuild_reserved: "图表 Agent",
+    picture: "图片",
+    icon: "图标",
+    chart: "图表",
+    table: "表格",
+    text: "文本",
+    frame: "框架",
+    pending: "待处理",
+    source: "来源",
+    unsupported: "暂不支持",
     analysis_running: "分析中",
-    svg_running: "SVG生成中"
+    svg_running: "SVG生成中",
+    element_candidates: "候选框",
+    element_plans: "元素计划",
+    element_analysis: "Agent 分析"
   };
   return labels[value] || value.replace(/_/g, " ");
+}
+
+function uniqueSorted(values: string[]): string[] {
+  return Array.from(new Set(values.filter(Boolean))).sort((left, right) => left.localeCompare(right));
+}
+
+function filterV2Elements(
+  elements: V2ElementPlan[],
+  filter: V2ElementFilter,
+  packageByElementId: Map<string, V2AssetPackage> | null,
+  statusFallback: string
+): V2ElementPlan[] {
+  return elements.filter((element) => v2ElementMatchesFilter(element, filter, packageByElementId, statusFallback));
+}
+
+function v2ElementMatchesFilter(
+  element: V2ElementPlan,
+  filter: V2ElementFilter,
+  packageByElementId: Map<string, V2AssetPackage> | null,
+  statusFallback: string
+): boolean {
+  if (filter.elementType && element.element_type !== filter.elementType) return false;
+  if (filter.processingType && element.processing_intent.processing_type !== filter.processingType) return false;
+  const status = v2ElementFilterStatus(element, packageByElementId, statusFallback);
+  if (filter.status && status !== filter.status) return false;
+  const query = filter.query.trim().toLowerCase();
+  if (!query) return true;
+  return v2ElementFilterHaystack(element, status).includes(query);
+}
+
+function v2ElementFilterStatus(
+  element: V2ElementPlan,
+  packageByElementId: Map<string, V2AssetPackage> | null,
+  statusFallback: string
+): string {
+  return packageByElementId?.get(element.element_id)?.status || statusFallback;
+}
+
+function v2ElementFilterHaystack(element: V2ElementPlan, status: string): string {
+  return [
+    element.element_id,
+    element.element_type,
+    element.processing_intent.object_type,
+    element.processing_intent.processing_type,
+    element.confidence,
+    element.review_status,
+    element.created_by_stage,
+    element.change_reason,
+    status,
+    bboxText(element.bbox),
+    ...element.source_candidate_ids,
+    JSON.stringify(element.processing_intent.parameters || {})
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
 }
 
 function caseInitials(value: string): string {
@@ -4380,12 +6205,13 @@ function caseCanOpenCanvas(detail: CaseDetail | null, progress: CaseProgress | n
 
 function isCaseActivelyRunning(detail: CaseDetail | null, progress: CaseProgress | null): boolean {
   const status = progress?.case.status || detail?.case.status || "";
-  return status === "queued" || status === "analysis_running" || status === "svg_running" || (progress?.stage_runs || detail?.stage_runs || []).some((stage) => stage.status === "running");
+  return status === "queued" || status === "analysis_running" || status === "svg_running" || stageRunList(progress?.stage_runs || detail?.stage_runs || []).some((stage) => stage.status === "running");
 }
 
 function retryStageForCase(item: Pick<CaseRecord, "phase" | "stage" | "stale_from_stage">): WorkbenchRerunStage {
   const stage = (item.stale_from_stage || item.stage || item.phase || "").toLowerCase();
-  if (stage === "export" || stage === "svg" || stage === "materialize") return stage;
+  const canonical = canonicalPipelineStage(stage);
+  if (canonical) return canonical;
   return "analysis";
 }
 
@@ -4394,7 +6220,11 @@ function latestProgressFile(progress: CaseProgress | null, label: string) {
 }
 
 function latestStageRun(stageRuns: StageRunRecord[], predicate: (stage: StageRunRecord) => boolean = () => true): StageRunRecord | null {
-  return stageRuns.slice().reverse().find(predicate) || null;
+  return stageRunList(stageRuns).slice().reverse().find(predicate) || null;
+}
+
+function stageRunList(stageRuns: unknown): StageRunRecord[] {
+  return Array.isArray(stageRuns) ? stageRuns : [];
 }
 
 function isEditorSourceStrategy(strategy: SourceStrategy): strategy is EditorSourceStrategy {
@@ -4487,8 +6317,22 @@ function bboxStyle(bbox: [number, number, number, number], size: { width: number
   };
 }
 
+function v2BBoxStyle(bbox: [number, number, number, number], size: { width: number; height: number }) {
+  const [left, top, width, height] = bbox;
+  return {
+    left: `${(left / size.width) * 100}%`,
+    top: `${(top / size.height) * 100}%`,
+    width: `${(width / size.width) * 100}%`,
+    height: `${(height / size.height) * 100}%`
+  };
+}
+
 function bboxArea(bbox: [number, number, number, number]) {
   return Math.max(0, bbox[2] - bbox[0]) * Math.max(0, bbox[3] - bbox[1]);
+}
+
+function v2BBoxArea(bbox: [number, number, number, number]) {
+  return Math.max(0, bbox[2]) * Math.max(0, bbox[3]);
 }
 
 function bboxText(bbox: [number, number, number, number]): string {
@@ -4771,6 +6615,21 @@ function tooltipStyle(bbox: [number, number, number, number], size: { width: num
     y2 / size.height > 0.72
       ? { bottom: `${((size.height - y1) / size.height) * 100}%`, transform: "translateY(-8px)" }
       : { top: `${(y2 / size.height) * 100}%`, transform: "translateY(8px)" };
+  return { ...horizontal, ...vertical };
+}
+
+function v2TooltipStyle(bbox: [number, number, number, number], size: { width: number; height: number }) {
+  const [left, top, width, height] = bbox;
+  const right = left + width;
+  const bottom = top + height;
+  const horizontal =
+    left / size.width > 0.65
+      ? { right: `${((size.width - right) / size.width) * 100}%` }
+      : { left: `${(left / size.width) * 100}%` };
+  const vertical =
+    bottom / size.height > 0.72
+      ? { bottom: `${((size.height - top) / size.height) * 100}%`, transform: "translateY(-8px)" }
+      : { top: `${(bottom / size.height) * 100}%`, transform: "translateY(8px)" };
   return { ...horizontal, ...vertical };
 }
 
