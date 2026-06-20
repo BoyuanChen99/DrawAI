@@ -77,6 +77,13 @@ STAGE_RESOURCES = {
     "export": ("export",),
 }
 
+WORKFLOW_DELIVERABLE_ARTIFACTS = {
+    "drawai.semantic_svg.v1": ("semantic_svg", "image/svg+xml"),
+    "semantic_svg": ("semantic_svg", "image/svg+xml"),
+    "drawai.pptx.v1": ("pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+    "pptx": ("pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+}
+
 RERUN_STAGE_ALIASES = {
     "prepare": "analysis",
     "asset_analyze": "analysis",
@@ -723,6 +730,7 @@ class WorkbenchRunner:
             path = root / relative_path
             if path.exists():
                 self.store.register_artifact(case_id, label=label, path=path, media_type=media_type)
+        self._register_workflow_deliverable_artifacts(case_id, root)
         for package_path in sorted((root / "elements").glob("*/asset_package.json")):
             self.store.register_artifact(
                 case_id,
@@ -730,6 +738,26 @@ class WorkbenchRunner:
                 path=package_path,
                 media_type="application/json",
             )
+
+    def _register_workflow_deliverable_artifacts(self, case_id: str, root: Path) -> None:
+        manifest_path = _latest_workflow_final_outputs(root)
+        if manifest_path is None:
+            return
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        outputs = payload.get("outputs") if isinstance(payload, Mapping) else None
+        if not isinstance(outputs, list):
+            return
+        for output in outputs:
+            if not isinstance(output, Mapping):
+                continue
+            artifact_info = _workflow_deliverable_artifact_info(output)
+            if artifact_info is None:
+                continue
+            path = _workflow_output_artifact_path(root, output)
+            if path is None or not path.is_file():
+                continue
+            label, media_type = artifact_info
+            self.store.register_artifact(case_id, label=label, path=path, media_type=media_type)
 
     def _invalidate_from(self, case_id: str, stage: str) -> None:
         current = self.store.get_case(case_id)
@@ -990,6 +1018,44 @@ def _workflow_stage_chain(stage: str) -> tuple[str, ...]:
     if stage not in chains:
         raise ValueError(f"unsupported workflow-backed stage: {stage}")
     return chains[stage]
+
+
+def _latest_workflow_final_outputs(root: Path) -> Path | None:
+    output_runs = root / "nodes" / "output" / "runs"
+    if not output_runs.is_dir():
+        return None
+    candidates = sorted(
+        (
+            run_dir / "output" / "final_outputs.json"
+            for run_dir in output_runs.iterdir()
+            if run_dir.is_dir()
+        ),
+        key=lambda path: path.parent.parent.name,
+        reverse=True,
+    )
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def _workflow_deliverable_artifact_info(output: Mapping[str, Any]) -> tuple[str, str] | None:
+    for key in (str(output.get("format_id") or ""), str(output.get("type") or "")):
+        if key in WORKFLOW_DELIVERABLE_ARTIFACTS:
+            return WORKFLOW_DELIVERABLE_ARTIFACTS[key]
+    return None
+
+
+def _workflow_output_artifact_path(root: Path, output: Mapping[str, Any]) -> Path | None:
+    for key in ("mirror_path", "path"):
+        raw = output.get(key)
+        if not isinstance(raw, str) or not raw:
+            continue
+        path = Path(raw)
+        resolved = path.expanduser().resolve(strict=False) if path.is_absolute() else (root / path).resolve(strict=False)
+        try:
+            resolved.relative_to(root.resolve(strict=False))
+        except ValueError:
+            continue
+        return resolved
+    return None
 
 
 def _copy_workflow_json(source: str | Path, target: str | Path) -> Path:

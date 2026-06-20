@@ -2283,23 +2283,23 @@ select:focus {
 .dag-run-edges path {
   fill: none;
   stroke: rgba(100, 116, 139, 0.5);
-  stroke-width: 2.4;
+  stroke-width: 2.2;
+  stroke-dasharray: 9 7;
+  animation: dag-edge-flow 900ms linear infinite;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
-.dag-run-edges marker path {
-  fill: rgba(100, 116, 139, 0.78);
-}
-
 .dag-run-edges path.done {
   stroke: var(--teal);
-  stroke-width: 3;
+  stroke-width: 2.8;
 }
 
 .dag-run-edges path.running {
   stroke: var(--blue);
-  stroke-dasharray: 8 6;
+  stroke-width: 4.6;
+  stroke-dasharray: 12 6;
+  filter: drop-shadow(0 0 5px rgba(37, 99, 235, 0.28));
 }
 
 .dag-run-node {
@@ -2530,6 +2530,10 @@ select:focus {
     animation: none;
   }
 
+  .dag-run-edges path {
+    animation: none;
+  }
+
   .pipeline-node-tip {
     transition: none;
   }
@@ -2563,6 +2567,12 @@ select:focus {
 @keyframes dag-running-border {
   to {
     background-position: 36px 0, -36px 100%, 0 -36px, 100% 36px, 0 0;
+  }
+}
+
+@keyframes dag-edge-flow {
+  to {
+    stroke-dashoffset: -32;
   }
 }
 

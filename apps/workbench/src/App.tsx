@@ -1534,8 +1534,6 @@ function DagRunPanel({
   const views = useMemo(() => buildDagNodeViews(template, layout, caseDetail, stageRuns, files), [template, layout, caseDetail, stageRuns, files]);
   const selectedView = views.find((item) => item.node.node_id === selectedNodeId) || views.find((item) => item.state === "running") || views.find((item) => item.state === "review") || views[0] || null;
   const viewByNodeId = useMemo(() => new Map(views.map((view) => [view.node.node_id, view])), [views]);
-  const markerId = `dag-run-arrow-${caseDetail.case.case_id.replace(/[^a-z0-9_-]/gi, "")}`;
-
   useEffect(() => {
     setSelectedNodeId("");
   }, [caseDetail.case.case_id, workflowTemplateId]);
@@ -1555,16 +1553,18 @@ function DagRunPanel({
           {layout ? (
             <>
               <svg className="dag-run-edges" viewBox={`0 0 ${layout.width} ${layout.height}`} preserveAspectRatio="none" aria-hidden="true">
-                <defs>
-                  <marker id={markerId} viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-                    <path d="M 0 0 L 8 4 L 0 8 z" />
-                  </marker>
-                </defs>
                 {layout.edges.map((edgeLayout) => {
                   const source = viewByNodeId.get(edgeLayout.edge.source_node_id);
+                  const target = viewByNodeId.get(edgeLayout.edge.target_node_id);
                   const sourceState = source?.state || "waiting";
-                  const edgeState = sourceState === "done" ? "done" : sourceState === "running" ? "running" : "waiting";
-                  return <path key={edgeLayout.edge.edge_id} className={edgeState} d={edgeLayout.d} markerEnd={`url(#${markerId})`} />;
+                  const targetState = target?.state || "waiting";
+                  const edgeState =
+                    sourceState === "running" || targetState === "running"
+                      ? "running"
+                      : sourceState === "done" && targetState === "done"
+                        ? "done"
+                        : "waiting";
+                  return <path key={edgeLayout.edge.edge_id} className={edgeState} d={edgeLayout.d} />;
                 })}
               </svg>
               {views.map((view) => (

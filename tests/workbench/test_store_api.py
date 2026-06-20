@@ -464,6 +464,59 @@ def test_runner_svg_rerun_executes_export_by_default(tmp_path: Path) -> None:
     assert "pptx" not in labels
 
 
+def test_runner_registers_workflow_output_pptx_artifact(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    batch = store.create_batch(
+        name="batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=True,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=create_case_config(
+            base_config_path=base_config,
+            source_image=source,
+            output_dir=store.runs_root / batch.batch_id / "case_seed",
+            target_path=store.runs_root / batch.batch_id / "case_seed" / "drawai.config.yaml",
+        ),
+    )
+    root = Path(case.run_root)
+    direct_pptx = root / "nodes" / "direct_ppt_agent" / "runs" / "001" / "output" / "final.pptx"
+    direct_pptx.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(direct_pptx, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr("ppt/presentation.xml", "<p:presentation/>")
+    _write_json(
+        root / "nodes" / "output" / "runs" / "001" / "output" / "final_outputs.json",
+        {
+            "schema": "drawai.final_outputs.v1",
+            "outputs": [
+                {
+                    "port_id": "pptx",
+                    "path": "nodes/direct_ppt_agent/runs/001/output/final.pptx",
+                    "format_id": "drawai.pptx.v1",
+                    "type": "pptx",
+                    "deliverable": True,
+                }
+            ],
+        },
+    )
+    runner = WorkbenchRunner(store, _settings(tmp_path, base_config), stage_executor=_deterministic_stage_executor)
+
+    runner._register_standard_artifacts(case.case_id)
+
+    pptx_artifact = next(artifact for artifact in store.list_artifacts(case.case_id) if artifact.label == "pptx")
+    assert Path(pptx_artifact.path) == direct_pptx
+    assert pptx_artifact.media_type == "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+
 def test_runner_archives_existing_svg_outputs_before_rerun(tmp_path: Path) -> None:
     store = WorkbenchStore(tmp_path / "workspace")
     base_config = _base_config(tmp_path)
