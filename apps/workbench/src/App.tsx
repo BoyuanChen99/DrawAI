@@ -1,4 +1,4 @@
-import { DragEvent, MouseEvent, PointerEvent, WheelEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { DragEvent, MouseEvent, PointerEvent, ReactNode, WheelEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   approveAssets,
@@ -1668,8 +1668,77 @@ function DagRunPanel({
 }
 
 function WorkflowNodeArtifactViewer({ viewer }: { viewer: WorkflowNodeViewer }) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <>
+      <WorkflowNodeArtifactSurface
+        viewer={viewer}
+        initialZoom={0.42}
+        className="node-artifact-viewer"
+        canvasClassName="node-artifact-canvas"
+        headerAction={
+          <button type="button" className="node-artifact-open-canvas" disabled={!viewer.available} onClick={() => setExpanded(true)}>
+            独立画布
+          </button>
+        }
+      />
+      {expanded && createPortal(
+        <WorkflowNodeArtifactCanvasModal viewer={viewer} onClose={() => setExpanded(false)} />,
+        document.body
+      )}
+    </>
+  );
+}
+
+function WorkflowNodeArtifactCanvasModal({
+  viewer,
+  onClose
+}: {
+  viewer: WorkflowNodeViewer;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  return (
+    <div className="node-artifact-modal" role="dialog" aria-modal="true" aria-label="节点产物独立画布">
+      <button type="button" className="node-artifact-modal-backdrop" aria-label="关闭节点产物画布" onClick={onClose} />
+      <WorkflowNodeArtifactSurface
+        viewer={viewer}
+        initialZoom={0.72}
+        className="node-artifact-viewer node-artifact-viewer-expanded"
+        canvasClassName="node-artifact-canvas node-artifact-canvas-expanded"
+        headerAction={
+          <button type="button" className="node-artifact-close-canvas" onClick={onClose}>
+            关闭
+          </button>
+        }
+      />
+    </div>
+  );
+}
+
+function WorkflowNodeArtifactSurface({
+  viewer,
+  initialZoom,
+  className,
+  canvasClassName,
+  headerAction
+}: {
+  viewer: WorkflowNodeViewer;
+  initialZoom: number;
+  className: string;
+  canvasClassName: string;
+  headerAction?: ReactNode;
+}) {
   const [naturalSize, setNaturalSize] = useState({ width: 1, height: 1 });
-  const [zoom, setZoom] = useState(0.42);
+  const [zoom, setZoom] = useState(initialZoom);
   const [selectedElementId, setSelectedElementId] = useState(viewer.elements[0]?.element_id || "");
   const [hoveredElementId, setHoveredElementId] = useState("");
   const selectedElement = viewer.elements.find((element) => element.element_id === selectedElementId) || null;
@@ -1684,24 +1753,28 @@ function WorkflowNodeArtifactViewer({ viewer }: { viewer: WorkflowNodeViewer }) 
     setSelectedElementId(viewer.elements[0]?.element_id || "");
     setHoveredElementId("");
     setNaturalSize({ width: 1, height: 1 });
-  }, [viewer.node_id, viewer.attempt_id, viewer.source_path, viewer.elements]);
+    setZoom(initialZoom);
+  }, [viewer.node_id, viewer.attempt_id, viewer.source_path, viewer.elements, initialZoom]);
 
   return (
-    <section className="node-artifact-viewer">
+    <section className={className}>
       <header className="node-artifact-head">
         <div>
           <span>节点产物</span>
           <strong>{nodeViewerKindLabel(viewer.kind)}</strong>
           <em>{viewer.attempt_id ? `run ${viewer.attempt_id}` : viewer.workdir || "not run"}</em>
         </div>
-        <div className="node-artifact-zoom" aria-label="节点产物缩放">
-          <button type="button" onClick={() => setZoom((value) => clamp(Number((value - 0.08).toFixed(2)), 0.18, 1.5))}>−</button>
-          <span>{Math.round(zoom * 100)}%</span>
-          <button type="button" onClick={() => setZoom((value) => clamp(Number((value + 0.08).toFixed(2)), 0.18, 1.5))}>+</button>
+        <div className="node-artifact-head-actions">
+          <div className="node-artifact-zoom" aria-label="节点产物缩放">
+            <button type="button" onClick={() => setZoom((value) => clamp(Number((value - 0.08).toFixed(2)), 0.18, 1.5))}>−</button>
+            <span>{Math.round(zoom * 100)}%</span>
+            <button type="button" onClick={() => setZoom((value) => clamp(Number((value + 0.08).toFixed(2)), 0.18, 1.5))}>+</button>
+          </div>
+          {headerAction}
         </div>
       </header>
       {viewer.available && viewer.source_image.url ? (
-        <div className="node-artifact-canvas">
+        <div className={canvasClassName}>
           <div className="image-overlay-wrap node-artifact-image-wrap" style={canvasWidth ? { width: `${canvasWidth}px` } : undefined}>
             <img
               src={viewer.source_image.url}

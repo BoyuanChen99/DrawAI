@@ -2540,6 +2540,12 @@ select:focus {
   gap: 12px;
 }
 
+.node-artifact-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .node-artifact-head > div:first-child {
   min-width: 0;
   display: grid;
@@ -2595,6 +2601,29 @@ select:focus {
   font-size: 11px;
   font-weight: 700;
   text-align: center;
+}
+
+.node-artifact-open-canvas,
+.node-artifact-close-canvas {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.node-artifact-open-canvas:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.55;
+}
+
+.node-artifact-close-canvas {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: #fff;
 }
 
 .node-artifact-canvas {
@@ -2680,6 +2709,48 @@ select:focus {
   font-size: 11px;
   font-weight: 700;
   text-decoration: none;
+}
+
+.node-artifact-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+}
+
+.node-artifact-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  border-radius: 0;
+  background: rgba(15, 23, 42, 0.46);
+  padding: 0;
+}
+
+.node-artifact-viewer-expanded {
+  position: relative;
+  z-index: 1;
+  width: min(1420px, calc(100vw - 44px));
+  max-height: calc(100vh - 44px);
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.18);
+  background: #fff;
+  box-shadow: 0 28px 80px rgba(15, 23, 42, 0.26);
+  padding: 16px;
+}
+
+.node-artifact-canvas-expanded {
+  max-height: min(72vh, 760px);
+  overflow: auto;
+  border: 1px solid var(--line);
+  background:
+    linear-gradient(rgba(18, 32, 24, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(18, 32, 24, 0.045) 1px, transparent 1px),
+    #ffffff;
+  background-size: 24px 24px;
+  padding: 16px;
 }
 
 @media (prefers-reduced-motion: reduce) {
