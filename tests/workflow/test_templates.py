@@ -25,6 +25,7 @@ def test_default_drawai_workflow_template_validates() -> None:
 
     result = validate_workflow_template(template)
 
+    assert template.name == "Image-to-PPTX"
     assert result.ok
     assert result.errors == ()
 

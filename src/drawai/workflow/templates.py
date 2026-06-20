@@ -31,7 +31,7 @@ _BUILTIN_TEMPLATE_IDS = (DEFAULT_WORKFLOW_TEMPLATE_ID,)
 def default_drawai_workflow_template() -> WorkflowTemplate:
     return WorkflowTemplate(
         template_id=DEFAULT_WORKFLOW_TEMPLATE_ID,
-        name="Default DrawAI DAG",
+        name="Image-to-PPTX",
         description="Built-in workflow that mirrors the current DrawAI v2 path.",
         nodes=(
             WorkflowNode(
