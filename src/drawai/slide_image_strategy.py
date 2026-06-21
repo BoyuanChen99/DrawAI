@@ -8,53 +8,6 @@ SLIDE_IMAGE_STRATEGY_SCHEMA = "drawai.slide_image_strategy.v1"
 DEFAULT_RENDERING_MODE = "baked_text"
 
 
-PPT_IMAGE_WORKFLOW = (
-    "1. Intent router: identify audience, deck type, factual risk, source/data availability, and expected visual genre.",
-    "2. Source planner: decide whether content is prompt-only, source-grounded, data-driven, brand/template-driven, or web-research-backed.",
-    "3. Template selector: choose a deck visual system instead of forcing every request into one house style.",
-    "4. Style candidate stage: for new topics, offer 3 first-slide directions before expanding to a full deck.",
-    "5. Baked-text image generation: generate a complete slide bitmap with readable in-image text.",
-    "6. Continuity lock: keep palette, typography, icon language, density, and page rhythm consistent after a candidate is selected.",
-    "7. QA gate: reject missing text, mojibake, unsupported facts, fake metrics, template mismatch, and weak deck continuity.",
-)
-
-
-PRIOR_RESEARCH_FEATURES = (
-    "Codex built-in image generation tool exactly once per image; never call OpenAI Images API manually in Codex mode.",
-    "Source-grounded claim control: facts, numbers, dates, citations, logos, benchmarks, and named entities must come from supplied context.",
-    "Chinese-first language policy: preserve Chinese slide copy when the user prompt is Chinese; keep proper nouns and technical terms in English only when appropriate.",
-    "Baked-text default: text, charts, diagrams, and layout are generated directly into the final bitmap because DrawAI handles downstream editing.",
-    "Multi-option style selection: generate multiple first-slide candidates instead of assuming one universal best style.",
-    "Template-driven variation: choose a visual system based on intent, audience, source/data mode, and user preference.",
-    "Continuity lock across slides: selected style, density, visual motifs, palette, and typography remain consistent through the deck.",
-    "Post-generation QA: check text presence, language, factual safety, data-source fidelity, visual polish, and page-to-page consistency.",
-)
-
-
-SOURCE_MODES = {
-    "prompt_only": {
-        "description": "Only the user prompt is available.",
-        "policy": "Do not invent concrete facts, figures, citations, rankings, or named evidence beyond the user prompt.",
-    },
-    "source_grounded": {
-        "description": "Claims, citations, documents, or research context are supplied.",
-        "policy": "Use supplied sources as factual authority; every concrete claim must be traceable to the source context.",
-    },
-    "data_driven": {
-        "description": "Tables, CSVs, metrics, or structured data are supplied.",
-        "policy": "Charts and numeric statements must follow supplied data; do not let the image model invent chart values.",
-    },
-    "brand_template": {
-        "description": "A brand guide, reference image, or template is supplied.",
-        "policy": "Respect supplied style references while avoiding unsupported logos or proprietary marks unless explicitly provided.",
-    },
-    "web_research": {
-        "description": "The deck requires current external facts before generation.",
-        "policy": "Search and build a claim ledger before image generation; do not browse during the image-generation turn itself.",
-    },
-}
-
-
 TEMPLATE_REGISTRY: dict[str, dict[str, Any]] = {
     "academic_technical": {
         "id": "academic_technical",
@@ -953,76 +906,26 @@ TEMPLATE_REGISTRY.update(
 )
 
 
-INTENT_TO_TEMPLATES: dict[str, tuple[str, ...]] = {
-    "academic": ("nature_paper_briefing", "academic_technical", "lab_meeting", "neurips_poster", "notebooklm_cards"),
-    "business": ("mckinsey_boardroom", "consulting_report", "bcg_strategy_map", "investment_memo", "vc_pitch_deck", "annual_report"),
-    "data": ("economist_data_story", "data_journalism", "infographic_dashboard", "bloomberg_terminal", "financial_times_report"),
-    "product": ("product_launch", "openai_minimal", "linear_product_dark", "stripe_saas", "apple_keynote", "vercel_gradient"),
-    "teaching": ("teaching_explainer", "courseware_explainer", "teaching_whiteboard", "blue_robot_learning", "notebooklm_cards"),
-    "policy": ("government_report", "financial_times_report", "data_journalism", "mckinsey_boardroom"),
-    "creative": ("magazine_editorial", "swiss_grid", "bento_grid", "bauhaus_geometric", "soft_storybook_anime", "creative_zine"),
-    "technical": ("dark_tech", "cyberpunk_infra", "developer_docs", "openai_minimal", "academic_technical"),
-    "document": ("notebooklm_briefing", "notebooklm_cards", "nature_paper_briefing", "financial_times_report"),
-    "default": ("academic_technical", "mckinsey_boardroom", "product_launch"),
-}
-
-
 def build_slide_image_strategy_manifest(
     payload: Mapping[str, Any],
-    *,
-    candidate_index: int = 1,
-    candidate_count: int = 3,
 ) -> dict[str, Any]:
     intent = _resolve_intent(payload)
-    source_mode = _resolve_source_mode(payload)
-    candidate_ids = _candidate_template_ids(payload, intent=intent, candidate_count=candidate_count)
-    selected_template_id = _selected_template_id(payload, candidate_ids, candidate_index=candidate_index)
-    selected_template = deepcopy(TEMPLATE_REGISTRY[selected_template_id])
-    ip_safety_mode = _resolve_ip_safety_mode(payload)
-    if not _ip_safety_enabled(ip_safety_mode):
-        selected_template.pop("ip_safety", None)
     requested_template = _clean_text(payload.get("template") or payload.get("template_id"))
-    candidate_templates = [
-        {
-            "id": template_id,
-            "name": TEMPLATE_REGISTRY[template_id]["name"],
-            "best_for": TEMPLATE_REGISTRY[template_id]["best_for"],
-            "rationale": _candidate_rationale(template_id, intent=intent, source_mode=source_mode),
-        }
-        for template_id in candidate_ids
-    ]
+    selected_template_id = _requested_template_id(requested_template)
+    selected_template = deepcopy(TEMPLATE_REGISTRY[selected_template_id]) if selected_template_id else None
+    if isinstance(selected_template, dict):
+        for removed_key in ("ip_safety", "text_density", "data_policy"):
+            selected_template.pop(removed_key, None)
     return {
         "schema": SLIDE_IMAGE_STRATEGY_SCHEMA,
-        "strategy_version": "v2_multi_option_baked_text",
+        "strategy_version": "v3_optional_template_baked_text",
         "intent": intent,
-        "source_mode": {
-            "id": source_mode,
-            **SOURCE_MODES[source_mode],
-        },
         "rendering_mode": _clean_text(payload.get("rendering_mode")) or DEFAULT_RENDERING_MODE,
-        "ip_safety_mode": ip_safety_mode,
         "requested_template": requested_template,
         "selected_template": selected_template,
-        "candidate_stage": {
-            "enabled": bool(candidate_count > 1),
-            "index": int(candidate_index),
-            "count": int(candidate_count),
-            "templates": candidate_templates,
-        },
-        "workflow": list(PPT_IMAGE_WORKFLOW),
-        "prior_research_features": list(PRIOR_RESEARCH_FEATURES),
-        "continuity_lock": {
-            "lock_after_selection": [
-                "selected_template.id",
-                "palette",
-                "typography",
-                "layout_archetypes",
-                "text_density",
-                "image_policy",
-                "data_policy",
-                "language policy",
-            ],
-            "policy": "After the user selects a first-slide direction, keep the selected template and visual system consistent across all slides.",
+        "template_selection": {
+            "mode": "selected" if selected_template else "none",
+            "id": selected_template_id,
         },
         "qa_policy": {
             "check": [
@@ -1030,9 +933,7 @@ def build_slide_image_strategy_manifest(
                 "slide has enough baked text",
                 "no mojibake or pseudo-writing",
                 "no unsupported numbers, citations, dates, or rankings",
-                "template visual direction is respected",
-                "data-like visuals are source-grounded or deliberately abstract",
-                "multi-slide rhythm remains consistent",
+                "selected template visual direction is respected when a template is supplied",
             ],
             "failure_action": "Regenerate or revise prompt before accepting the slide image.",
         },
@@ -1046,83 +947,20 @@ def template_registry_summary() -> list[dict[str, str]]:
             "name": template["name"],
             "category": str(template.get("category", "legacy")),
             "best_for": template["best_for"],
-            "text_density": template["text_density"],
         }
         for template in TEMPLATE_REGISTRY.values()
     ]
 
 
-def _selected_template_id(
-    payload: Mapping[str, Any],
-    candidate_ids: Sequence[str],
-    *,
-    candidate_index: int,
-) -> str:
-    requested = _clean_text(payload.get("template_id") or payload.get("template")).lower()
+def _requested_template_id(requested_template: str) -> str:
+    requested = _clean_text(requested_template).lower()
     if requested in TEMPLATE_REGISTRY:
         return requested
     if requested:
         normalized = requested.replace("-", "_").replace(" ", "_")
         if normalized in TEMPLATE_REGISTRY:
             return normalized
-    if not candidate_ids:
-        return "academic_technical"
-    index = max(1, min(int(candidate_index or 1), len(candidate_ids)))
-    return candidate_ids[index - 1]
-
-
-def _candidate_template_ids(
-    payload: Mapping[str, Any],
-    *,
-    intent: str,
-    candidate_count: int,
-) -> list[str]:
-    requested = _clean_text(payload.get("template_id") or payload.get("template")).lower()
-    if requested in TEMPLATE_REGISTRY:
-        return _dedupe([requested, *INTENT_TO_TEMPLATES.get(intent, INTENT_TO_TEMPLATES["default"])])[
-            : max(1, candidate_count)
-        ]
-    normalized = requested.replace("-", "_").replace(" ", "_")
-    if normalized in TEMPLATE_REGISTRY:
-        return _dedupe([normalized, *INTENT_TO_TEMPLATES.get(intent, INTENT_TO_TEMPLATES["default"])])[
-            : max(1, candidate_count)
-        ]
-    preferred = _preferred_template_ids(payload)
-    return _dedupe([*preferred, *INTENT_TO_TEMPLATES.get(intent, INTENT_TO_TEMPLATES["default"])])[
-        : max(1, candidate_count)
-    ]
-
-
-def _preferred_template_ids(payload: Mapping[str, Any]) -> list[str]:
-    text = " ".join(
-        str(payload.get(key) or "")
-        for key in ("prompt", "title", "subtitle", "key_message", "style", "visual_style")
-    ).lower()
-    if any(
-        keyword in text
-        for keyword in (
-            "doraemon",
-            "robot cat",
-            "\u54c6\u5566",
-            "\u673a\u5668\u732b",
-            "\u84dd\u767d\u673a\u5668\u4eba",
-        )
-    ):
-        return ["blue_robot_learning"]
-    return []
-
-
-def _resolve_ip_safety_mode(payload: Mapping[str, Any]) -> str:
-    raw = _clean_text(payload.get("ip_safety_mode") or payload.get("ip_safety")).lower()
-    if raw in {"1", "true", "yes", "on", "enabled", "generic"}:
-        return "generic"
-    if raw == "strict":
-        return "strict"
-    return "off"
-
-
-def _ip_safety_enabled(mode: str) -> bool:
-    return mode in {"generic", "strict"}
+    return ""
 
 
 def _resolve_intent(payload: Mapping[str, Any]) -> str:
@@ -1191,49 +1029,6 @@ def _resolve_intent(payload: Mapping[str, Any]) -> str:
     return "default"
 
 
-def _resolve_source_mode(payload: Mapping[str, Any]) -> str:
-    explicit = _clean_text(payload.get("source_mode")).lower()
-    if explicit in SOURCE_MODES and explicit != "prompt_only":
-        return explicit
-    if _has_content(payload.get("data_sources")):
-        return "data_driven"
-    if _has_content(payload.get("brand")) or _has_content(payload.get("style_reference")) or _has_content(
-        payload.get("style_references")
-    ):
-        return "brand_template"
-    if _has_content(payload.get("sources")) or _has_content(payload.get("citations")) or _has_content(
-        payload.get("research_context")
-    ) or _has_content(payload.get("claims")):
-        return "source_grounded"
-    prompt = str(payload.get("prompt") or "").lower()
-    if _requires_web_research(prompt):
-        return "web_research"
-    return "prompt_only"
-
-
-def _candidate_rationale(template_id: str, *, intent: str, source_mode: str) -> str:
-    if template_id == "academic_technical":
-        return "Strong default for technical and research-heavy decks; balances explanation, diagrams, and factual restraint."
-    if template_id == "consulting_report":
-        return "Useful when the same topic needs executive comparison, decisions, or business framing."
-    if template_id == "data_journalism":
-        return "Best when supplied sources or data should drive a chart-led evidence story."
-    if template_id == "product_launch":
-        return "Useful when the topic should feel like a launch, roadmap, capability overview, or product narrative."
-    if template_id == "magazine_editorial":
-        return "Provides a more expressive editorial option for public-facing or story-led decks."
-    if template_id == "notebooklm_briefing":
-        return "Good for source-document synthesis, reading notes, and briefing-style slides."
-    template = TEMPLATE_REGISTRY.get(template_id)
-    if template:
-        category = template.get("category", "template")
-        return (
-            f"{template['name']} is a {category} candidate for intent={intent}; "
-            f"best for {template['best_for']} under source_mode={source_mode}."
-        )
-    return f"Selected as a candidate for intent={intent} and source_mode={source_mode}."
-
-
 def _resolve_chinese_intent(text: str) -> str:
     keyword_map = [
         ("document", ("notebooklm", "\u6587\u6863", "\u8bfb\u4e66", "\u9605\u8bfb", "\u8bba\u6587\u89e3\u8bfb", "\u8d44\u6599\u7b80\u62a5", "source notes")),
@@ -1252,46 +1047,5 @@ def _resolve_chinese_intent(text: str) -> str:
     return ""
 
 
-def _requires_web_research(prompt: str) -> bool:
-    return any(
-        keyword in prompt
-        for keyword in (
-            "\u8054\u7f51",
-            "\u641c\u7d22",
-            "\u6700\u65b0",
-            "\u4eca\u65e5",
-            "\u4eca\u5929",
-            "\u5b9e\u65f6",
-            "today",
-            "latest",
-            "web search",
-        )
-    )
-
-
-def _has_content(value: Any) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    if isinstance(value, Mapping):
-        return any(_has_content(item) for item in value.values())
-    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray, str)):
-        return any(_has_content(item) for item in value)
-    return True
-
-
 def _clean_text(value: Any) -> str:
     return str(value or "").strip()
-
-
-def _dedupe(values: Sequence[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for value in values:
-        key = value.lower().strip()
-        if not key or key in seen:
-            continue
-        seen.add(key)
-        result.append(value)
-    return result

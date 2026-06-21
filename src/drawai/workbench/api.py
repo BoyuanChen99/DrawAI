@@ -64,8 +64,6 @@ from drawai.workflow.templates import (
     workflow_template_from_dict,
 )
 from drawai.workflow.validation import validate_workflow_template
-from PIL import Image
-
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 ARCHIVE_EXTENSIONS = {".zip"}
 MAX_SVG_SOURCE_BYTES = 5 * 1024 * 1024
@@ -1710,31 +1708,13 @@ def _call_codex_image_generation(
     output_root = _codex_imagegen_output_dir(store.workspace, "generations")
     runtime_config = _codex_imagegen_runtime_config(payload, settings=settings)
     source_image_path = _image_generation_source_image_path(payload)
-    reference_mode = _codex_reference_mode(payload, has_source_image=bool(source_image_path))
+    image_context = bool(source_image_path)
     results: list[CodexImageGenResult] = []
     try:
         for index in range(1, n + 1):
             output_dir = output_root / f"variant-{index:03d}"
             output_dir.mkdir(parents=True, exist_ok=True)
-            if source_image_path and reference_mode == "reference_tokens_only":
-                token_payload = dict(payload)
-                token_payload.pop("source_image_path", None)
-                token_payload.pop("reference_image_path", None)
-                token_payload.pop("reference_image_paths", None)
-                token_payload["reference_mode"] = reference_mode
-                token_payload["reference_image_tokens"] = _reference_image_tokens(source_image_path)
-                prompt = _codex_generation_prompt(token_payload, variant_index=index, variant_count=n)
-                results.append(
-                    invoke_codex_python_sdk_imagegen(
-                        prompt=prompt,
-                        output_dir=output_dir,
-                        task_name="drawai.workbench.imagegen.codex.reference_tokens_only.v1",
-                        output_stem=f"codex-reference-tokens-{index:03d}",
-                        runtime_config=runtime_config,
-                        isolated_cwd=store.workspace,
-                    )
-                )
-            elif source_image_path and reference_mode == "reference_context":
+            if source_image_path:
                 prompt = _codex_generation_prompt(payload, variant_index=index, variant_count=n)
                 results.append(
                     invoke_codex_python_sdk_image_reference_context(
@@ -1744,25 +1724,8 @@ def _call_codex_image_generation(
                             source_image_path=source_image_path,
                         ),
                         output_dir=output_dir,
-                        task_name="drawai.workbench.imagegen.codex.reference_context.v1",
-                        output_stem=f"codex-reference-context-{index:03d}",
-                        runtime_config=runtime_config,
-                        isolated_cwd=store.workspace,
-                    )
-                )
-            elif source_image_path:
-                prompt = _codex_generation_prompt(payload, variant_index=index, variant_count=n)
-                results.append(
-                    invoke_codex_python_sdk_image_edit(
-                        source_image_path=source_image_path,
-                        prompt=_codex_reference_generation_prompt(
-                            prompt,
-                            source_image_path=source_image_path,
-                            reference_mode=reference_mode,
-                        ),
-                        output_dir=output_dir,
-                        task_name=f"drawai.workbench.imagegen.codex.{reference_mode}.v1",
-                        output_stem=f"codex-{reference_mode.replace('_', '-')}-{index:03d}",
+                        task_name="drawai.workbench.imagegen.codex.image_context.v1",
+                        output_stem=f"codex-image-context-{index:03d}",
                         runtime_config=runtime_config,
                         isolated_cwd=store.workspace,
                     )
@@ -1785,7 +1748,7 @@ def _call_codex_image_generation(
         results,
         provider="codex",
         prompt=_codex_generation_prompt(payload, variant_index=1, variant_count=n),
-        reference_mode=reference_mode,
+        image_context=image_context,
     )
 
 
@@ -1854,116 +1817,16 @@ def _codex_generation_prompt(payload: Mapping[str, Any], *, variant_index: int, 
     )
 
 
-def _codex_reference_mode(payload: Mapping[str, Any], *, has_source_image: bool) -> str:
-    raw = str(payload.get("reference_mode") or "").strip().lower().replace("-", "_")
-    aliases = {
-        "auto": "",
-        "edit": "reference_edit_high",
-        "reference": "reference_context",
-        "tokens": "reference_tokens_only",
-        "context": "reference_context",
-        "low": "reference_edit_low",
-        "high": "reference_edit_high",
-        "content": "content_edit",
-    }
-    normalized = aliases.get(raw, raw)
-    allowed = {
-        "reference_context",
-        "reference_tokens_only",
-        "reference_edit_low",
-        "reference_edit_high",
-        "content_edit",
-    }
-    if not normalized:
-        return "reference_edit_high" if has_source_image else "none"
-    if normalized not in allowed:
-        raise HTTPException(
-            status_code=400,
-            detail="reference_mode must be one of reference_context, reference_tokens_only, reference_edit_low, reference_edit_high, content_edit",
-        )
-    return normalized
-
-
-def _reference_image_tokens(source_image_path: str) -> dict[str, Any]:
-    path = Path(source_image_path).expanduser().resolve(strict=False)
-    tokens: dict[str, Any] = {
-        "schema": "drawai.reference_image_tokens.v1",
-        "source_image_path": str(path),
-        "extraction": "local_pil_basic_tokens",
-        "roles": ["layout_reference", "style_reference", "color_reference"],
-    }
-    try:
-        with Image.open(path) as image:
-            rgb = image.convert("RGB")
-            width, height = rgb.size
-            thumb = rgb.resize((1, 1))
-            average = "#%02x%02x%02x" % thumb.getpixel((0, 0))
-            quantized = rgb.resize((96, 54)).quantize(colors=8).convert("RGB")
-            colors = quantized.getcolors(maxcolors=96 * 54) or []
-            top = sorted(colors, key=lambda item: item[0], reverse=True)[:6]
-            palette = ["#%02x%02x%02x" % color for _count, color in top]
-            tokens.update(
-                {
-                    "width": width,
-                    "height": height,
-                    "aspect_ratio": round(width / height, 4) if height else None,
-                    "average_color": average,
-                    "dominant_palette": palette,
-                }
-            )
-    except (OSError, ValueError) as exc:
-        tokens["error"] = str(exc)
-    tokens["layout_prompt_hint"] = (
-        "Use the extracted palette/aspect/layout roles as weak guidance only; the reference bitmap is not supplied "
-        "as an image input in reference_tokens_only mode."
-    )
-    return tokens
-
-
 def _codex_reference_context_prompt(prompt: str, *, source_image_path: str) -> str:
     return "\n".join(
         [
             prompt,
             "",
-            "Reference image execution:",
-            "- reference_mode: reference_context.",
-            "- A real local reference image is supplied to Codex as LocalImageInput, but the requested output is a new PPT image, not a literal edit of the original bitmap.",
+            "Image as context:",
+            "- A real local image is supplied to Codex as LocalImageInput, but the requested output is a new PPT image, not a literal edit of the original bitmap.",
             f"- source_image_path: {source_image_path}",
             "- Use the supplied image for layout/style/color/typography context only unless the primary request explicitly asks for content preservation.",
             "- Replace the visible topic and slide copy with the user's requested content.",
-        ]
-    )
-
-
-def _codex_reference_generation_prompt(prompt: str, *, source_image_path: str, reference_mode: str) -> str:
-    mode_lines = {
-        "reference_edit_low": [
-            "- reference_mode: reference_edit_low.",
-            "- Treat the source as a loose visual reference; substantial regeneration is allowed.",
-            "- Preserve only broad composition, palette, and hierarchy; replace subject matter and visible text.",
-        ],
-        "reference_edit_high": [
-            "- reference_mode: reference_edit_high.",
-            "- Treat the source as a strong layout/style reference.",
-            "- Preserve structure, spacing rhythm, major visual regions, and slide hierarchy unless they conflict with the requested topic.",
-        ],
-        "content_edit": [
-            "- reference_mode: content_edit.",
-            "- The source image is the actual edit target.",
-            "- Preserve unchanged regions and local identity as much as possible; modify only the content requested by the user.",
-        ],
-    }.get(reference_mode, [f"- reference_mode: {reference_mode}."])
-    return "\n".join(
-        [
-            prompt,
-            "",
-            "Reference image execution:",
-            *mode_lines,
-            "- A real local reference/source image is supplied to Codex as LocalImageInput through the image edit path.",
-            f"- source_image_path: {source_image_path}",
-            "- Current Codex SDK path does not expose a model-native input_fidelity flag; low/high strength is enforced by this prompt policy.",
-            "- Do not copy logos, protected characters, trademarks, exact UI, or source visible text from the reference image.",
-            "- Keep the user's requested topic, language, visible text, factual policy, and DrawAI PPT constraints as the source of truth.",
         ]
     )
 
@@ -1994,7 +1857,7 @@ def _codex_imagegen_response(
     *,
     provider: str,
     prompt: str,
-    reference_mode: str = "none",
+    image_context: bool = False,
 ) -> dict[str, Any]:
     data: list[dict[str, Any]] = []
     for result in results:
@@ -2012,7 +1875,7 @@ def _codex_imagegen_response(
                 "revised_prompt": image.revised_prompt,
                 "operation": result.operation,
                 "source_image_path": str(result.source_image_path) if result.source_image_path is not None else None,
-                "reference_mode": reference_mode,
+                "image_context": image_context,
             })
     return {
         "created": int(time.time()),
@@ -2025,8 +1888,7 @@ def _codex_imagegen_response(
             "output_dirs": [str(result.output_dir) for result in results],
             "archives": [str(result.archive_dir) for result in results],
             "operations": [result.operation for result in results],
-            "reference_mode": reference_mode,
-            "reference_modes": [reference_mode for _result in results],
+            "image_context": image_context,
             "source_image_paths": [
                 str(result.source_image_path) if result.source_image_path is not None else None
                 for result in results

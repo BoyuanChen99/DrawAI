@@ -2773,23 +2773,25 @@ def test_image_generation_endpoint_can_use_codex_provider(tmp_path: Path, monkey
     assert "- size: 2048x1152" in first_prompt
     assert "- quality: high" in first_prompt
     assert "- background: transparent" in first_prompt
-    assert "SOURCE-GROUNDED" in first_prompt
-    assert "Acme shipped 42 reliable widgets in 2026." in first_prompt
-    assert "REQUIRED_VISIBLE_TEXT" in first_prompt
-    assert "Acme shipped 42 widgets" in first_prompt
-    assert "Swiss editorial" in first_prompt
     assert "Template: consulting_report / Consulting Report" in first_prompt
-    assert "data_driven" in first_prompt
     assert "main_language: Chinese" in first_prompt
-    assert "text_density: high" in first_prompt
-    assert "Acme 业务进展" in first_prompt
-    assert "reliable widgets shipped" in first_prompt
     assert "Do not invent statistics" in first_prompt
+    assert "SOURCE-GROUNDED" not in first_prompt
+    assert "Acme shipped 42 reliable widgets in 2026." not in first_prompt
+    assert "REQUIRED_VISIBLE_TEXT" not in first_prompt
+    assert "Acme shipped 42 widgets" not in first_prompt
+    assert "Swiss editorial" not in first_prompt
+    assert "data_driven" not in first_prompt
+    assert "text_density: high" not in first_prompt
+    assert "Acme 业务进展" not in first_prompt
+    assert "reliable widgets shipped" not in first_prompt
     assert "variant 1 of 2" in first_prompt
     assert "variant 2 of 2" in str(captured[1]["prompt"])
 
 
-def test_image_generation_with_source_image_uses_codex_edit_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_image_generation_with_source_image_uses_codex_image_context_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     base_config = _base_config(tmp_path)
     store = WorkbenchStore(tmp_path / "workspace")
     settings = _settings(tmp_path, base_config)
@@ -2800,7 +2802,10 @@ def test_image_generation_with_source_image_uses_codex_edit_path(tmp_path: Path,
     def fake_invoke_codex_python_sdk_imagegen(**kwargs):  # pragma: no cover - should not be called.
         raise AssertionError("text-to-image path should not be used when source_image_path is supplied")
 
-    def fake_invoke_codex_python_sdk_image_edit(**kwargs):
+    def fake_invoke_codex_python_sdk_image_edit(**kwargs):  # pragma: no cover - should not be called.
+        raise AssertionError("edit path should not be used when source_image_path is supplied for generation")
+
+    def fake_reference_context(**kwargs):
         captured.update(kwargs)
         output_dir = Path(kwargs["output_dir"])
         output_stem = str(kwargs["output_stem"])
@@ -2813,7 +2818,7 @@ def test_image_generation_with_source_image_uses_codex_edit_path(tmp_path: Path,
             status="completed",
             path=image_path,
             source_path=str(image_path),
-            revised_prompt="reference edit revised prompt",
+            revised_prompt="image context revised prompt",
             mime_type="image/png",
             width=16,
             height=10,
@@ -2830,12 +2835,13 @@ def test_image_generation_with_source_image_uses_codex_edit_path(tmp_path: Path,
             trace_path=None,
             archive_dir=output_dir / "codex_session_log",
             images=(image,),
-            operation="edit",
+            operation="reference_context",
             source_image_path=Path(kwargs["source_image_path"]).resolve(),
         )
 
     monkeypatch.setattr(workbench_api, "invoke_codex_python_sdk_imagegen", fake_invoke_codex_python_sdk_imagegen)
     monkeypatch.setattr(workbench_api, "invoke_codex_python_sdk_image_edit", fake_invoke_codex_python_sdk_image_edit)
+    monkeypatch.setattr(workbench_api, "invoke_codex_python_sdk_image_reference_context", fake_reference_context)
     app = create_app(settings, store=store, runner=WorkbenchRunner(store, settings))
     client = TestClient(app)
 
@@ -2859,14 +2865,17 @@ def test_image_generation_with_source_image_uses_codex_edit_path(tmp_path: Path,
     assert response.status_code == 200
     payload = response.json()
     assert payload["provider"] == "codex"
-    assert payload["data"][0]["operation"] == "edit"
+    assert payload["data"][0]["operation"] == "reference_context"
+    assert payload["data"][0]["image_context"] is True
     assert Path(payload["data"][0]["source_image_path"]) == source_image.resolve()
-    assert payload["codex"]["operations"] == ["edit"]
+    assert payload["codex"]["operations"] == ["reference_context"]
+    assert payload["codex"]["image_context"] is True
     assert Path(payload["codex"]["source_image_paths"][0]) == source_image.resolve()
     assert Path(captured["source_image_path"]) == source_image
-    assert "Reference image execution:" in str(captured["prompt"])
+    assert "Image as context:" in str(captured["prompt"])
     assert "LocalImageInput" in str(captured["prompt"])
     assert "prisma_flow_diagram" in str(captured["prompt"])
+    assert "reference_mode" not in str(captured["prompt"])
 
 
 def test_image_generation_reference_context_uses_context_path(
@@ -2944,14 +2953,17 @@ def test_image_generation_reference_context_uses_context_path(
     assert response.status_code == 200
     payload = response.json()
     assert payload["data"][0]["operation"] == "reference_context"
-    assert payload["data"][0]["reference_mode"] == "reference_context"
-    assert payload["codex"]["reference_mode"] == "reference_context"
+    assert payload["data"][0]["image_context"] is True
+    assert payload["codex"]["image_context"] is True
+    assert "reference_mode" not in payload["data"][0]
+    assert "reference_mode" not in payload["codex"]
     assert Path(captured["source_image_path"]) == source_image
-    assert "reference_mode: reference_context" in str(captured["prompt"])
+    assert "Image as context:" in str(captured["prompt"])
+    assert "reference_mode" not in str(captured["prompt"])
     assert "not a literal edit" in str(captured["prompt"])
 
 
-def test_image_generation_reference_tokens_only_does_not_pass_local_image_input(
+def test_image_generation_ignores_legacy_reference_tokens_only_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     base_config = _base_config(tmp_path)
@@ -2961,7 +2973,10 @@ def test_image_generation_reference_tokens_only_does_not_pass_local_image_input(
     Image.new("RGB", (16, 10), (240, 220, 120)).save(source_image)
     captured: dict[str, object] = {}
 
-    def fake_text_to_image(**kwargs):
+    def fake_text_to_image(**kwargs):  # pragma: no cover - should not be called.
+        raise AssertionError("plain text-to-image path should not be used when source_image_path is supplied")
+
+    def fake_reference_context(**kwargs):
         captured.update(kwargs)
         output_dir = Path(kwargs["output_dir"])
         output_stem = str(kwargs["output_stem"])
@@ -2991,15 +3006,16 @@ def test_image_generation_reference_tokens_only_does_not_pass_local_image_input(
             trace_path=None,
             archive_dir=output_dir / "codex_session_log",
             images=(image,),
-            operation="generate",
-            source_image_path=None,
+            operation="reference_context",
+            source_image_path=Path(kwargs["source_image_path"]).resolve(),
         )
 
     def fake_edit(**kwargs):  # pragma: no cover - should not be called.
-        raise AssertionError("edit path should not be used for reference_tokens_only")
+        raise AssertionError("edit path should not be used for legacy reference tokens mode")
 
     monkeypatch.setattr(workbench_api, "invoke_codex_python_sdk_imagegen", fake_text_to_image)
     monkeypatch.setattr(workbench_api, "invoke_codex_python_sdk_image_edit", fake_edit)
+    monkeypatch.setattr(workbench_api, "invoke_codex_python_sdk_image_reference_context", fake_reference_context)
     app = create_app(settings, store=store, runner=WorkbenchRunner(store, settings))
     client = TestClient(app)
 
@@ -3021,12 +3037,15 @@ def test_image_generation_reference_tokens_only_does_not_pass_local_image_input(
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["data"][0]["operation"] == "generate"
-    assert payload["data"][0]["source_image_path"] is None
-    assert payload["data"][0]["reference_mode"] == "reference_tokens_only"
-    assert "reference_image_tokens" in str(captured["prompt"])
-    assert "reference_tokens_only" in str(captured["prompt"])
-    assert "LocalImageInput" not in str(captured["prompt"])
+    assert payload["data"][0]["operation"] == "reference_context"
+    assert Path(payload["data"][0]["source_image_path"]) == source_image.resolve()
+    assert payload["data"][0]["image_context"] is True
+    assert payload["codex"]["image_context"] is True
+    assert "reference_mode" not in payload["data"][0]
+    assert "reference_image_tokens" not in str(captured["prompt"])
+    assert "reference_tokens_only" not in str(captured["prompt"])
+    assert "Image as context:" in str(captured["prompt"])
+    assert "LocalImageInput" in str(captured["prompt"])
 
 
 def test_api_provider_rejects_reference_image_generation(tmp_path: Path) -> None:

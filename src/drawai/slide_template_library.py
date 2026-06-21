@@ -39,11 +39,8 @@ def _card(
         "visual_keywords": list(visual_keywords),
         "palette": list(palette),
         "layout_archetypes": list(layout_archetypes),
-        "text_density": text_density,
         "reference_images": [dict(item) for item in reference_images],
         "sample_outputs": list(sample_outputs),
-        "source_policy": source_policy,
-        "ip_safety": ip_safety,
         "tests": list(tests),
         "provenance": [dict(item) for item in provenance],
     }
@@ -1165,34 +1162,21 @@ def build_prompt_from_template_card(
         f"- visual_keywords: {', '.join(card['visual_keywords'])}",
         f"- palette: {', '.join(card['palette'])}",
         f"- layout_archetypes: {', '.join(card['layout_archetypes'])}",
-        f"- text_density: {card['text_density']}",
         "",
         "Language and visible text:",
         *language_policy,
         "- Minimum useful visible text: a clear title, one takeaway/subtitle, 3-6 concise bullets or callouts, and purposeful section/module labels.",
         "- If exact long text is hard to render, split it into shorter readable Chinese phrases rather than omitting text.",
-        "",
-        "Source and content policy:",
-        f"- {card['source_policy']}",
     ]
     if refs:
         lines.extend(
             [
                 "",
-                "Reference image policy:",
-                "- Use the reference images as style/layout references only.",
+                "Image as context:",
+                "- Use the supplied images as visual context only.",
                 "- Do not copy logos, proprietary characters, exact UI screens, protected artwork, trademarks, or visible text from reference images.",
                 "- Preserve the user's topic and content; adapt only composition, mood, color, spacing, and layout rhythm.",
-                f"- reference_image_paths: {json.dumps(refs, ensure_ascii=False)}",
-                f"- style_reference_images: {json.dumps(refs, ensure_ascii=False)}",
-            ]
-        )
-    if card.get("ip_safety"):
-        lines.extend(
-            [
-                "",
-                "IP safety:",
-                f"- {card['ip_safety']}",
+                f"- context_image_paths: {json.dumps(refs, ensure_ascii=False)}",
             ]
         )
     lines.extend(

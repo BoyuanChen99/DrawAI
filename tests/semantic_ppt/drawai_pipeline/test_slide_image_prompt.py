@@ -13,112 +13,75 @@ from drawai.slide_image_prompt import (
 from drawai.slide_image_strategy import build_slide_image_strategy_manifest, template_registry_summary
 
 
-def test_slide_image_prompt_preserves_grounding_and_text_policy() -> None:
+def test_slide_image_prompt_ignores_removed_structured_controls() -> None:
     payload = {
         "prompt": "create a premium slide about Acme widget growth",
         "size": "2048x1152",
         "quality": "high",
         "background": "opaque",
         "output_format": "png",
-        "research_context": {
-            "sources": [
-                {
-                    "title": "Acme annual report",
-                    "url": "https://example.test/report",
-                    "evidence": "Acme shipped 42 reliable widgets in 2026.",
-                }
-            ]
-        },
-        "claims": [
-            {
-                "claim": "Acme shipped 42 reliable widgets in 2026.",
-                "source_url": "https://example.test/report",
-            }
-        ],
+        "research_context": {"sources": [{"evidence": "Acme shipped 42 reliable widgets in 2026."}]},
+        "claims": [{"claim": "Acme shipped 42 reliable widgets in 2026."}],
         "locked_visible_text": ["Acme shipped 42 widgets"],
-        "title": "Acme widget growth",
-        "subtitle": "Source-grounded overview",
-        "key_message": "Acme shipped 42 widgets",
-        "style": "Swiss editorial",
+        "visible_text_blocks": {"title": "Acme 业务进展"},
+        "data_sources": {"metrics": [{"name": "reliable widgets shipped", "value": 42}]},
+        "source_mode": "data_driven",
+        "text_density": "high",
+        "style_candidate_count": 3,
+        "style_candidate_index": 2,
+        "visual_style": "Swiss editorial",
+        "composition_guidance": ["avoid empty regions"],
+        "ip_safety_mode": "generic",
     }
 
     prompt = build_slide_image_generation_prompt(payload, variant_index=1, variant_count=3)
 
     assert "DrawAI high-quality PPT slide image request." in prompt
-    assert "SOURCE-GROUNDED" in prompt
-    assert "Acme shipped 42 reliable widgets in 2026." in prompt
-    assert "REQUIRED_VISIBLE_TEXT" in prompt
-    assert "Acme shipped 42 widgets" in prompt
-    assert "Swiss editorial" in prompt
-    assert "Do not invent statistics" in prompt
+    assert "create a premium slide about Acme widget growth" in prompt
+    assert "- size: 2048x1152" in prompt
+    assert "- quality: high" in prompt
     assert "variant 1 of 3" in prompt
-    assert "OCR-friendly" in prompt
-    assert "Required visible text is a floor, not a ceiling" in prompt
-    assert "3-6 concise explanatory bullets or callouts" in prompt
-    assert "never leave the slide textless" in prompt
-    assert "PERMITTED_BODY_COPY_SOURCES" in prompt
-    assert "Preserve the user's language" in prompt
-    assert "If the request is Chinese, render Chinese slide copy" in prompt
-    assert "Acme widget growth" in prompt
-    assert "Source-grounded overview" in prompt
-    assert "text_density: medium" in prompt
-    assert "Composition guidance" in prompt
-    assert "avoid large accidental empty regions" in prompt
-    assert "not a sparse wireframe" in prompt
-    assert "layout-only wireframe" in prompt
-    assert "Visual richness guidance" in prompt
-    assert "PPT image strategy and selected template" in prompt
-    assert "Selected template enforcement" in prompt
-    assert "Visual direction" in prompt
     assert "Baked text directive" in prompt
     assert "rendering_mode: baked_text" in prompt
-    assert "Style candidate stage" in prompt
-    assert "v2_multi_option_baked_text" in prompt
-    assert "left input bookend" in prompt
-    assert "synthetic figure thumbnails" in prompt
-    assert "do not add axis labels" in prompt
-    assert "Do not infer a scientific domain" in prompt
-    assert "avoid domain-specific imagery" in prompt
-    assert "neutral paper-figure thumbnails" in prompt
-
-
-def test_slide_image_prompt_warns_when_sources_are_missing() -> None:
-    prompt = build_slide_image_generation_prompt(
-        {
-            "prompt": "make a cinematic title slide for a future product",
-            "size": "1920x1080",
-        }
-    )
-
-    assert "NO VERIFIED SOURCES PROVIDED" in prompt
-    assert "do not add new facts beyond the primary request" in prompt
     assert "Do not invent statistics" in prompt
+    assert "OCR-friendly" in prompt
+    assert "Optional template:" in prompt
+    assert "- none selected." in prompt
+    assert "SOURCE-GROUNDED" not in prompt
+    assert "REQUIRED_VISIBLE_TEXT" not in prompt
+    assert "Acme shipped 42 reliable widgets" not in prompt
+    assert "Acme shipped 42 widgets" not in prompt
+    assert "Acme 业务进展" not in prompt
+    assert "reliable widgets shipped" not in prompt
+    assert "source_mode" not in prompt
+    assert "text_density" not in prompt
+    assert "Style candidate" not in prompt
+    assert "Swiss editorial" not in prompt
+    assert "Composition guidance" not in prompt
+    assert "IP safety" not in prompt
 
 
-def test_slide_image_strategy_defaults_to_baked_text_and_candidates() -> None:
+def test_slide_image_strategy_defaults_to_no_template() -> None:
     strategy = build_slide_image_strategy_manifest(
         {
             "prompt": "create a technical model architecture PPT for the KIMI model series",
             "claims": [{"claim": "Kimi K2 is a MoE model."}],
+            "source_mode": "source_grounded",
+            "data_sources": {"metrics": [{"name": "线索", "value": 1200}]},
         }
     )
 
     assert strategy["schema"] == "drawai.slide_image_strategy.v1"
-    assert strategy["strategy_version"] == "v2_multi_option_baked_text"
+    assert strategy["strategy_version"] == "v3_optional_template_baked_text"
     assert strategy["rendering_mode"] == "baked_text"
     assert strategy["intent"] == "technical"
-    assert strategy["selected_template"]["id"] == "dark_tech"
-    assert strategy["source_mode"]["id"] == "source_grounded"
-    assert len(strategy["candidate_stage"]["templates"]) == 3
-    assert strategy["selected_template"]["id"] in {
-        item["id"] for item in strategy["candidate_stage"]["templates"]
-    }
-    assert "Codex built-in image generation tool exactly once per image; never call OpenAI Images API manually in Codex mode." in strategy[
-        "prior_research_features"
-    ]
+    assert strategy["selected_template"] is None
+    assert strategy["template_selection"] == {"mode": "none", "id": ""}
+    assert "source_mode" not in strategy
+    assert "candidate_stage" not in strategy
 
 
-def test_slide_image_strategy_template_override() -> None:
+def test_slide_image_strategy_template_override_is_explicit_only() -> None:
     strategy = build_slide_image_strategy_manifest(
         {
             "prompt": "生成市场进入策略PPT",
@@ -128,70 +91,64 @@ def test_slide_image_strategy_template_override() -> None:
     )
 
     assert strategy["selected_template"]["id"] == "consulting_report"
-    assert strategy["source_mode"]["id"] == "prompt_only"
-    assert strategy["candidate_stage"]["templates"][0]["id"] == "consulting_report"
+    assert strategy["template_selection"] == {"mode": "selected", "id": "consulting_report"}
+    assert "text_density" not in strategy["selected_template"]
+    assert "data_policy" not in strategy["selected_template"]
+    assert "ip_safety" not in strategy["selected_template"]
+    assert "source_mode" not in strategy
+    assert "candidate_stage" not in strategy
 
 
-def test_slide_image_strategy_promotes_prompt_only_when_data_is_supplied() -> None:
-    strategy = build_slide_image_strategy_manifest(
-        {
-            "prompt": "生成销售漏斗数据复盘 PPT",
-            "source_mode": "prompt_only",
-            "data_sources": {"metrics": [{"name": "线索", "value": 1200}]},
-        }
-    )
-
-    assert strategy["source_mode"]["id"] == "data_driven"
-
-
-def test_slide_image_generation_prompt_enforces_template_archetypes() -> None:
+def test_slide_image_generation_prompt_includes_selected_template_without_old_blocks() -> None:
     prompt = build_slide_image_generation_prompt(
         {
             "prompt": "生成市场进入策略PPT",
             "template_id": "consulting_report",
             "source_mode": "prompt_only",
+            "text_density": "high",
         }
     )
 
-    assert "Consulting enforcement" in prompt
-    assert "executive takeaway" in prompt
-    assert "2x2 matrix" in prompt
-    assert "do not default to a technical pipeline" in prompt
+    assert "Template: consulting_report / Consulting Report" in prompt
+    assert "executive headline takeaway" in prompt
+    assert "2x2 decision matrix" in prompt
+    assert "Optional template:" in prompt
+    assert "Selected template enforcement" not in prompt
+    assert "PPT image strategy and selected template" not in prompt
+    assert "source_mode" not in prompt
+    assert "text_density" not in prompt
 
 
-def test_chinese_prompt_translates_generic_english_visible_text() -> None:
+def test_chinese_prompt_uses_auto_language_inference() -> None:
     prompt = build_slide_image_generation_prompt(
         {
             "prompt": "生成一个中文技术PPT：Agent Memory 系统如何支持长期任务。",
-            "title": "Agent Memory Systems",
-            "subtitle": "Memory Layers",
-            "key_message": "Memory turns one-shot agents into durable workflows",
             "locked_visible_text": ["Threat Model", "Source Quality", "World Model Stack"],
-            "labels": ["Agent memory", "Long tasks"],
         }
     )
 
     assert "main_language: Chinese" in prompt
     assert "Do not render generic English section headings" in prompt
     assert "核心结论、来源质量、威胁模型" in prompt
-    assert "treat them as semantic hints and render concise Chinese equivalents" in prompt
-    assert "EXACT_TEXT_DO_NOT_TRANSLATE" in prompt
+    assert "Threat Model" not in prompt
+    assert "EXACT_TEXT_DO_NOT_TRANSLATE" not in prompt
 
 
-def test_exact_visible_text_can_still_be_preserved() -> None:
+def test_exact_visible_text_fields_are_ignored() -> None:
     prompt = build_slide_image_generation_prompt(
         {
-            "prompt": "生成中文PPT，但保留指定产品名。",
+            "prompt": "生成中文PPT，标题由主提示词自然决定。",
             "exact_visible_text": ["DrawAI Studio"],
             "locked_visible_text": ["DrawAI Studio"],
         }
     )
 
-    assert "DrawAI Studio" in prompt
-    assert "EXACT_TEXT_DO_NOT_TRANSLATE" in prompt
+    assert "DrawAI Studio" not in prompt
+    assert "EXACT_TEXT_DO_NOT_TRANSLATE" not in prompt
+    assert "REQUIRED_VISIBLE_TEXT" not in prompt
 
 
-def test_slide_image_template_registry_exposes_multiple_options() -> None:
+def test_slide_image_template_registry_exposes_multiple_options_without_density() -> None:
     registry = template_registry_summary()
     ids = {item["id"] for item in registry}
 
@@ -242,40 +199,13 @@ def test_slide_image_template_registry_exposes_multiple_options() -> None:
         "retro_platform_game",
         "comic_manga_classroom",
     }.issubset(ids)
+    assert all("text_density" not in item for item in registry)
     categories = {item["category"] for item in registry}
     assert "professional_business_consulting" in categories
     assert "ip_safe_cartoon" in categories
 
 
-def test_slide_image_strategy_routes_to_new_business_candidates() -> None:
-    strategy = build_slide_image_strategy_manifest(
-        {
-            "prompt": "create an investment memo PPT for market entry strategy and boardroom decision making",
-            "source_mode": "prompt_only",
-        },
-        candidate_count=5,
-    )
-    candidate_ids = {item["id"] for item in strategy["candidate_stage"]["templates"]}
-
-    assert strategy["intent"] == "business"
-    assert strategy["selected_template"]["id"] == "mckinsey_boardroom"
-    assert {"mckinsey_boardroom", "bcg_strategy_map", "investment_memo"}.issubset(candidate_ids)
-
-
-def test_slide_image_strategy_can_select_new_template_id() -> None:
-    strategy = build_slide_image_strategy_manifest(
-        {
-            "prompt": "make a safe cartoon learning PPT with a blue robot tutor",
-            "template_id": "blue-robot-learning",
-            "source_mode": "prompt_only",
-        }
-    )
-
-    assert strategy["selected_template"]["id"] == "blue_robot_learning"
-    assert strategy["candidate_stage"]["templates"][0]["id"] == "blue_robot_learning"
-
-
-def test_doraemon_like_request_prefers_ip_safe_blue_robot_template() -> None:
+def test_doraemon_like_request_does_not_auto_select_cartoon_template() -> None:
     strategy = build_slide_image_strategy_manifest(
         {
             "prompt": "make a teaching PPT in a Doraemon-like blue robot atmosphere",
@@ -283,28 +213,11 @@ def test_doraemon_like_request_prefers_ip_safe_blue_robot_template() -> None:
         }
     )
 
-    assert strategy["selected_template"]["id"] == "blue_robot_learning"
-    assert strategy["candidate_stage"]["templates"][0]["id"] == "blue_robot_learning"
+    assert strategy["selected_template"] is None
+    assert strategy["template_selection"]["mode"] == "none"
 
 
-def test_blue_robot_template_ip_safety_is_off_by_default() -> None:
-    prompt = build_slide_image_generation_prompt(
-        {
-            "prompt": "make a teaching PPT in a Doraemon-like blue robot atmosphere",
-            "template_id": "blue_robot_learning",
-            "source_mode": "prompt_only",
-        }
-    )
-
-    assert "Template: blue_robot_learning / Blue Robot Learning" in prompt
-    assert "Template-specific enforcement" in prompt
-    assert "IP safety" not in prompt
-    assert "no exact Doraemon likeness" not in prompt
-    assert "no collar bell" not in prompt
-    assert "Blue-robot visual enforcement" in prompt
-
-
-def test_blue_robot_template_enforces_ip_safety_when_enabled() -> None:
+def test_blue_robot_template_no_longer_emits_ip_safety_policy() -> None:
     prompt = build_slide_image_generation_prompt(
         {
             "prompt": "make a teaching PPT in a Doraemon-like blue robot atmosphere",
@@ -315,14 +228,14 @@ def test_blue_robot_template_enforces_ip_safety_when_enabled() -> None:
     )
 
     assert "Template: blue_robot_learning / Blue Robot Learning" in prompt
-    assert "IP safety" in prompt
-    assert "no copyrighted character" in prompt
-    assert "no exact Doraemon likeness" in prompt
-    assert "no trademarked symbols" in prompt
-    assert "no collar bell" in prompt
+    assert "friendly original blue-white rounded robot tutor" in prompt
+    assert "IP safety" not in prompt
+    assert "no exact Doraemon likeness" not in prompt
+    assert "no collar bell" not in prompt
+    assert "ip_safety_mode" not in prompt
 
 
-def test_slide_image_prompt_includes_template_card_and_reference_mode() -> None:
+def test_slide_image_prompt_includes_template_card_without_reference_mode() -> None:
     prompt = build_slide_image_generation_prompt(
         {
             "prompt": "生成企业知识库 AI Agent 落地方案 PPT",
@@ -335,15 +248,15 @@ def test_slide_image_prompt_includes_template_card_and_reference_mode() -> None:
         }
     )
 
-    assert "Template effect card" in prompt
     assert "Card: swiss_international / Swiss International" in prompt
     assert "Prompt recipe" in prompt
-    assert "reference_mode: reference_tokens_only" in prompt
-    assert "reference_image_tokens" in prompt
-    assert "#f7c400" in prompt
+    assert "modular grid" in prompt
+    assert "reference_mode" not in prompt
+    assert "reference_image_tokens" not in prompt
+    assert "#f7c400" not in prompt
 
 
-def test_codex_imagegen_context_is_kept_out_of_api_payload() -> None:
+def test_codex_imagegen_context_keeps_only_supported_prompt_fields() -> None:
     raw = {
         "prompt": "draw a slide",
         "size": "1024x1024",
@@ -352,6 +265,8 @@ def test_codex_imagegen_context_is_kept_out_of_api_payload() -> None:
         "spec_guided_enabled": True,
         "template_spec": {"schema": "drawai.ppt_template_spec.v1"},
         "ip_safety_mode": "off",
+        "template_id": "consulting_report",
+        "language": "zh",
         "api_key": "do-not-merge",
     }
     normalized = {
@@ -365,17 +280,17 @@ def test_codex_imagegen_context_is_kept_out_of_api_payload() -> None:
     merged = merge_codex_imagegen_context(normalized, raw)
 
     assert context == {
-        "ip_safety_mode": "off",
-        "locked_visible_text": ["Exact title"],
-        "research_context": {"url": "https://example.test"},
-        "spec_guided_enabled": True,
-        "template_spec": {"schema": "drawai.ppt_template_spec.v1"},
+        "language": "zh",
+        "template_id": "consulting_report",
     }
     assert merged["model"] == "gpt-image-2"
-    assert merged["research_context"] == {"url": "https://example.test"}
-    assert merged["locked_visible_text"] == ["Exact title"]
-    assert merged["spec_guided_enabled"] is True
-    assert merged["template_spec"] == {"schema": "drawai.ppt_template_spec.v1"}
+    assert merged["template_id"] == "consulting_report"
+    assert merged["language"] == "zh"
+    assert "research_context" not in merged
+    assert "locked_visible_text" not in merged
+    assert "spec_guided_enabled" not in merged
+    assert "template_spec" not in merged
+    assert "ip_safety_mode" not in merged
     assert "api_key" not in merged
 
 
@@ -400,25 +315,23 @@ def test_slide_image_generation_manifest_is_structured() -> None:
     )
 
     assert manifest["schema"] == "drawai.slide_image_prompt.v1"
-    assert manifest["text"]["locked_visible_text"] == ["Readable subtitle", "One useful takeaway", "Visible title"]
+    assert manifest["text"]["requested_language"] == "auto"
+    assert "locked_visible_text" not in manifest["text"]
+    assert "grounding" not in manifest
+    assert "spec_guided" not in manifest
+    assert "reference_execution" not in manifest
     assert "brand-consistent" in manifest["quality_gates"]
     assert "no unreadable microtext, mojibake, pseudo-letters, or random captions" in manifest["quality_gates"]
     assert "use the full 16:9 canvas with balanced density; avoid large accidental empty regions" in manifest["quality_gates"]
 
 
-def test_slide_image_generation_manifest_accepts_spec_guided_fields() -> None:
+def test_slide_image_generation_manifest_ignores_spec_guided_fields() -> None:
     payload = {
         "prompt": "生成系统综述流程页",
         "spec_guided_enabled": True,
-        "template_spec": {
-            "schema": "drawai.ppt_template_spec.v1",
-            "slide_size": {"width_in": 13.333, "height_in": 7.5},
-        },
+        "template_spec": {"schema": "drawai.ppt_template_spec.v1"},
         "slot_schema": {"slots": [{"id": "title", "role": "headline"}]},
-        "reference_style_spec": {
-            "schema": "drawai.reference_style_spec.v1",
-            "reference_roles": [{"role": "layout_reference"}],
-        },
+        "reference_style_spec": {"schema": "drawai.reference_style_spec.v1"},
         "design_tokens": {"palette": ["yellow", "white", "charcoal"]},
         "spec_lock": {"lock_canvas": True, "lock_layout_roles": True},
         "reference_roles": [{"role": "layout_reference"}],
@@ -427,18 +340,15 @@ def test_slide_image_generation_manifest_accepts_spec_guided_fields() -> None:
     manifest = build_slide_image_generation_manifest(payload)
     prompt = build_slide_image_generation_prompt(payload)
 
-    assert manifest["spec_guided"]["enabled"] is True
-    assert manifest["spec_guided"]["template_spec"]["schema"] == "drawai.ppt_template_spec.v1"
-    assert manifest["spec_guided"]["slot_schema"]["slots"][0]["role"] == "headline"
-    assert manifest["spec_guided"]["reference_roles"][0]["role"] == "layout_reference"
-    assert "Spec-guided design lock:" in prompt
-    assert "template_spec" in prompt
-    assert "slot_schema" in prompt
-    assert "reference_style_spec" in prompt
-    assert "layout_reference" in prompt
+    assert "spec_guided" not in manifest
+    assert "Spec-guided design lock:" not in prompt
+    assert "template_spec" not in prompt
+    assert "slot_schema" not in prompt
+    assert "reference_style_spec" not in prompt
+    assert "layout_reference" not in prompt
 
 
-def test_legacy_and_improved_prompt_comparison_exposes_added_controls() -> None:
+def test_legacy_and_improved_prompt_comparison_exposes_current_added_controls() -> None:
     payload = {
         "prompt": "academic slide about a grounded reconstruction pipeline",
         "size": "2048x1152",
@@ -453,9 +363,10 @@ def test_legacy_and_improved_prompt_comparison_exposes_added_controls() -> None:
     comparison = build_slide_image_prompt_comparison(payload)
 
     assert "DrawAI image generation request." in legacy
-    assert "SOURCE-GROUNDED" not in legacy
-    assert "REQUIRED_VISIBLE_TEXT" not in legacy
-    assert "SOURCE-GROUNDED" in comparison["improved_prompt"]
-    assert "REQUIRED_VISIBLE_TEXT" in comparison["improved_prompt"]
-    assert "source_grounding" in comparison["diff_summary"]["added_controls"]
-    assert "required_visible_text" in comparison["diff_summary"]["added_controls"]
+    assert "SOURCE-GROUNDED" not in comparison["improved_prompt"]
+    assert "REQUIRED_VISIBLE_TEXT" not in comparison["improved_prompt"]
+    assert "baked_text" in comparison["diff_summary"]["added_controls"]
+    assert "drawai_postprocess" in comparison["diff_summary"]["added_controls"]
+    assert "quality_gates" in comparison["diff_summary"]["added_controls"]
+    assert "source_grounding" not in comparison["diff_summary"]["added_controls"]
+    assert "required_visible_text" not in comparison["diff_summary"]["added_controls"]

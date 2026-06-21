@@ -285,12 +285,6 @@ export interface AssetProcessingResponse {
 }
 
 export type ImageGenerationProvider = "api" | "codex";
-export type ReferenceMode =
-  | "reference_context"
-  | "reference_tokens_only"
-  | "reference_edit_low"
-  | "reference_edit_high"
-  | "content_edit";
 
 export interface SlideTemplateCard {
   id: string;
@@ -302,11 +296,8 @@ export interface SlideTemplateCard {
   visual_keywords: string[];
   palette: string[];
   layout_archetypes: string[];
-  text_density: string;
   reference_images: Array<Record<string, unknown>>;
   sample_outputs: string[];
-  source_policy: string;
-  ip_safety?: string;
   tests: string[];
   provenance: Array<Record<string, unknown>>;
 }
@@ -375,48 +366,13 @@ export interface ImageGenerationRequest {
   api_key?: string;
   language?: string;
   output_language?: string;
-  research_context?: unknown;
-  sources?: unknown;
-  citations?: unknown;
-  claims?: unknown;
-  data_sources?: unknown;
-  locked_visible_text?: unknown;
-  exact_visible_text?: unknown;
-  do_not_translate_visible_text?: unknown;
-  locked_visible_text_exact?: boolean;
-  visible_text?: unknown;
-  visible_text_blocks?: unknown;
-  text_density?: string;
-  subtitle?: string;
-  key_message?: string;
-  style?: string;
-  visual_style?: string;
   template?: string;
   template_id?: string;
   template_card_id?: string;
   template_card?: unknown;
-  strategy?: string;
-  deck_type?: string;
-  intent?: string;
-  source_mode?: string;
   rendering_mode?: string;
-  ip_safety_mode?: string;
-  reference_mode?: ReferenceMode;
-  reference_image_tokens?: unknown;
-  spec_guided_enabled?: boolean;
-  template_spec?: unknown;
-  slot_schema?: unknown;
-  reference_style_spec?: unknown;
-  design_tokens?: unknown;
-  spec_lock?: unknown;
-  reference_roles?: unknown;
-  style_candidate_index?: number;
-  style_candidate_count?: number;
-  candidate_index?: number;
-  candidate_count?: number;
   design_system?: unknown;
   quality_gates?: unknown;
-  composition_guidance?: unknown;
   visual_richness_guidance?: unknown;
   drawai_postprocess?: unknown;
   must_include?: unknown;
@@ -427,9 +383,6 @@ export interface ImageGenerationRequest {
   audience?: string;
   tone?: string;
   brand?: unknown;
-  fact_policy?: string;
-  source_policy?: string;
-  text_policy?: string;
 }
 
 export interface ImageEditRequest {

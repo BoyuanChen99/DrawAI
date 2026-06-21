@@ -46,15 +46,21 @@ def test_gallery_sample_payload_is_continuous_baked_text_deck() -> None:
     )
 
     assert payload["template_id"] == "mckinsey_boardroom"
-    assert payload["candidate_count"] == 1
-    assert payload["style_candidate_count"] == 1
     assert payload["rendering_mode"] == "baked_text"
-    assert payload["source_mode"] == "source_grounded"
-    assert payload["visible_text_blocks"]["title"]
     assert "1/4" in payload["prompt"]
+    assert "页面标题：AI Agent 工作流如何接入企业文档体系" in payload["prompt"]
+    assert "栏目标签：文档接入、知识治理、权限边界、Agent 编排、持续评估" in payload["prompt"]
     assert "continuous deck" not in payload["prompt"]
-    assert any("deck" in item for item in payload["composition_guidance"])
-    assert payload["data_sources"]["metrics"]
+    assert "candidate_count" not in payload
+    assert "style_candidate_count" not in payload
+    assert "source_mode" not in payload
+    assert "text_density" not in payload
+    assert "visible_text_blocks" not in payload
+    assert "claims" not in payload
+    assert "sources" not in payload
+    assert "data_sources" not in payload
+    assert "visual_style" not in payload
+    assert "composition_guidance" not in payload
 
 
 def test_gallery_sample_prompt_only_record_writes_artifacts(tmp_path: Path) -> None:
@@ -78,4 +84,6 @@ def test_gallery_sample_prompt_only_record_writes_artifacts(tmp_path: Path) -> N
     prompt = (tmp_path / "case" / "prompt.txt").read_text(encoding="utf-8")
     assert payload["rendering_mode"] == "baked_text"
     assert "template_id: bcg_strategy_map" in prompt
-    assert "Selected template enforcement" in prompt
+    assert "Optional template:" in prompt
+    assert "Template: bcg_strategy_map" in prompt
+    assert "Selected template enforcement" not in prompt

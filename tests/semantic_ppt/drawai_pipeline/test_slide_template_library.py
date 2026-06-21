@@ -39,7 +39,6 @@ def test_template_library_has_expected_seed_cards() -> None:
         assert card["prompt_recipe"]
         assert card["visual_keywords"]
         assert card["layout_archetypes"]
-        assert "source_policy" in card
         assert "reference_images" in card
         assert "sample_outputs" in card
         assert "tests" in card
@@ -134,23 +133,24 @@ def test_reference_image_paths_enter_prompt_policy() -> None:
         reference_image_paths=["outputs/example/reference.png"],
     )
 
-    assert "Reference image policy" in prompt
+    assert "Image as context" in prompt
     assert "outputs/example/reference.png" in prompt
-    assert "style_reference_images" in prompt
-    assert "style/layout references only" in prompt
+    assert "context_image_paths" in prompt
+    assert "visual context only" in prompt
     assert "Do not copy logos" in prompt
     assert "protected artwork" in prompt
 
 
-def test_manga_safe_learning_prompt_enforces_ip_safety() -> None:
+def test_manga_safe_learning_prompt_does_not_emit_ip_safety_policy() -> None:
     prompt = build_prompt_from_template_card(
         "manga_safe_learning",
         "用漫画课堂讲解 AI Agent 记忆机制",
         language="zh",
     )
 
-    assert "IP safety" in prompt
-    assert "No copyrighted manga/anime characters" in prompt
-    assert "no exact likeness" in prompt
-    assert "no trademarked props" in prompt
-    assert "no Doraemon-like bell" in prompt
+    assert "Manga-safe Learning" in prompt
+    assert "IP safety" not in prompt
+    assert "No copyrighted manga/anime characters" not in prompt
+    assert "no exact likeness" not in prompt
+    assert "no trademarked props" not in prompt
+    assert "no Doraemon-like bell" not in prompt

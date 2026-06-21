@@ -5,7 +5,6 @@ import type {
   ImageGenerationProvider,
   ImageGenerationRequest,
   ImageGenerationResponse,
-  ReferenceMode,
   SlideTemplateCard,
   SlideTemplateGalleryItem
 } from "./types";
@@ -19,8 +18,7 @@ import type {
  *
  * Codex provider request shape (POST /api/imagegen/generations):
  *   provider, model, prompt, size, quality, background, output_format, n,
- *   language, template_id, source_mode, text_density, visible_text_blocks,
- *   sources, claims, data_sources, visual_style
+ *   language, template_id, template_card_id, rendering_mode
  */
 
 const DEFAULT_MODEL = "gpt-image-2";
@@ -32,8 +30,6 @@ type Quality = "auto" | "low" | "medium" | "high";
 type Background = "auto" | "opaque" | "transparent";
 type OutputFormat = "png";
 type RightMode = "stage" | "grid";
-type StyleCandidateSlot = "auto" | "1" | "2" | "3";
-type IpSafetyMode = "off" | "generic" | "strict";
 type GalleryLightbox = {
   item: SlideTemplateGalleryItem;
   imageUrl: string;
@@ -216,7 +212,7 @@ const PPT_TEMPLATE_GROUPS: Array<{ group: string; options: PPTTemplateOption[] }
     ]
   },
   {
-    group: "卡通 / IP 安全氛围",
+    group: "卡通 / 原创教学风格",
     options: [
       { value: "blue_robot_learning", label: "蓝白圆润机器人学习风", sub: "泛化机器猫氛围，不复刻角色" },
       { value: "soft_storybook_anime", label: "柔和绘本动漫", sub: "原创角色、温和故事教学" },
@@ -228,38 +224,10 @@ const PPT_TEMPLATE_GROUPS: Array<{ group: string; options: PPTTemplateOption[] }
   }
 ];
 
-const SOURCE_MODES: Array<{ value: string; label: string; sub: string }> = [
-  { value: "prompt_only", label: "仅提示词", sub: "不补事实" },
-  { value: "source_grounded", label: "资料约束", sub: "按来源生成" },
-  { value: "data_driven", label: "数据驱动", sub: "按表格/指标画图" },
-  { value: "brand_template", label: "品牌模板", sub: "按参考风格" },
-  { value: "web_research", label: "联网研究后", sub: "先研究再生成" }
-];
-
 const LANGUAGE_OPTIONS: Array<{ value: string; label: string; sub: string }> = [
-  { value: "zh", label: "中文", sub: "中文优先" },
   { value: "auto", label: "自动", sub: "跟随提示词" },
+  { value: "zh", label: "中文", sub: "中文优先" },
   { value: "en", label: "English", sub: "英文输出" }
-];
-
-const TEXT_DENSITIES: Array<{ value: string; label: string; sub: string }> = [
-  { value: "medium", label: "中等", sub: "标题+少量说明" },
-  { value: "medium-high", label: "中高", sub: "技术页推荐" },
-  { value: "high", label: "高", sub: "报告/资料页" },
-  { value: "low-medium", label: "偏低", sub: "海报/发布页" }
-];
-
-const STYLE_CANDIDATE_SLOTS: Array<{ value: StyleCandidateSlot; label: string; sub: string }> = [
-  { value: "auto", label: "自动", sub: "多图轮换" },
-  { value: "1", label: "1", sub: "候选一" },
-  { value: "2", label: "2", sub: "候选二" },
-  { value: "3", label: "3", sub: "候选三" }
-];
-
-const IP_SAFETY_MODES: Array<{ value: IpSafetyMode; label: string; sub: string }> = [
-  { value: "off", label: "Off", sub: "default" },
-  { value: "generic", label: "Generic", sub: "broad" },
-  { value: "strict", label: "Strict", sub: "strong" }
 ];
 
 const TEMPLATE_STRATEGY_CARD_LINKS: Record<string, string> = {
@@ -276,14 +244,6 @@ const TEMPLATE_STRATEGY_CARD_LINKS: Record<string, string> = {
   blue_robot_learning: "manga_safe_learning",
   comic_manga_classroom: "manga_safe_learning"
 };
-
-const REFERENCE_MODES: Array<{ value: ReferenceMode; label: string; sub: string }> = [
-  { value: "reference_context", label: "Context", sub: "image as context" },
-  { value: "reference_tokens_only", label: "Tokens", sub: "extract tokens only" },
-  { value: "reference_edit_low", label: "Edit low", sub: "loose edit" },
-  { value: "reference_edit_high", label: "Edit high", sub: "strong edit" },
-  { value: "content_edit", label: "Content edit", sub: "edit target" }
-];
 
 interface GeneratedImage {
   id: string;
@@ -322,7 +282,7 @@ export default function ImageGenStudio({
   const [quality, setQuality] = useState<Quality>("high");
   const [background, setBackground] = useState<Background>("auto");
   const [count, setCount] = useState(1);
-  const [language, setLanguage] = useState("zh");
+  const [language, setLanguage] = useState("auto");
   const [templateId, setTemplateId] = useState("auto");
   const [templateCardId, setTemplateCardId] = useState("");
   const [templateCards, setTemplateCards] = useState<SlideTemplateCard[]>([]);
@@ -334,25 +294,7 @@ export default function ImageGenStudio({
   const [templateLibraryCategory, setTemplateLibraryCategory] = useState<TemplateLibraryMode>("all");
   const [templateLibraryQuery, setTemplateLibraryQuery] = useState("");
   const [templateLibraryFocusId, setTemplateLibraryFocusId] = useState("");
-  const [sourceMode, setSourceMode] = useState("prompt_only");
-  const [textDensity, setTextDensity] = useState("medium-high");
-  const [styleCandidateCount, setStyleCandidateCount] = useState(3);
-  const [styleCandidateSlot, setStyleCandidateSlot] = useState<StyleCandidateSlot>("auto");
-  const [visibleTextInput, setVisibleTextInput] = useState("");
-  const [sourcesInput, setSourcesInput] = useState("");
-  const [claimsInput, setClaimsInput] = useState("");
-  const [dataSourcesInput, setDataSourcesInput] = useState("");
-  const [styleNotesInput, setStyleNotesInput] = useState("");
   const [referenceImagePathInput, setReferenceImagePathInput] = useState("");
-  const [referenceMode, setReferenceMode] = useState<ReferenceMode>("reference_context");
-  const [ipSafetyMode, setIpSafetyMode] = useState<IpSafetyMode>("off");
-  const [specGuidedEnabled, setSpecGuidedEnabled] = useState(false);
-  const [templateSpecInput, setTemplateSpecInput] = useState("");
-  const [slotSchemaInput, setSlotSchemaInput] = useState("");
-  const [referenceStyleSpecInput, setReferenceStyleSpecInput] = useState("");
-  const [designTokensInput, setDesignTokensInput] = useState("");
-  const [specLockInput, setSpecLockInput] = useState("");
-  const [referenceRolesInput, setReferenceRolesInput] = useState("");
 
   const [images, setImages] = useState<GeneratedImage[]>([]);
   const [selected, setSelected] = useState(0);
@@ -505,16 +447,7 @@ export default function ImageGenStudio({
     if (apiBaseUrl) body.api_base_url = apiBaseUrl;
     if (apiKey) body.api_key = apiKey;
     if (provider === "codex") {
-      const effectiveSourceMode = sourceMode === "prompt_only" && dataSourcesInput.trim()
-        ? "data_driven"
-        : sourceMode === "prompt_only" && (sourcesInput.trim() || claimsInput.trim())
-          ? "source_grounded"
-          : sourceMode;
       body.rendering_mode = "baked_text";
-      body.ip_safety_mode = ipSafetyMode;
-      body.source_mode = effectiveSourceMode;
-      body.text_density = textDensity;
-      body.style_candidate_count = styleCandidateCount;
       if (language !== "auto") {
         body.language = language;
         body.output_language = language;
@@ -525,53 +458,10 @@ export default function ImageGenStudio({
       if (templateCardId) {
         body.template_card_id = templateCardId;
       }
-      if (styleCandidateSlot !== "auto") {
-        body.style_candidate_index = Number(styleCandidateSlot);
-      }
-      const visibleText = parseVisibleTextInput(visibleTextInput);
-      if (visibleText.visible_text_blocks !== undefined) {
-        body.visible_text_blocks = visibleText.visible_text_blocks;
-      }
-      if (visibleText.locked_visible_text !== undefined) {
-        body.locked_visible_text = visibleText.locked_visible_text;
-      }
-      const sources = parseSourcesInput(sourcesInput);
-      if (sources !== undefined) {
-        body.sources = sources;
-      }
-      const claims = parseClaimsInput(claimsInput);
-      if (claims !== undefined) {
-        body.claims = claims;
-      }
-      const dataSources = parseJsonOrRawText(dataSourcesInput);
-      if (dataSources !== undefined) {
-        body.data_sources = dataSources;
-      }
-      const styleNotes = styleNotesInput.trim();
-      if (styleNotes) {
-        body.visual_style = styleNotes;
-        body.composition_guidance = inputLines(styleNotes);
-      }
       const referenceImagePath = referenceImagePathInput.trim();
       if (referenceImagePath) {
-        body.reference_mode = referenceMode;
         body.source_image_path = referenceImagePath;
         body.reference_image_path = referenceImagePath;
-      }
-      if (specGuidedEnabled) {
-        body.spec_guided_enabled = true;
-        const templateSpec = parseJsonOrRawText(templateSpecInput);
-        if (templateSpec !== undefined) body.template_spec = templateSpec;
-        const slotSchema = parseJsonOrRawText(slotSchemaInput);
-        if (slotSchema !== undefined) body.slot_schema = slotSchema;
-        const referenceStyleSpec = parseJsonOrRawText(referenceStyleSpecInput);
-        if (referenceStyleSpec !== undefined) body.reference_style_spec = referenceStyleSpec;
-        const designTokens = parseJsonOrRawText(designTokensInput);
-        if (designTokens !== undefined) body.design_tokens = designTokens;
-        const specLock = parseJsonOrRawText(specLockInput);
-        if (specLock !== undefined) body.spec_lock = specLock;
-        const referenceRoles = parseReferenceRolesInput(referenceRolesInput);
-        if (referenceRoles !== undefined) body.reference_roles = referenceRoles;
       }
     }
     return body;
@@ -585,25 +475,7 @@ export default function ImageGenStudio({
     language,
     templateId,
     templateCardId,
-    sourceMode,
-    textDensity,
-    styleCandidateCount,
-    styleCandidateSlot,
-    visibleTextInput,
-    sourcesInput,
-    claimsInput,
-    dataSourcesInput,
-    styleNotesInput,
     referenceImagePathInput,
-    referenceMode,
-    ipSafetyMode,
-    specGuidedEnabled,
-    templateSpecInput,
-    slotSchemaInput,
-    referenceStyleSpecInput,
-    designTokensInput,
-    specLockInput,
-    referenceRolesInput,
     connection.apiKey,
     connection.baseUrl,
     connection.model
@@ -738,27 +610,22 @@ export default function ImageGenStudio({
           </Field>
 
           {provider === "codex" && (
-            <div className="gen-codex-panel">
-              <div className="gen-panel-head">
-                <span className="gen-panel-title">PPT 图像策略</span>
-                <span className="gen-panel-sub">模板、风格、来源和可见文字都会进入 Codex 提示词</span>
-              </div>
-
-              <Field label="模板选择 / 策略说明" hint={linkedTemplateCardId ? `联动 ${linkedTemplateCardId}` : "视觉系统"}>
+            <>
+              <Field label="模板选择" hint={linkedTemplateCardId ? `联动 ${linkedTemplateCardId}` : "可选"}>
                 <div className="gen-template-picker-summary">
                   <div className="gen-template-picker-current">
                     <span className="gen-template-picker-kicker">
-                      {templateId === "auto" ? "AUTO ROUTING" : selectedGalleryItem?.category || selectedTemplateOption?.group || "TEMPLATE"}
+                      {templateId === "auto" ? "OPTIONAL" : selectedGalleryItem?.category || selectedTemplateOption?.group || "TEMPLATE"}
                     </span>
                     <strong>
                       {templateId === "auto"
-                        ? "自动选择视觉系统"
+                        ? "不选择模板"
                         : selectedGalleryItem?.template_name || selectedTemplateOption?.label || templateId}
                     </strong>
                     <p>
                       {templateId === "auto"
-                        ? "后端会按 prompt 意图自动挑选候选模板。"
-                        : selectedGalleryItem?.reason || selectedTemplateOption?.sub || "使用选中的模板策略拼接 Codex 提示词。"}
+                        ? "不套用模板；只按主提示词生成。"
+                        : selectedGalleryItem?.reason || selectedTemplateOption?.sub || "使用选中的模板作为普通视觉参考。"}
                     </p>
                   </div>
                   <div className="gen-template-picker-actions">
@@ -793,201 +660,25 @@ export default function ImageGenStudio({
                 )}
               </Field>
 
-              <div className="gen-two-col">
-                <Field label="来源模式" hint="事实策略">
-                  <select className="gen-select" value={sourceMode} onChange={(e) => setSourceMode(e.target.value)}>
-                    {SOURCE_MODES.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label} - {option.sub}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-
-                <Field label="输出语言" hint="中文优先">
-                  <select className="gen-select" value={language} onChange={(e) => setLanguage(e.target.value)}>
-                    {LANGUAGE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label} - {option.sub}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              </div>
-
-              <div className="gen-two-col">
-                <Field label="文字密度" hint="PPT 文本量">
-                  <select className="gen-select" value={textDensity} onChange={(e) => setTextDensity(e.target.value)}>
-                    {TEXT_DENSITIES.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label} - {option.sub}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-
-                <Field label="候选数量" hint="模板候选池">
-                  <Stepper value={styleCandidateCount} min={1} max={3} onChange={setStyleCandidateCount} />
-                </Field>
-              </div>
-
-              <Field label="风格候选" hint={styleCandidateSlot === "auto" ? "多图时自动轮换候选" : "固定使用一个候选"}>
-                <Segmented
-                  options={STYLE_CANDIDATE_SLOTS}
-                  value={styleCandidateSlot}
-                  onChange={(v) => setStyleCandidateSlot(v as StyleCandidateSlot)}
-                />
-              </Field>
-
-              <Field label="必须出现的文字" hint="JSON 或逐行">
-                <textarea
-                  className="gen-structured-textarea"
-                  value={visibleTextInput}
-                  onChange={(e) => setVisibleTextInput(e.target.value)}
-                  placeholder={'例如：\n{"title":"Kimi 系列模型技术路线","takeaway":"MoE 扩展、训练优化与 Agent 能力是主线","labels":["MoE 架构","长上下文","工具调用"]}\n或逐行写必须出现的标题、栏目和标签'}
-                  rows={5}
-                />
-              </Field>
-
-              <Field label="事实来源" hint="URL、摘录或 JSON">
-                <textarea
-                  className="gen-structured-textarea"
-                  value={sourcesInput}
-                  onChange={(e) => setSourcesInput(e.target.value)}
-                  placeholder="逐行粘贴来源 URL、官方资料摘录、论文 DOI，或直接粘贴 sources JSON。没有来源时不要让模型编数字、日期、排名。"
-                  rows={4}
-                />
-              </Field>
-
-              <Field label="事实清单" hint="逐行一个 claim">
-                <textarea
-                  className="gen-structured-textarea"
-                  value={claimsInput}
-                  onChange={(e) => setClaimsInput(e.target.value)}
-                  placeholder="例如：Kimi K2 是 MoE 模型。\n例如：不要编造 benchmark 分数，只展示已提供的结论。"
-                  rows={3}
-                />
-              </Field>
-
-              <Field label="数据源" hint="表格、CSV 摘要或 JSON">
-                <textarea
-                  className="gen-structured-textarea"
-                  value={dataSourcesInput}
-                  onChange={(e) => setDataSourcesInput(e.target.value)}
-                  placeholder="粘贴表格、CSV 摘要、指标说明或 data_sources JSON。图表和数字只应来自这里。"
-                  rows={3}
-                />
-              </Field>
-
-              <Field label="风格备注" hint="品牌、参考、禁忌">
-                <textarea
-                  className="gen-structured-textarea"
-                  value={styleNotesInput}
-                  onChange={(e) => setStyleNotesInput(e.target.value)}
-                  placeholder="例如：偏黑色科技发布会风格，中文标题要大，避免纯卡片布局，避免英文通用标题。"
-                  rows={3}
-                />
-              </Field>
-
-              <Field label="IP 安全策略" hint="默认关闭">
-                <Segmented
-                  options={IP_SAFETY_MODES}
-                  value={ipSafetyMode}
-                  onChange={(v) => setIpSafetyMode(v as IpSafetyMode)}
-                />
-              </Field>
-
-              <Field label="Spec-guided / Design lock" hint={specGuidedEnabled ? "已启用" : "关闭"}>
-                <label className="gen-checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={specGuidedEnabled}
-                    onChange={(e) => setSpecGuidedEnabled(e.target.checked)}
-                  />
-                  <span>把 template_spec / slot_schema / reference_style_spec 作为结构化约束传给后端</span>
-                </label>
-              </Field>
-
-              {specGuidedEnabled && (
-                <div className="gen-spec-panel">
-                  <Field label="template_spec" hint="JSON">
-                    <textarea
-                      className="gen-structured-textarea"
-                      value={templateSpecInput}
-                      onChange={(e) => setTemplateSpecInput(e.target.value)}
-                      placeholder='{"schema":"drawai.ppt_template_spec.v1","slide_size":{"width_in":13.333,"height_in":7.5},"layouts":[...]}'
-                      rows={4}
-                    />
-                  </Field>
-                  <Field label="slot_schema" hint="JSON">
-                    <textarea
-                      className="gen-structured-textarea"
-                      value={slotSchemaInput}
-                      onChange={(e) => setSlotSchemaInput(e.target.value)}
-                      placeholder='{"slots":[{"id":"title","role":"headline"},{"id":"main_flow","role":"process"}]}'
-                      rows={3}
-                    />
-                  </Field>
-                  <Field label="reference_style_spec" hint="JSON">
-                    <textarea
-                      className="gen-structured-textarea"
-                      value={referenceStyleSpecInput}
-                      onChange={(e) => setReferenceStyleSpecInput(e.target.value)}
-                      placeholder='{"reference_roles":[{"role":"layout_reference"},{"role":"color_reference"}],"design_tokens":{...}}'
-                      rows={4}
-                    />
-                  </Field>
-                  <div className="gen-two-col">
-                    <Field label="design_tokens" hint="JSON">
-                      <textarea
-                        className="gen-structured-textarea"
-                        value={designTokensInput}
-                        onChange={(e) => setDesignTokensInput(e.target.value)}
-                        placeholder='{"palette":["yellow","white","charcoal"],"typography":"dense Chinese slide labels"}'
-                        rows={3}
-                      />
-                    </Field>
-                    <Field label="spec_lock" hint="JSON">
-                      <textarea
-                        className="gen-structured-textarea"
-                        value={specLockInput}
-                        onChange={(e) => setSpecLockInput(e.target.value)}
-                        placeholder='{"lock_canvas":true,"lock_layout_roles":true}'
-                        rows={3}
-                      />
-                    </Field>
-                  </div>
-                  <Field label="reference_roles" hint="JSON 或逐行">
-                    <textarea
-                      className="gen-structured-textarea"
-                      value={referenceRolesInput}
-                      onChange={(e) => setReferenceRolesInput(e.target.value)}
-                      placeholder={"layout_reference\nstyle_reference\ncolor_reference\ntypography_reference"}
-                      rows={4}
-                    />
-                  </Field>
-                </div>
-              )}
-
-              <Field label="参考图模式" hint={referenceImagePathInput.trim() ? referenceMode : "填参考图路径后生效"}>
-                <select className="gen-select" value={referenceMode} onChange={(e) => setReferenceMode(e.target.value as ReferenceMode)}>
-                  {REFERENCE_MODES.map((mode) => (
-                    <option key={mode.value} value={mode.value}>
-                      {mode.label} - {mode.sub}
+              <Field label="输出语言" hint="默认自动">
+                <select className="gen-select" value={language} onChange={(e) => setLanguage(e.target.value)}>
+                  {LANGUAGE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label} - {option.sub}
                     </option>
                   ))}
                 </select>
               </Field>
 
-              <Field label="参考图路径" hint="Codex edit / LocalImageInput">
+              <Field label="参考图路径" hint="Image as context">
                 <input
                   className="gen-input"
                   value={referenceImagePathInput}
                   onChange={(e) => setReferenceImagePathInput(e.target.value)}
-                  placeholder="C:\\Users\\...\\reference.png；填写后 Codex 使用真实 image edit 路径"
+                  placeholder="C:\\Users\\...\\reference.png；填写后 Codex 会把图片作为视觉上下文"
                 />
               </Field>
-            </div>
+            </>
           )}
 
           <Field label="尺寸 / 比例" hint={effectiveSize}>
@@ -1575,69 +1266,6 @@ function optionLabel<T extends string>(options: Array<{ value: T; label: string 
 
 function openAiSizeFromPreset(ratio: string, resolution: Resolution): string {
   return OPENAI_SIZE_BY_RATIO[resolution]?.[ratio] || "1024x1024";
-}
-
-function parseVisibleTextInput(value: string): { visible_text_blocks?: unknown; locked_visible_text?: string[] } {
-  const parsed = parseJsonInput(value);
-  if (parsed !== undefined) {
-    return { visible_text_blocks: parsed };
-  }
-  const lines = inputLines(value);
-  return lines.length ? { locked_visible_text: lines } : {};
-}
-
-function parseSourcesInput(value: string): unknown | undefined {
-  const parsed = parseJsonInput(value);
-  if (parsed !== undefined) return parsed;
-  const lines = inputLines(value);
-  if (!lines.length) return undefined;
-  return lines.map((line, index) => {
-    const url = line.match(/https?:\/\/\S+/)?.[0] || "";
-    return {
-      title: url || `source-${index + 1}`,
-      url,
-      evidence: line
-    };
-  });
-}
-
-function parseClaimsInput(value: string): unknown | undefined {
-  const parsed = parseJsonInput(value);
-  if (parsed !== undefined) return parsed;
-  const lines = inputLines(value);
-  return lines.length ? lines.map((claim) => ({ claim })) : undefined;
-}
-
-function parseJsonOrRawText(value: string): unknown | undefined {
-  const parsed = parseJsonInput(value);
-  if (parsed !== undefined) return parsed;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : undefined;
-}
-
-function parseReferenceRolesInput(value: string): unknown | undefined {
-  const parsed = parseJsonInput(value);
-  if (parsed !== undefined) return parsed;
-  const lines = inputLines(value);
-  return lines.length ? lines.map((role) => ({ role })) : undefined;
-}
-
-function parseJsonInput(value: string): unknown | undefined {
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return undefined;
-  try {
-    return JSON.parse(trimmed);
-  } catch {
-    return undefined;
-  }
-}
-
-function inputLines(value: string): string[] {
-  return value
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
 }
 
 function imageModelForProvider(provider: ImageGenerationProvider, configuredModel: string): string {

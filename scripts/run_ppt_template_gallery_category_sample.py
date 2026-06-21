@@ -154,32 +154,6 @@ DECK_PAGES: list[dict[str, Any]] = [
 ]
 
 
-COMMON_CONTEXT: dict[str, Any] = {
-    "claims": [
-        "企业文档体系接入 Agent 的关键环节包括文档接入、知识治理、权限边界、检索增强、工作流编排和持续评估。",
-        "所有数值仅为测试样例数据，不代表真实业务结果。",
-    ],
-    "data_sources": {
-        "note": "Synthetic test metrics for template gallery comparison only.",
-        "metrics": [
-            {"name": "文档覆盖率", "value": 72, "unit": "%"},
-            {"name": "检索命中率", "value": 81, "unit": "%"},
-            {"name": "人工复核通过率", "value": 88, "unit": "%"},
-            {"name": "高风险回答拦截率", "value": 96, "unit": "%"},
-        ],
-    },
-    "sources": [
-        {
-            "title": "测试主题约束",
-            "evidence": (
-                "The deck is a synthetic template-gallery comparison. Keep concrete metrics limited to the supplied "
-                "test metrics, and avoid company names, market size, benchmarks, or customer case claims."
-            ),
-        }
-    ],
-}
-
-
 def main() -> int:
     args = parse_args()
     output_dir = args.output_dir.resolve()
@@ -319,15 +293,17 @@ def _base_payload(
     page_count: int,
 ) -> dict[str, Any]:
     template_id = template["template_id"]
-    visual_style = (
-        f"使用模板 {template_id} 的视觉系统。该模板用途：{template_meta.get('best_for') or 'PPT presentation'}。"
-        f"视觉方向：{template_meta.get('visual_direction') or 'template-specific slide design'}。"
-        f"本页是连续 deck 的第 {page_index}/{page_count} 页，必须与同模板其他页面保持色彩、字体层级、图形语言和边距一致。"
-    )
+    visible_text = page["visible_text_blocks"]
     prompt = (
         f"用户输入：{USER_PROMPT}\n"
         f"请生成第 {page_index}/{page_count} 页：{page['page_title']}。\n"
-        f"{page['page_brief']}"
+        f"{page['page_brief']}\n"
+        f"页面标题：{visible_text['title']}\n"
+        f"核心结论：{visible_text['takeaway']}\n"
+        f"栏目标签：{'、'.join(visible_text['labels'])}\n"
+        f"使用模板 {template_id} 的视觉系统。该模板用途：{template_meta.get('best_for') or 'PPT presentation'}。"
+        f"视觉方向：{template_meta.get('visual_direction') or 'template-specific slide design'}。"
+        f"本页是连续 deck 的第 {page_index}/{page_count} 页，必须与同模板其他页面保持色彩、字体层级、图形语言和边距一致。"
     )
     return {
         "prompt": prompt,
@@ -337,25 +313,9 @@ def _base_payload(
         "output_format": "png",
         "n": 1,
         "template_id": template_id,
-        "candidate_count": 1,
-        "style_candidate_count": 1,
         "rendering_mode": "baked_text",
-        "source_mode": "data_driven" if page_index == 3 else "source_grounded",
-        "text_density": str(template_meta.get("text_density") or "medium-high"),
         "slide_type": page["slide_type"],
-        "intent": "template_gallery_deck",
         "audience": "企业管理层、知识管理团队、AI 产品与技术团队",
-        "visible_text_blocks": page["visible_text_blocks"],
-        "claims": COMMON_CONTEXT["claims"],
-        "sources": COMMON_CONTEXT["sources"],
-        "data_sources": COMMON_CONTEXT["data_sources"],
-        "visual_style": visual_style,
-        "composition_guidance": [
-            "这是一组模板图库横向测试，每张图都必须是完整 PPT 页面，不是海报或纯插画。",
-            "同一模板的 4 页需要有明显连续 deck 一致性：标题系统、色彩、模块风格、图标/线条语言一致。",
-            "只根据本页 page_brief 改变页面类型；不要改变总主题。",
-            "文字应跟随用户输入语言和 visible_text_blocks，不要生成随机英文栏目或伪文字。",
-        ],
         "drawai_postprocess": [
             "文本区域保持高对比，方便 OCR 识别。",
             "模块边界清晰，方便 SAM/DrawAI 后续可编辑重建。",
