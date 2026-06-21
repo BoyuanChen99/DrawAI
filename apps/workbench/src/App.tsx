@@ -123,7 +123,7 @@ const IMAGEGEN_SETTINGS_STORAGE_KEY = "drawai.imagegen.connection";
 const PPTX_EXPORT_POLL_INTERVAL_MS = 1000;
 const PPTX_EXPORT_TIMEOUT_MS = 180_000;
 const DEFAULT_IMAGEGEN_CONNECTION: ImageGenConnectionSettings = {
-  provider: "api",
+  provider: "codex",
   baseUrl: "",
   apiKey: "",
   model: "gpt-image-2"
@@ -767,6 +767,21 @@ export default function App() {
     }
   }
 
+  async function rerunAnalysisForCase(item?: Pick<CaseRecord, "case_id" | "batch_id"> | null) {
+    const target = item || activeCase?.case;
+    if (!target || assetsRunPendingCaseId) return;
+    setAssetsRunPendingCaseId(target.case_id);
+    try {
+      await runCaseStage(target.case_id, "analysis");
+      await selectBatch(target.batch_id);
+      await selectCase(target.case_id);
+      await refreshBatches();
+      setActiveView("board");
+    } finally {
+      setAssetsRunPendingCaseId((current) => (current === target.case_id ? "" : current));
+    }
+  }
+
   async function exportPptxForCase(caseId: string): Promise<ArtifactRecord[]> {
     if (pptxExportPendingCaseId) return [];
     setPptxExportPendingCaseId(caseId);
@@ -984,6 +999,7 @@ export default function App() {
           onSelectCase={(caseId) => openCaseFromTask(caseId).catch((err) => setError(err.message))}
           onRunFromAssets={() => runFromAssets().catch((err) => setError(err instanceof Error ? err.message : String(err)))}
           onRetryCase={(item) => retryFailedCase(item).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+          onRerunAnalysis={(item) => rerunAnalysisForCase(item).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
           onExportPptx={(caseId) => exportPptxForCase(caseId)}
           onDownloadPptx={(caseId, artifact) => downloadPptxArtifactForCase(caseId, artifact).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
           onDownloadBatchPptx={(batchId) => downloadBatchPptxForBatch(batchId)}
@@ -1033,6 +1049,7 @@ export default function App() {
           onNext={runFromEditor}
           onProcessAssets={(assetIds, plan) => processAssetPlanItems(assetIds, plan)}
           onDelete={deleteSelectedAsset}
+          onRerunAnalysis={() => rerunAnalysisForCase(activeCase?.case).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
           runInProgress={activeCaseRunning}
         />
       ) : (
@@ -1123,6 +1140,7 @@ function BoardWorkspace({
   onSelectCase,
   onRunFromAssets,
   onRetryCase,
+  onRerunAnalysis,
   onExportPptx,
   onDownloadPptx,
   onDownloadBatchPptx,
@@ -1164,6 +1182,7 @@ function BoardWorkspace({
   onSelectCase: (caseId: string) => void;
   onRunFromAssets: () => void;
   onRetryCase: (item: CaseRecord) => void;
+  onRerunAnalysis: (item: CaseRecord) => void;
   onExportPptx: (caseId: string) => Promise<ArtifactRecord[]>;
   onDownloadPptx: (caseId: string, artifact: ArtifactRecord) => void | Promise<void>;
   onDownloadBatchPptx: (batchId: string) => void | Promise<void>;
@@ -1200,6 +1219,7 @@ function BoardWorkspace({
           onSelectCase={onSelectCase}
           onRunFromAssets={onRunFromAssets}
           onRetryCase={onRetryCase}
+          onRerunAnalysis={onRerunAnalysis}
           onExportPptx={onExportPptx}
           onDownloadPptx={onDownloadPptx}
           onDownloadBatchPptx={onDownloadBatchPptx}
@@ -3313,6 +3333,7 @@ function TaskSelectionWorkspace({
   onSelectCase,
   onRunFromAssets,
   onRetryCase,
+  onRerunAnalysis,
   onExportPptx,
   onDownloadPptx,
   onDownloadBatchPptx
@@ -3340,6 +3361,7 @@ function TaskSelectionWorkspace({
   onSelectCase: (caseId: string) => void;
   onRunFromAssets: () => void;
   onRetryCase: (item: CaseRecord) => void;
+  onRerunAnalysis: (item: CaseRecord) => void;
   onExportPptx: (caseId: string) => Promise<ArtifactRecord[]>;
   onDownloadPptx: (caseId: string, artifact: ArtifactRecord) => void | Promise<void>;
   onDownloadBatchPptx: (batchId: string) => void | Promise<void>;
@@ -3447,7 +3469,7 @@ function TaskSelectionWorkspace({
     });
   }
 
-  async function runContextAction(action: "assets" | "canvas" | "run") {
+  async function runContextAction(action: "assets" | "canvas" | "run" | "analysis") {
     if (!contextCase) return;
     if (action === "assets") {
       setContextMenu(null);
@@ -3460,6 +3482,10 @@ function TaskSelectionWorkspace({
     setContextMenu(null);
     if (action === "canvas") {
       onOpenSvgEditor();
+      return;
+    }
+    if (action === "analysis") {
+      onRerunAnalysis(contextCase);
       return;
     }
     onRunFromAssets();
@@ -3776,6 +3802,18 @@ function TaskSelectionWorkspace({
             <span>{runInProgress && contextSelected ? "运行中" : "运行"}</span>
             <em>{contextReadOnly ? "历史只读" : contextSelected ? "从素材继续" : "正在选择"}</em>
           </button>
+          <button
+            type="button"
+            role="menuitem"
+            data-testid="task-context-rerun-analysis"
+            disabled={!contextSelected || runInProgress}
+            onClick={() => {
+              void runContextAction("analysis");
+            }}
+          >
+            <span>重跑分析</span>
+            <em>SAM + OCR</em>
+          </button>
         </div>
       )}
     </main>
@@ -3796,6 +3834,7 @@ function EditorWorkspace({
   onNext,
   onProcessAssets,
   onDelete,
+  onRerunAnalysis,
   runInProgress
 }: {
   activeCase: CaseDetail | null;
@@ -3811,6 +3850,7 @@ function EditorWorkspace({
   onNext: () => void;
   onProcessAssets: (assetIds: string[], plan: AssetPlan) => Promise<AssetPlan>;
   onDelete: () => void;
+  onRerunAnalysis: () => void;
   runInProgress: boolean;
 }) {
   const editorRef = useRef<HTMLElement | null>(null);
@@ -3887,10 +3927,22 @@ function EditorWorkspace({
                   <button className={mode === "polygon" ? "active icon-button" : "icon-button"} title="多边形框选" disabled={!assetPlan} onClick={() => setMode("polygon")} aria-label="多边形框选">
                     <PolygonToolIcon />
                   </button>
-                  <button className="icon-button" title="Mask（SAM 分割，敬请期待）" disabled aria-label="Mask">
+                  <button
+                    className="icon-button"
+                    title="重跑结构提取（SAM）+ OCR"
+                    disabled={!activeCase || runInProgress}
+                    onClick={onRerunAnalysis}
+                    aria-label="重跑结构提取（SAM）+ OCR"
+                  >
                     <MaskToolIcon />
                   </button>
-                  <button className="icon-button" title="提示词分割（敬请期待）" disabled aria-label="提示词分割">
+                  <button
+                    className="icon-button"
+                    title="重跑 OCR 解析（走完整分析链）"
+                    disabled={!activeCase || runInProgress}
+                    onClick={onRerunAnalysis}
+                    aria-label="重跑 OCR 解析"
+                  >
                     <TextToolIcon />
                   </button>
                   <button className="icon-button" title="撤销 Command+Z" disabled={!canUndo} onClick={onUndo} aria-label="撤销">

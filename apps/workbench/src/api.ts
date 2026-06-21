@@ -10,6 +10,8 @@ import type {
   ImageEditRequest,
   ImageGenerationRequest,
   ImageGenerationResponse,
+  SlideTemplateCardsResponse,
+  SlideTemplateGalleryResponse,
   SvgSourceResponse,
   V2AssetPackage,
   V2Compatibility,
@@ -313,4 +315,12 @@ export function editImage(payload: ImageEditRequest): Promise<ImageGenerationRes
     method: "POST",
     body: JSON.stringify(payload)
   });
+}
+
+export function listSlideTemplateCards(): Promise<SlideTemplateCardsResponse> {
+  return requestJson<SlideTemplateCardsResponse>("/api/slide-template-cards");
+}
+
+export function listSlideTemplateGallery(): Promise<SlideTemplateGalleryResponse> {
+  return requestJson<SlideTemplateGalleryResponse>("/api/slide-template-gallery");
 }
