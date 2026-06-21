@@ -2368,24 +2368,25 @@ function V2ElementFilterControls({
   return (
     <div className="element-filter-bar" aria-label="筛选框">
       <input
+        type="search"
         value={filter.query}
         onChange={(event) => update({ query: event.target.value })}
         placeholder="筛选框"
       />
-      <MultiFilterGroup
+      <MultiFilterDropdown
         label="类型"
         options={elementTypeOptions}
         selected={filter.elementTypes}
         onToggle={toggleElementType}
       />
-      <MultiFilterGroup
+      <MultiFilterDropdown
         label="处理"
         options={processingOptions}
         selected={filter.processingTypes}
         onToggle={toggleProcessingType}
       />
       {showStatus && (
-        <MultiFilterGroup
+        <MultiFilterDropdown
           label="状态"
           options={statusOptions}
           selected={filter.statuses}
@@ -2401,7 +2402,7 @@ function V2ElementFilterControls({
   );
 }
 
-function MultiFilterGroup({
+function MultiFilterDropdown({
   label,
   options,
   selected,
@@ -2414,25 +2415,30 @@ function MultiFilterGroup({
 }) {
   if (options.length === 0) return null;
   return (
-    <div className="element-filter-group" aria-label={label}>
-      <span>{label}</span>
-      <div className="element-filter-chips">
+    <details className="element-filter-select">
+      <summary aria-label={`${label}筛选`}>
+        <span>{label}</span>
+        <strong>{multiFilterSummary(selected, options)}</strong>
+      </summary>
+      <div className="element-filter-menu" role="group" aria-label={label}>
         {options.map((value) => {
-          const pressed = multiFilterValueSelected(selected, value);
+          const checked = multiFilterValueSelected(selected, value);
           return (
-            <button
+            <label
               key={value}
-              type="button"
-              className={pressed ? "active" : ""}
-              aria-pressed={pressed}
-              onClick={() => onToggle(value)}
+              className={checked ? "active" : ""}
             >
+              <input
+                type="checkbox"
+                checked={checked}
+                onChange={() => onToggle(value)}
+              />
               {humanize(value)}
-            </button>
+            </label>
           );
         })}
       </div>
-    </div>
+    </details>
   );
 }
 
@@ -5592,6 +5598,11 @@ function toggleMultiFilterValue(selected: string[] | null, value: string, option
 
 function multiFilterValueSelected(selected: string[] | null, value: string): boolean {
   return selected === null || selected.includes(value);
+}
+
+function multiFilterSummary(selected: string[] | null, options: string[]): string {
+  if (selected === null || selected.length === options.length) return "全部";
+  return `${selected.length}/${options.length}`;
 }
 
 function filterV2Elements(
