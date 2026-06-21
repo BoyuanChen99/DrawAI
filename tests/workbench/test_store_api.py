@@ -374,16 +374,10 @@ def test_runner_default_workflow_completes_without_asset_review(tmp_path: Path) 
         "prepare",
         "sam_parse",
         "ocr_parse",
-        "fuse_elements",
-        "refine_elements",
-        "plan_assets",
-        "process_assets",
-        "compose_svg",
     ]
     assert (Path(updated.run_root) / "page_spec.json").exists()
-    assert (Path(updated.run_root) / "drawai_package.json").exists()
-    assert (Path(updated.run_root) / "elements" / "E001" / "asset_package.json").exists()
-    asset_prepare_output = json.loads(
+    assert not (Path(updated.run_root) / "drawai_package.json").exists()
+    prepared_page_spec = json.loads(
         (
             Path(updated.run_root)
             / "nodes"
@@ -391,12 +385,22 @@ def test_runner_default_workflow_completes_without_asset_review(tmp_path: Path) 
             / "runs"
             / "001"
             / "output"
-            / "asset_packages.json"
+            / "page_spec.json"
         ).read_text(encoding="utf-8")
     )
-    assert asset_prepare_output["schema"] == "drawai.asset_packages.v1"
-    assert len(asset_prepare_output["asset_packages"]) == 1
-    assert "elements" not in asset_prepare_output
+    assert prepared_page_spec["schema"] == "drawai.page_spec.v1"
+    assert prepared_page_spec["elements"][0]["materialization"]["outputs"]["active"]["path"] == "assets/E001/active.png"
+    assert (
+        Path(updated.run_root)
+        / "nodes"
+        / "asset_prepare"
+        / "runs"
+        / "001"
+        / "output"
+        / "assets"
+        / "E001"
+        / "active.png"
+    ).exists()
     assert (Path(updated.run_root) / "svg_to_ppt" / "assets" / "asset_manifest.json").exists()
     assert (Path(updated.run_root) / "nodes" / "sam_parse" / "runs" / "001" / "node_run.json").exists()
     assert (Path(updated.run_root) / "nodes" / "ocr_parse" / "runs" / "001" / "node_run.json").exists()
@@ -3177,6 +3181,30 @@ def _deterministic_agent_executor(request: AgentExecutionRequest) -> AgentExecut
                     "notes": [],
                 },
             )
+        elif format_id == "drawai.page_spec.v1":
+            source = next(
+                (
+                    request.run_root / str(item["path"])
+                    for item in request.prompt.inputs
+                    if item.get("type") == "page_spec" and isinstance(item.get("path"), str)
+                ),
+                None,
+            )
+            if source is None:
+                _write_json(
+                    path,
+                    {
+                        "schema": "drawai.page_spec.v1",
+                        "page_id": request.node_id,
+                        "source": {"image": "", "width_px": 24, "height_px": 24},
+                        "canvas": {"width_px": 24, "height_px": 24},
+                        "background": {},
+                        "elements": [],
+                        "metadata": {},
+                    },
+                )
+            else:
+                path.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         elif format_id == "drawai.semantic_svg.v1":
             path.write_text(
                 '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"></svg>\n',

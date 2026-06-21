@@ -4,10 +4,9 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
-from drawai.v2.registry import default_registry
-from drawai.v2.schema import ElementCandidate, ElementPlan, ProcessingIntent
+from drawai.v2.schema import ElementCandidate
 
 PAGE_SPEC_SCHEMA = "drawai.page_spec.v1"
 
@@ -74,6 +73,8 @@ def validate_page_spec_payload(payload: Mapping[str, Any]) -> None:
         _validate_mapping(raw_element.get("metadata", {}), f"elements[{index}].metadata")
         _validate_mapping(raw_element.get("measurement", {}), f"elements[{index}].measurement")
         _validate_json_value(raw_element.get("source_refs", []), f"elements[{index}].source_refs")
+        if raw_element.get("materialization") is not None:
+            _validate_mapping(raw_element.get("materialization", {}), f"elements[{index}].materialization")
         parent_id = raw_element.get("parent_id")
         if isinstance(parent_id, str) and parent_id:
             parent_ids[element_id] = parent_id
@@ -90,90 +91,6 @@ def validate_page_spec_payload(payload: Mapping[str, Any]) -> None:
     if missing_children:
         raise ValueError(f"page_spec references missing child ids: {', '.join(missing_children)}")
     _validate_group_cycles(parent_ids)
-
-
-def page_spec_from_run_package(
-    payload: Mapping[str, Any],
-    *,
-    page_id: str,
-    source_image: str = "",
-) -> dict[str, Any]:
-    raw_elements = payload.get("elements")
-    if not isinstance(raw_elements, list):
-        raise ValueError("run package must contain an elements list")
-    canvas = _mapping(payload.get("canvas", {}), "run_package.canvas")
-    metadata = _mapping(payload.get("metadata", {}), "run_package.metadata")
-    page_spec = {
-        "schema": PAGE_SPEC_SCHEMA,
-        "page_id": page_id,
-        "source": {
-            "image": source_image or str(payload.get("source_image") or ""),
-            "width_px": canvas.get("width"),
-            "height_px": canvas.get("height"),
-        },
-        "canvas": {
-            "width_px": canvas.get("width"),
-            "height_px": canvas.get("height"),
-        },
-        "background": {},
-        "elements": [
-            page_element_from_plan_payload(item)
-            for item in raw_elements
-            if isinstance(item, Mapping)
-        ],
-        "metadata": {
-            "producer": "drawai.v2.run_package_adapter",
-            "source_schema": str(payload.get("schema") or ""),
-            "last_stage": str(metadata.get("last_stage") or ""),
-        },
-    }
-    validate_page_spec_payload(page_spec)
-    return page_spec
-
-
-def page_element_from_plan_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-    element_id = _require_string(payload, "element_id")
-    element_type = str(payload.get("element_type") or "unknown")
-    processing_intent = _mapping(payload.get("processing_intent", {}), "processing_intent")
-    processing_type = str(processing_intent.get("processing_type") or "svg_self_draw")
-    kind = _page_kind_from_element_type(element_type, processing_type)
-    box_px = _bbox4(payload.get("bbox"), "element.bbox")
-    build_mode = _PROCESSING_TO_BUILD_MODE.get(processing_type, "vector")
-    asset_id = f"A{element_id.removeprefix('E')}"
-    build: dict[str, Any] = {
-        "mode": build_mode,
-        "processing_type": processing_type,
-    }
-    if processing_type in _ASSET_PROCESSING_TYPES:
-        build["asset_id"] = asset_id
-    text = payload.get("text")
-    element: dict[str, Any] = {
-        "id": element_id,
-        "kind": kind,
-        "role": str(processing_intent.get("object_type") or element_type),
-        "box_px": list(box_px),
-        "z_index": int(payload.get("z_order", 0)),
-        "confidence": str(payload.get("confidence") or "medium"),
-        "geometry": _mapping(payload.get("geometry", {}), "element.geometry"),
-        "source_refs": [
-            {
-                "kind": "candidate",
-                "id": str(source_id),
-            }
-            for source_id in payload.get("source_candidate_ids", ())
-            if str(source_id)
-        ],
-        "build": build,
-        "metadata": {
-            "review_status": str(payload.get("review_status") or ""),
-            "created_by_stage": str(payload.get("created_by_stage") or ""),
-            "change_reason": str(payload.get("change_reason") or ""),
-            "legacy_element_type": element_type,
-        },
-    }
-    if isinstance(text, str) and text:
-        element["text"] = text
-    return element
 
 
 def page_spec_from_candidates(
@@ -202,7 +119,54 @@ def page_spec_from_candidates(
             page_element_from_candidate_payload(_candidate_payload(candidate))
             for candidate in candidates
         ],
-        "metadata": {"producer": producer},
+        "metadata": {},
+    }
+    validate_page_spec_payload(page_spec)
+    return page_spec
+
+
+def fuse_page_specs(
+    payloads: Sequence[Mapping[str, Any]],
+    *,
+    page_id: str,
+    source_image: str = "",
+    producer: str = "page_spec_fuse",
+) -> dict[str, Any]:
+    if not payloads:
+        raise ValueError("page spec fuse requires at least one PageSpec input")
+
+    validated = [dict(payload) for payload in payloads]
+    for payload in validated:
+        validate_page_spec_payload(payload)
+
+    canvas = _fused_canvas(validated)
+    source = _fused_source(validated, source_image=source_image, canvas=canvas)
+    fused_elements: list[dict[str, Any]] = []
+    for payload in validated:
+        raw_elements = payload.get("elements")
+        if isinstance(raw_elements, str) or not isinstance(raw_elements, Sequence):
+            continue
+        for raw_element in raw_elements:
+            if not isinstance(raw_element, Mapping):
+                continue
+            if _is_duplicate_fused_element(fused_elements, raw_element):
+                continue
+            fused_elements.append(
+                _canonical_fused_element(
+                    raw_element,
+                    new_id=f"E{len(fused_elements) + 1:03d}",
+                    fuse_node_id=producer,
+                )
+            )
+
+    page_spec = {
+        "schema": PAGE_SPEC_SCHEMA,
+        "page_id": page_id,
+        "source": source,
+        "canvas": canvas,
+        "background": {},
+        "elements": fused_elements,
+        "metadata": {},
     }
     validate_page_spec_payload(page_spec)
     return page_spec
@@ -237,70 +201,12 @@ def page_element_from_candidate_payload(payload: Mapping[str, Any]) -> dict[str,
         "metadata": {
             "source_parser": str(payload.get("source_parser") or ""),
             "source_parser_version": str(payload.get("source_parser_version") or ""),
-            "legacy_element_type": element_type,
-            "candidate_payload": dict(payload),
+            "parser_element_type": element_type,
         },
     }
     if text:
         element["text"] = text
     return element
-
-
-def candidate_payloads_from_page_specs(
-    payloads: Sequence[Mapping[str, Any]],
-) -> list[dict[str, Any]]:
-    candidates: list[dict[str, Any]] = []
-    for payload in payloads:
-        validate_page_spec_payload(payload)
-        for raw_element in payload.get("elements", ()):
-            if not isinstance(raw_element, Mapping):
-                continue
-            metadata = raw_element.get("metadata")
-            if not isinstance(metadata, Mapping):
-                continue
-            candidate = metadata.get("candidate_payload")
-            if isinstance(candidate, Mapping):
-                candidates.append(dict(candidate))
-    return candidates
-
-
-def element_plans_from_page_spec(payload: Mapping[str, Any]) -> tuple[ElementPlan, ...]:
-    validate_page_spec_payload(payload)
-    plans: list[ElementPlan] = []
-    registry = default_registry()
-    for raw_element in payload["elements"]:
-        if not isinstance(raw_element, Mapping):
-            continue
-        if raw_element.get("kind") == "group":
-            continue
-        element_id = _require_string(raw_element, "id")
-        kind = _require_string(raw_element, "kind")
-        element_type = _legacy_element_type(raw_element, kind)
-        if not registry.has_element_type(element_type):
-            element_type = "unknown"
-        processing_type = _processing_type(raw_element)
-        if not registry.has_processing_type(processing_type):
-            processing_type = "svg_self_draw"
-        plans.append(
-            ElementPlan(
-                element_id=element_id,
-                source_candidate_ids=tuple(_source_candidate_ids(raw_element, fallback=element_id)),
-                element_type=element_type,
-                bbox=_bbox4(raw_element.get("box_px"), f"{element_id}.box_px"),
-                geometry=_mapping(raw_element.get("geometry", {}), f"{element_id}.geometry"),
-                z_order=int(raw_element.get("z_index", 0)),
-                confidence=cast(Any, _plan_confidence(raw_element.get("confidence"))),
-                processing_intent=ProcessingIntent(
-                    object_type=str(raw_element.get("role") or element_type),
-                    processing_type=processing_type,
-                    parameters=_mapping(_mapping(raw_element.get("build", {}), "build").get("parameters", {}), "build.parameters"),
-                ),
-                review_status=cast(Any, "agent_refined"),
-                created_by_stage="page_spec",
-                change_reason=str(_mapping(raw_element.get("metadata", {}), "metadata").get("change_reason") or "Converted from PageSpec."),
-            )
-        )
-    return tuple(plans)
 
 
 def load_page_spec(path: str | Path) -> dict[str, Any]:
@@ -334,39 +240,6 @@ def _page_kind_from_element_type(element_type: str, processing_type: str) -> str
     if element_type == "diagram":
         return "group"
     return "unknown"
-
-
-def _legacy_element_type(element: Mapping[str, Any], kind: str) -> str:
-    metadata = element.get("metadata")
-    if isinstance(metadata, Mapping):
-        legacy = metadata.get("legacy_element_type")
-        if isinstance(legacy, str) and legacy:
-            return legacy
-    if kind == "shape":
-        return "frame"
-    if kind == "connector":
-        return "arrow"
-    if kind == "image":
-        role = str(element.get("role") or "")
-        if role in {"icon", "symbol", "picture"}:
-            return role
-        return "picture"
-    if kind == "formula":
-        return "text"
-    if kind in {"text", "table", "chart", "unknown"}:
-        return kind
-    return "unknown"
-
-
-def _processing_type(element: Mapping[str, Any]) -> str:
-    build = _mapping(element.get("build", {}), "build")
-    processing_type = build.get("processing_type")
-    if isinstance(processing_type, str) and processing_type:
-        return processing_type
-    mode = str(build.get("mode") or "")
-    if mode == "asset_ref":
-        return "crop"
-    return _BUILD_MODE_TO_PROCESSING.get(mode, "svg_self_draw")
 
 
 def _candidate_payload(candidate: ElementCandidate | Mapping[str, Any]) -> dict[str, Any]:
@@ -403,31 +276,167 @@ def _asset_id_from_candidate_id(candidate_id: str) -> str:
     return f"A_{slug}"
 
 
-def _source_candidate_ids(element: Mapping[str, Any], *, fallback: str) -> list[str]:
-    source_ids: list[str] = []
-    for raw_ref in element.get("source_refs", ()):
+def _fused_canvas(payloads: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    for payload in payloads:
+        canvas = _mapping(payload.get("canvas", {}), "canvas")
+        width = canvas.get("width_px", canvas.get("width"))
+        height = canvas.get("height_px", canvas.get("height"))
+        if width is not None and height is not None:
+            return {"width_px": width, "height_px": height}
+    return {}
+
+
+def _fused_source(
+    payloads: Sequence[Mapping[str, Any]],
+    *,
+    source_image: str,
+    canvas: Mapping[str, Any],
+) -> dict[str, Any]:
+    for payload in payloads:
+        source = _mapping(payload.get("source", {}), "source")
+        image = source_image or str(source.get("image") or "")
+        if image or source:
+            return {
+                "image": image,
+                "width_px": source.get("width_px", canvas.get("width_px")),
+                "height_px": source.get("height_px", canvas.get("height_px")),
+            }
+    return {
+        "image": source_image,
+        "width_px": canvas.get("width_px"),
+        "height_px": canvas.get("height_px"),
+    }
+
+
+def _canonical_fused_element(
+    raw_element: Mapping[str, Any],
+    *,
+    new_id: str,
+    fuse_node_id: str,
+) -> dict[str, Any]:
+    old_id = _require_string(raw_element, "id")
+    kind = _require_string(raw_element, "kind")
+    build = _mapping(raw_element.get("build", {}), f"{old_id}.build")
+    build = _normalized_build(build, new_id)
+    source_label = _element_source_label(raw_element)
+    source_refs = _normalized_source_refs(raw_element.get("source_refs"), old_id=old_id, source_label=source_label)
+    element: dict[str, Any] = {
+        "id": new_id,
+        "kind": kind,
+        "role": str(raw_element.get("role") or kind),
+        "box_px": list(_bbox4(raw_element.get("box_px"), f"{old_id}.box_px")),
+        "z_index": int(raw_element.get("z_index", 0) or 0),
+        "confidence": raw_element.get("confidence", "medium"),
+        "geometry": _mapping(raw_element.get("geometry", {}), f"{old_id}.geometry"),
+        "source_refs": source_refs,
+        "build": build,
+        "style": _mapping(raw_element.get("style", {}), f"{old_id}.style"),
+        "measurement": _mapping(raw_element.get("measurement", {}), f"{old_id}.measurement"),
+        "metadata": {
+            **_mapping(raw_element.get("metadata", {}), f"{old_id}.metadata"),
+            "fusion": {
+                "fused_by": fuse_node_id,
+                "source_element_id": old_id,
+                "source": source_label,
+            },
+        },
+    }
+    for optional_field in ("text", "points_px", "polygon_px", "parent_id", "children"):
+        if optional_field in raw_element:
+            element[optional_field] = raw_element[optional_field]
+    return element
+
+
+def _normalized_build(build: Mapping[str, Any], element_id: str) -> dict[str, Any]:
+    mode = str(build.get("mode") or "")
+    processing_type = str(build.get("processing_type") or "")
+    if not mode:
+        mode = _PROCESSING_TO_BUILD_MODE.get(processing_type, "vector")
+    if not processing_type:
+        processing_type = "crop" if mode == "asset_ref" else _BUILD_MODE_TO_PROCESSING.get(mode, "svg_self_draw")
+    normalized = dict(build)
+    normalized["mode"] = mode
+    normalized["processing_type"] = processing_type
+    if mode == "asset_ref" and not str(normalized.get("asset_id") or ""):
+        normalized["asset_id"] = f"A{element_id.removeprefix('E')}"
+    return normalized
+
+
+def _normalized_source_refs(raw_refs: Any, *, old_id: str, source_label: str) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = [
+        {
+            "kind": "page_spec_element",
+            "id": old_id,
+            "source": source_label,
+        }
+    ]
+    if isinstance(raw_refs, str) or not isinstance(raw_refs, Sequence):
+        return refs
+    for raw_ref in raw_refs:
         if not isinstance(raw_ref, Mapping):
             continue
-        if str(raw_ref.get("kind") or "") != "candidate":
+        ref = dict(raw_ref)
+        if ref not in refs:
+            refs.append(ref)
+    return refs
+
+
+def _element_source_label(element: Mapping[str, Any]) -> str:
+    metadata = element.get("metadata")
+    if isinstance(metadata, Mapping):
+        parser = metadata.get("source_parser")
+        if isinstance(parser, str) and parser:
+            return parser
+    for raw_ref in element.get("source_refs", []):
+        if not isinstance(raw_ref, Mapping):
             continue
-        source_id = raw_ref.get("id")
-        if isinstance(source_id, str) and source_id:
-            source_ids.append(source_id)
-    return source_ids or [fallback]
+        ref_id = raw_ref.get("id")
+        if isinstance(ref_id, str) and ref_id:
+            if ref_id.startswith("sam") or ref_id.startswith("SAM"):
+                return "sam"
+            if ref_id.startswith("ocr") or ref_id.startswith("OCR"):
+                return "ocr"
+    return "page_spec"
 
 
-def _plan_confidence(value: object) -> str:
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"low", "medium", "high"}:
-            return normalized
-    if isinstance(value, int | float) and not isinstance(value, bool):
-        numeric = float(value)
-        if numeric >= 0.75:
-            return "high"
-        if numeric <= 0.35:
-            return "low"
-    return "medium"
+def _is_duplicate_fused_element(
+    existing_elements: Sequence[Mapping[str, Any]],
+    candidate: Mapping[str, Any],
+) -> bool:
+    candidate_kind = str(candidate.get("kind") or "")
+    candidate_role = str(candidate.get("role") or "")
+    candidate_text = str(candidate.get("text") or "")
+    candidate_bbox = _bbox4(candidate.get("box_px"), "candidate.box_px")
+    for existing in existing_elements:
+        if str(existing.get("kind") or "") != candidate_kind:
+            continue
+        if candidate_kind == "text" and candidate_text and str(existing.get("text") or "") != candidate_text:
+            continue
+        if candidate_role and str(existing.get("role") or "") not in {"", candidate_role}:
+            continue
+        existing_bbox = _bbox4(existing.get("box_px"), "existing.box_px")
+        if _bbox_iou_xywh(existing_bbox, candidate_bbox) >= 0.92:
+            return True
+    return False
+
+
+def _bbox_iou_xywh(
+    first: tuple[float, float, float, float],
+    second: tuple[float, float, float, float],
+) -> float:
+    first_x1, first_y1, first_w, first_h = first
+    second_x1, second_y1, second_w, second_h = second
+    first_x2 = first_x1 + first_w
+    first_y2 = first_y1 + first_h
+    second_x2 = second_x1 + second_w
+    second_y2 = second_y1 + second_h
+    inter_w = max(0.0, min(first_x2, second_x2) - max(first_x1, second_x1))
+    inter_h = max(0.0, min(first_y2, second_y2) - max(first_y1, second_y1))
+    intersection = inter_w * inter_h
+    union = first_w * first_h + second_w * second_h - intersection
+    if union <= 0:
+        return 0.0
+    return intersection / union
 
 
 def _validate_geometry(payload: Mapping[str, Any], field_prefix: str) -> None:

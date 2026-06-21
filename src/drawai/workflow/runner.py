@@ -15,7 +15,6 @@ from .node_runs import (
     finish_node_run_blocked,
     finish_node_run_failed,
     finish_node_run_ok,
-    write_input_manifest,
 )
 from .schema import (
     WorkflowEdge,
@@ -136,7 +135,6 @@ class WorkflowRunner:
                 resource_id=resource_id,
             )
             inputs = _collect_node_inputs(self.template, node, incoming_edges, outputs_by_port)
-            write_input_manifest(record.workdir, inputs=inputs)
 
             if blocked_sources:
                 error = "blocked by upstream node failure"

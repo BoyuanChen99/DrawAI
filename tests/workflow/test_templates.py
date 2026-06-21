@@ -79,11 +79,13 @@ def test_default_template_uses_pagespec_processor_formats() -> None:
     assert nodes["ocr_parse"].outputs[0].formats == ("drawai.page_spec.v1",)
     assert nodes["page_spec_fuse"].inputs[0].formats == ("drawai.page_spec.v1",)
     assert nodes["page_spec_fuse"].outputs[0].formats == ("drawai.page_spec.v1",)
-    assert nodes["page_spec_refine"].inputs[0].formats == ("drawai.page_spec.v1",)
+    assert nodes["page_spec_refine"].node_type == "agent"
+    assert nodes["page_spec_refine"].inputs[1].formats == ("drawai.page_spec.v1",)
     assert nodes["page_spec_refine"].outputs[0].formats == ("drawai.page_spec.v1",)
     assert nodes["asset_prepare"].inputs[1].types == ("page_spec",)
-    assert nodes["asset_prepare"].outputs[0].types == ("asset_packages",)
-    assert nodes["svg_compose"].inputs[0].types == ("page_spec",)
+    assert nodes["asset_prepare"].outputs[0].types == ("page_spec",)
+    assert nodes["svg_compose"].node_type == "agent"
+    assert nodes["svg_compose"].inputs[1].types == ("page_spec",)
     assert nodes["svg_compose"].outputs[0].formats == ("drawai.semantic_svg.v1",)
     assert nodes["svg_compose"].outputs[0].description == "deliverable"
 
@@ -114,8 +116,8 @@ def test_default_template_routes_page_spec_through_assets_and_svg() -> None:
     assert ("ocr_parse", "ocr_page_spec", "page_spec_fuse", "ocr_page_spec") in edges
     assert ("page_spec_fuse", "page_spec", "page_spec_refine", "page_spec") in edges
     assert ("page_spec_refine", "page_spec", "asset_prepare", "page_spec") in edges
-    assert ("page_spec_refine", "page_spec", "svg_compose", "page_spec") in edges
-    assert ("asset_prepare", "asset_packages", "svg_compose", "asset_packages") in edges
+    assert ("asset_prepare", "page_spec", "svg_compose", "page_spec") in edges
+    assert ("asset_prepare", "page_spec", "svg_to_ppt", "page_spec") in edges
 
 
 def test_workflow_template_paths_are_under_ignored_workbench_dir(tmp_path: Path) -> None:

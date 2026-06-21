@@ -102,7 +102,8 @@ def default_format_registry() -> dict[str, FormatSpec]:
                 "PageSpec-first DAGs: source, canvas, optional background, and elements. Elements use stable id, "
                 "kind text|shape|image|connector|table|chart|formula|group|unknown, source-pixel geometry "
                 "box_px/points_px/polygon_px, z_index, role, build instructions, style, measurement, source_refs, "
-                "and metadata. Asset-producing elements point to asset_packages through build.asset_id."
+                "metadata, and optional materialization outputs. Materialization paths are relative to the "
+                "PageSpec JSON bundle directory."
             ),
         ),
         "drawai.codex_element_analysis.v1": FormatSpec(
@@ -278,6 +279,9 @@ def _validate_page_spec(path: Path) -> tuple[str, ...]:
         return errors
     try:
         validate_page_spec_payload(payload)
+        from drawai.page_spec_assets import validate_page_spec_bundle_payload
+
+        validate_page_spec_bundle_payload(payload, path.parent)
     except Exception as exc:
         return (str(exc),)
     return ()

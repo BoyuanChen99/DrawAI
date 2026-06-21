@@ -72,29 +72,59 @@ RUN0_ELEMENT_REFINE_CONSTRAINTS = (
     "Write the declared output files exactly, in UTF-8 JSON or markdown according to the output declaration.",
 )
 
+PAGE_SPEC_REFINE_TASK = """DrawAI PageSpec refinement task.
+
+You are operating on one page. The connected PageSpec is the only structured page model for this node; do not convert it into element candidates, element plans, run packages, BoxIR, layout IR, or any legacy compatibility schema.
+
+Goal: read the original page image and the connected drawai.page_spec.v1 file, then write a refined drawai.page_spec.v1 file to the declared output path.
+
+Required operations:
+- Treat the original image as visual truth and the connected PageSpec as evidence.
+- Keep the PageSpec top-level model page-level only: schema, page_id, source, canvas, background, elements, and metadata.
+- Refine elements directly in PageSpec: adjust bbox, kind, role, z_index, text, style, measurement, build.mode, build.processing_type, build.asset_id, grouping, and source_refs when the visual evidence requires it.
+- Split an element when one box contains multiple independent visual parts. Add elements that are visible in the page but missing from the input PageSpec. Remove elements that are duplicate, noise, or fully represented by another retained element.
+- Deletions must be actual deletions from elements. Do not keep deleted elements with a removed flag.
+- For every retained or new element, set build.processing_type to one of svg_self_draw, crop, crop_nobg, or chart_rebuild_reserved. Use svg_self_draw for editable text, shapes, arrows, tables, charts, simple icons, and normal vector structure. Use crop/crop_nobg only for raster material that should become an asset package.
+- Put provenance on elements, not on a separate old-format analysis object. Preserve useful source_refs from SAM/OCR/Fuse. For adjusted/new/split elements, add metadata.refine_action and metadata.refine_reason. For split elements, record source_refs pointing back to the source element(s).
+- Record a compact top-level metadata.refine_changes object with adjusted, added, split, merged, and deleted source ids. This is an audit trail only; the refined elements array is the source of truth.
+- If the page contains nested semantic structure, represent it with kind="group" elements using parent_id/children. Groups do not need asset packages and should use build.processing_type="svg_self_draw".
+
+Output requirements:
+- Write exactly one JSON object with schema drawai.page_spec.v1.
+- The output PageSpec must validate under drawai.page_spec.v1.
+- The output must not contain element_candidates, element_plans, run_package, candidate_payload, or analysis-style retained/removed records."""
+
+PAGE_SPEC_REFINE_CONSTRAINTS = (
+    "Use only connected input files listed in this prompt and explicitly declared built-in script files.",
+    "Do not convert to or write legacy element candidates, element plans, run packages, BoxIR, layout IR, or element analysis.",
+    "Do not render final SVG/PPT. This node only refines one PageSpec page.",
+    "Do not use MCP tools, apps, web search, memories, skills, hooks, or multi-agent delegation.",
+    "Deleted elements must be absent from the output elements array; record deletion only in metadata.refine_changes.",
+    "Write the declared PageSpec output exactly as UTF-8 JSON.",
+)
+
 SVG_GENERATION_TASK = """IMAGE VECTORIZATION TASK
 Goal: convert one bitmap figure into an editable, PPT-stable SVG.
 
 OVERALL DRAWAI PIPELINE
 The full DrawAI task is split into three conceptual stages:
-1. Asset parsing: split the bitmap figure into independent visual assets, such as text, icons, tables, frames, arrows, chart marks, screenshots, pictures, diagram components, formulas, axes, panels, and other meaningful regions.
-2. Asset post-processing: refine the pre-parsed assets, adjust bboxes, split/merge elements, add missing elements, and decide the source strategy for each asset: svg_self_draw, crop, or crop_nobg.
+1. Asset parsing: SAM/OCR produce PageSpec element evidence for one page.
+2. PageSpec refinement and asset preparation: refine the PageSpec elements, adjust bboxes, split/merge elements, add missing elements, decide build.processing_type for each element, and materialize crop/crop_nobg outputs into element.materialization inside the PageSpec bundle.
 3. Image editabilization: reconstruct the whole figure as an editable SVG/PPT representation by combining editable SVG primitives/text with allowed raster crop assets.
 
-The current Agent node executes stage 3 only. Do not redo stage 1 or stage 2. Use their outputs as evidence, especially the refined element/source analysis and the asset manifest. Your job is to create one complete first-pass SVG, then refine it for up to 3 rounds inside this same Agent run.
+The current Agent node executes stage 3 only. Do not redo stage 1 or stage 2. Use the connected materialized PageSpec and the original image as evidence. Raster assets, when they exist, are listed in PageSpec element.materialization and should be inspected through the declared DrawAI page-spec-assets tool. Your job is to create one complete first-pass SVG, then refine it for up to 3 rounds inside this same Agent run.
 
 EXECUTION MODEL
 - The DrawAI runner prepares the node work directory and connected input files. You must read those files yourself.
 - You must create intermediate SVGs/renders, inspect them, revise them, and finish with the declared final SVG and logs.
-- Run1 and every refine round may use allowed local raster image hrefs from the refined asset manifest when the asset source is crop or crop_nobg.
+- Run1 and every refine round may use allowed local raster image hrefs produced from PageSpec element.materialization when the element source is crop or crop_nobg.
 
 AVAILABLE FILES AND READING LOGIC
 Primary files for this stage:
 - Original/current reference image. Use it as the visual truth for layout, color, text placement, arrows, icons, images, tables, axes, and spacing.
-- Refined element/source analysis JSON. Use it as the main structured plan for refined asset boundaries and source decisions: svg_self_draw, crop, or crop_nobg.
-- Asset manifest JSON. Use it as the authoritative list of local raster image hrefs that may appear in the SVG.
-- Native backfill request JSON, when connected. Use it only for listed candidates when the existing manifest does not provide a faithful crop/no-background source. It is not permission to crop arbitrary regions.
-- SVG validator script or validator command, when connected or declared by the run.
+- Materialized PageSpec JSON. Use it as the main structured plan: element ids, kind, role, bbox, z_index, text, style, measurement, grouping, build.processing_type, and materialization outputs.
+- PageSpec materialized assets. Use the declared DrawAI page-spec-assets tool to compute allowed local raster hrefs from the materialized PageSpec for crop/crop_nobg elements.
+- SVG validation. Use the declared DrawAI svg-validate tool for each SVG/render/report pair.
 
 Auxiliary files to read only when needed:
 - OCR boxes JSON when visible text content, text grouping, or text bbox needs confirmation.
@@ -104,8 +134,8 @@ Auxiliary files to read only when needed:
 - Attempt request context only for operational paths or optional response instructions.
 
 Reading sequence:
-1. Start from the original image and refined element/source analysis. These two sources define what the stage is trying to reproduce.
-2. Before inserting any raster image href, verify it against the asset manifest or native_backfill_request.
+1. Start from the original image and refined PageSpec. These two sources define what the stage is trying to reproduce.
+2. Before inserting any raster image href, compute it with the page-spec-assets tool from the connected PageSpec. Use --svg-dir svg so hrefs resolve after the final SVG is mirrored to svg/semantic.svg for preview and PPT export.
 3. Read OCR only when text details need help.
 4. Read SVG template IR or layout IR only as fallback hints. They must not override visible evidence or the refined asset plan.
 5. Keep request JSON compact in reasoning. Do not print full JSON files to terminal or logs.
@@ -114,8 +144,8 @@ SOURCE POLICY
 - svg_self_draw: use editable SVG primitives/text for text, formulas, arrows, frames, tables, axes, borders, simple charts, simple icons, and simple diagram components.
 - crop: use an exact local crop image for screenshots, photos, dense raster texture, heatmaps, complex small icons, or details that are not worth or not possible to faithfully redraw as SVG.
 - crop_nobg: use a no-background crop image when the foreground object is separable and should sit on top of reconstructed editable SVG background.
-- Use refined source labels as the default. Override only when the original image and current render clearly show that another source strategy is more faithful. Record the reason in the iteration log.
-- Insert only hrefs listed in asset_manifest or native_backfill_request. Do not invent image paths, external URLs, file:// URLs, absolute paths, or base64 images.
+- Use PageSpec build.processing_type labels as the default. Override only when the original image and current render clearly show that another source strategy is more faithful. Record the reason in the iteration log.
+- Insert only hrefs returned by the page-spec-assets tool for PageSpec materialization outputs. Do not invent image paths, external URLs, file:// URLs, absolute paths, or base64 images.
 - Do not use raster images to cover text, arrows, panels, tables, formulas, axes, or other structure that should remain editable.
 
 RUN1 / COMPLETE FIRST PASS
@@ -123,11 +153,12 @@ RUN1 / COMPLETE FIRST PASS
 - It must be a complete whole-figure SVG, not a placeholder map, skeleton, gray-box map, or list of asset boxes.
 - Cover the whole canvas.
 - Use SVG/text for svg_self_draw elements.
-- Use manifest image hrefs for crop/crop_nobg elements when available.
-- Preserve refined bboxes unless visible evidence shows they need adjustment.
+- Use PageSpec materialization image hrefs for crop/crop_nobg elements when available.
+- Compute those hrefs with page-spec-assets --svg-dir svg. Even though the declared SVG output is written under this node attempt directory, the hrefs must be valid for the final mirrored SVG under svg/semantic.svg.
+- Preserve PageSpec bboxes unless visible evidence shows they need adjustment.
 - Keep major objects separated and editable where appropriate.
 - Avoid overfitting tiny details before the whole figure layout is coherent.
-- Render/validate semantic_0.svg to rendered_0.png and validation_report_0.json using the validator command.
+- Render/validate semantic_0.svg to rendered_0.png and validation_report_0.json using the svg-validate tool with --href-base-dir svg.
 - Record Run1 in iteration_log.md and iteration_log.jsonl, including what was created, obvious issues, and any crop/crop_nobg regions that still need source decisions.
 
 REFINE LOOP / MAX 3 ROUNDS
@@ -143,7 +174,7 @@ In each round, consider:
 - Text mismatch: missing text, wrong content, wrong grouping, wrong size, wrong baseline, wrong color.
 - Connector/arrow mismatch: missing arrows, wrong direction, wrong endpoint, wrong arrowhead, wrong layering.
 - Shape/table/axis mismatch: wrong borders, grids, ticks, legends, blocks, fills, strokes.
-- Asset source mismatch: crop/crop_nobg region redrawn badly, missing image href, wrong crop/no-background choice, image placed at the wrong bbox.
+- Asset source mismatch: crop/crop_nobg region redrawn badly, missing PageSpec materialization href, wrong crop/no-background choice, image placed at the wrong bbox.
 - Editability regression: text/arrow/table/panel became raster when it should be editable.
 - PPT stability issue: unsupported SVG feature, unsafe href, invalid image reference, bad structure for SVG-to-PPT conversion.
 - Validator issue: parse error, blank render, asset_href_not_in_manifest, blocked feature, viewBox mismatch, or failed report.
@@ -151,10 +182,10 @@ In each round, consider:
 Allowed refine actions:
 - Edit SVG shapes, text, groups, arrow geometry, fills, strokes, transforms, z-order, and object IDs.
 - Add or remove SVG elements when the original image supports it.
-- Insert allowed manifest/backfill image hrefs for crop/crop_nobg regions.
+- Insert allowed PageSpec materialization hrefs for crop/crop_nobg regions.
 - Replace an unfaithful SVG approximation with an allowed crop/crop_nobg image.
 - Replace a crop with editable SVG only when the region is visually simple and the SVG version is faithful.
-- Adjust manifest image placement/size to match refined bboxes or visible evidence.
+- Adjust materialized image placement/size to match refined bboxes or visible evidence.
 - Use OCR to correct text.
 - Use Template IR or layout IR only as fallback geometry hints.
 
@@ -168,7 +199,7 @@ After each round, write to iteration_log.md and iteration_log.jsonl: round numbe
 Stop before 3 rounds only if all of these are true:
 - The whole-figure render is perfectly close to the original, or no further improvement is achievable under the current constraints.
 - Text, arrows, panels, tables, axes, images, and icons all have correct style, position, and attributes.
-- crop/crop_nobg regions use the right allowed image source, or any exception is explicitly logged.
+- crop/crop_nobg regions use the right allowed PageSpec materialization source, or any exception is explicitly logged.
 - Editable structures remain editable.
 - The latest validator report is status=\"ok\".
 - Another round would likely not make the figure better.
@@ -176,7 +207,7 @@ Stop before 3 rounds only if all of these are true:
 FINALIZATION
 - Choose the latest acceptable SVG as the final result.
 - Write the accepted final SVG as semantic.svg in the attempt directory and to the declared output path.
-- Render/validate semantic.svg to rendered.png and validation_report_final.json.
+- Render/validate semantic.svg to rendered.png and validation_report_final.json with --href-base-dir svg.
 - Copy semantic_0.svg/rendered_0.png to stable template SVG/render paths when those outputs are declared.
 - Finish only after validation_report_final.json reports status=\"ok\".
 
@@ -184,7 +215,7 @@ OVERALL SVG/PPT PROFILE
 Target the DrawAI Scientific SVG Profile v1 for editable PPT conversion. Treat the input as an editable scientific structure diagram, not as a bitmap tracing task. Infer the visual language: background, major modules, arrows/connectors, annotations, legends, stroke weights, rounded corners, palette, gradients, typography, and flow direction.
 - Use rect for panels/modules/boxes, circle/ellipse for simple nodes/badges/dots, line/polyline for straight or orthogonal connectors, path only when curves/brackets/custom geometry are really needed, polygon for arrowheads or simple closed geometry, text/tspan for all visible text and formulas, and g for stable grouping.
 - Use defs only for simple reusable markers or supported gradients. Prefer solid fills for core semantic objects.
-- Use image elements only for explicit local raster assets from the refined asset manifest.
+- Use image elements only for explicit local raster assets from PageSpec materialization.
 - Do not output CSS style blocks, filters, masks, clipPath, foreignObject, textPath, pattern fills, base64 images, external image URLs, absolute paths, symbol, or use.
 - Prefer direct SVG presentation attributes over CSS classes for fill, stroke, font-size, opacity, and dash styling.
 - Use stable semantic groups with ids prefixed module-, flow-, annotation-, legend-, panel-, connector-, label-, node-, image-, decorative-, or background-.
@@ -205,7 +236,7 @@ FINAL CHECK BEFORE ENDING THIS RUN
 
 SVG_GENERATION_CONSTRAINTS = (
     "Use only connected input files listed in this prompt and explicitly declared built-in script files.",
-    "Do not redo parsing or asset-source analysis; consume the connected refined elements and asset manifest as evidence.",
+    "Do not redo parsing or PageSpec refinement; consume the connected materialized PageSpec and original image as evidence.",
     "Do not use MCP tools, apps, web search, memories, skills, hooks, or multi-agent delegation.",
     "Do not invent image hrefs, external URLs, file:// URLs, absolute paths, or base64 images.",
     "Do not rasterize panels, arrows, text, formulas, grids, tables, axes, or whole diagram structure.",

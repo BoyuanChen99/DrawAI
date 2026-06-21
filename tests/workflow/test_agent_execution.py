@@ -206,12 +206,12 @@ def test_subprocess_agent_completes_when_declared_outputs_are_valid(tmp_path: Pa
     command = [
         sys.executable,
         "-c",
-        (
-            "from pathlib import Path; import sys, time; "
-            "Path('output').mkdir(exist_ok=True); "
-            "Path('output/semantic.svg').write_text("
-            "'<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"></svg>\\n', "
-            "encoding='utf-8'); "
+            (
+                "from pathlib import Path; import sys, time; "
+                "Path('nodes/svg_agent/runs/001/output').mkdir(parents=True, exist_ok=True); "
+                "Path('nodes/svg_agent/runs/001/output/semantic.svg').write_text("
+                "'<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"10\" height=\"10\"></svg>\\n', "
+                "encoding='utf-8'); "
             "sys.stdin.read(); "
             "time.sleep(30)"
         ),

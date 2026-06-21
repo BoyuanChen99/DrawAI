@@ -230,6 +230,14 @@ def create_app(
                 agent_preset_by_id(preset_id),
                 inputs=tuple(item for item in inputs if isinstance(item, dict)),
                 node_config=node_config,
+                runtime_context={
+                    "workflow_run_root": "<workflow_run_root>",
+                    "node_workdir": f"<workflow_run_root>/nodes/{node_config.get('node_id') or '<agent_node_id>'}/runs/<attempt_id>",
+                    "agent_cwd": "<workflow_run_root>",
+                    "repo_root": str(Path(__file__).resolve().parents[3]),
+                    "attempt_id": "<attempt_id>",
+                    "drawai_tool_command_prefix": "<drawai_tool_command_prefix>",
+                },
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

@@ -10,6 +10,8 @@ from ..prompt_plan import DEFAULT_SAM3_PROMPTS
 from .agent_prompt_defaults import (
     CUSTOM_AGENT_CONSTRAINTS,
     CUSTOM_AGENT_TASK,
+    PAGE_SPEC_REFINE_CONSTRAINTS,
+    PAGE_SPEC_REFINE_TASK,
     RUN0_ELEMENT_REFINE_CONSTRAINTS,
     RUN0_ELEMENT_REFINE_TASK,
     SVG_GENERATION_CONSTRAINTS,
@@ -101,9 +103,12 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
             ),
             WorkflowNode(
                 node_id="page_spec_refine",
-                node_type="processor",
+                node_type="agent",
                 title="PageSpec Refine",
-                inputs=(_input("page_spec", "Page Spec", ("page_spec",), formats=("drawai.page_spec.v1",)),),
+                inputs=(
+                    _input("image", "Image", ("image",), formats=("drawai.image.v1",)),
+                    _input("page_spec", "Page Spec", ("page_spec",), formats=("drawai.page_spec.v1",)),
+                ),
                 outputs=(
                     _output(
                         "page_spec",
@@ -112,7 +117,24 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                         formats=("drawai.page_spec.v1",),
                     ),
                 ),
-                config={"processor_id": "page_spec_refine", "stage": "refine_elements"},
+                config={
+                    "preset_id": "page_spec_refine",
+                    "provider_id": "codex_sdk",
+                    "reasoning_effort": "high",
+                    "timeout_seconds": DEFAULT_AGENT_TIMEOUT_SECONDS,
+                    "task": PAGE_SPEC_REFINE_TASK,
+                    "constraints": list(PAGE_SPEC_REFINE_CONSTRAINTS),
+                    "drawai_tools": ["format"],
+                    "outputs": [
+                        {
+                            "port_id": "page_spec",
+                            "path": "output/page_spec.json",
+                            "format_id": "drawai.page_spec.v1",
+                            "type": "page_spec",
+                            "description": "Refined one-page PageSpec JSON.",
+                        }
+                    ],
+                },
                 position={"x": 840, "y": 160},
             ),
             WorkflowNode(
@@ -125,10 +147,10 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                 ),
                 outputs=(
                     _output(
-                        "asset_packages",
-                        "Asset Packages",
-                        ("asset_packages",),
-                        formats=("drawai.asset_packages.v1",),
+                        "page_spec",
+                        "Page Spec",
+                        ("page_spec",),
+                        formats=("drawai.page_spec.v1",),
                     ),
                 ),
                 config={"processor_id": "asset_prepare", "stage": "process_assets"},
@@ -136,11 +158,11 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
             ),
             WorkflowNode(
                 node_id="svg_compose",
-                node_type="processor",
+                node_type="agent",
                 title="SVG Compose",
                 inputs=(
+                    _input("image", "Image", ("image",), formats=("drawai.image.v1",)),
                     _input("page_spec", "Page Spec", ("page_spec",), formats=("drawai.page_spec.v1",)),
-                    _input("asset_packages", "Asset Packages", ("asset_packages",)),
                 ),
                 outputs=(
                     _output(
@@ -151,14 +173,33 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                         deliverable=True,
                     ),
                 ),
-                config={"processor_id": "svg_compose", "stage": "compose_svg"},
+                config={
+                    "preset_id": "svg_generation",
+                    "provider_id": "codex_sdk",
+                    "timeout_seconds": DEFAULT_AGENT_TIMEOUT_SECONDS,
+                    "task": SVG_GENERATION_TASK,
+                    "constraints": list(SVG_GENERATION_CONSTRAINTS),
+                    "drawai_tools": ["format", "page-spec-assets", "svg-validate"],
+                    "outputs": [
+                        {
+                            "port_id": "semantic_svg",
+                            "path": "output/semantic.svg",
+                            "format_id": "drawai.semantic_svg.v1",
+                            "type": "semantic_svg",
+                            "description": "Editable semantic SVG rooted at an svg element.",
+                        }
+                    ],
+                },
                 position={"x": 1400, "y": 160},
             ),
             WorkflowNode(
                 node_id="svg_to_ppt",
                 node_type="export",
                 title="SVG to PPT",
-                inputs=(_input("semantic_svg", "Semantic SVG", ("semantic_svg",)),),
+                inputs=(
+                    _input("semantic_svg", "Semantic SVG", ("semantic_svg",)),
+                    _input("page_spec", "Page Spec", ("page_spec",), formats=("drawai.page_spec.v1",), required=False),
+                ),
                 outputs=(
                     _output(
                         "pptx",
@@ -198,14 +239,16 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
         edges=(
             _edge("input", "image", "sam_parse", "image"),
             _edge("input", "image", "ocr_parse", "image"),
+            _edge("input", "image", "page_spec_refine", "image"),
             _edge("input", "image", "asset_prepare", "image"),
+            _edge("input", "image", "svg_compose", "image"),
             _edge("sam_parse", "sam_page_spec", "page_spec_fuse", "sam_page_spec"),
             _edge("ocr_parse", "ocr_page_spec", "page_spec_fuse", "ocr_page_spec"),
             _edge("page_spec_fuse", "page_spec", "page_spec_refine", "page_spec"),
             _edge("page_spec_refine", "page_spec", "asset_prepare", "page_spec"),
-            _edge("page_spec_refine", "page_spec", "svg_compose", "page_spec"),
-            _edge("asset_prepare", "asset_packages", "svg_compose", "asset_packages"),
+            _edge("asset_prepare", "page_spec", "svg_compose", "page_spec"),
             _edge("svg_compose", "semantic_svg", "svg_to_ppt", "semantic_svg"),
+            _edge("asset_prepare", "page_spec", "svg_to_ppt", "page_spec"),
             _edge("svg_compose", "semantic_svg", "output", "deliverables"),
             _edge("svg_to_ppt", "pptx", "output", "deliverables"),
         ),
@@ -390,12 +433,14 @@ _LEGACY_AGENT_TASK_TEXTS: dict[str, set[str]] = {
 
 _AGENT_TASK_DEFAULTS = {
     "run0_element_refine": RUN0_ELEMENT_REFINE_TASK,
+    "page_spec_refine": PAGE_SPEC_REFINE_TASK,
     "svg_generation": SVG_GENERATION_TASK,
     "custom_agent": CUSTOM_AGENT_TASK,
 }
 
 _AGENT_CONSTRAINT_DEFAULTS = {
     "run0_element_refine": RUN0_ELEMENT_REFINE_CONSTRAINTS,
+    "page_spec_refine": PAGE_SPEC_REFINE_CONSTRAINTS,
     "svg_generation": SVG_GENERATION_CONSTRAINTS,
     "custom_agent": CUSTOM_AGENT_CONSTRAINTS,
 }
@@ -422,7 +467,7 @@ def _normalized_node_config(node_type: str, config: dict[str, Any]) -> dict[str,
     raw_constraints = normalized.get("constraints")
     if raw_constraints in (None, "", []):
         normalized["constraints"] = list(_AGENT_CONSTRAINT_DEFAULTS[preset_id])
-    if preset_id == "run0_element_refine":
+    if preset_id in {"run0_element_refine", "page_spec_refine"}:
         normalized.setdefault("reasoning_effort", "high")
     if preset_id in _AGENT_TASK_DEFAULTS:
         normalized.setdefault("timeout_seconds", DEFAULT_AGENT_TIMEOUT_SECONDS)
@@ -491,6 +536,7 @@ def _input(
     label: str,
     types: tuple[str, ...],
     *,
+    required: bool = True,
     cardinality: str = "single",
     formats: tuple[str, ...] = (),
 ) -> WorkflowPort:
@@ -498,7 +544,7 @@ def _input(
         port_id=port_id,
         label=label,
         types=types,
-        required=True,
+        required=required,
         cardinality=cardinality,  # type: ignore[arg-type]
         formats=formats,
     )

@@ -62,9 +62,8 @@ def test_run0_agent_prompt_renders_inputs_and_output_contract() -> None:
     assert "nodes/input/runs/001/output/image.png" in prompt.text
     assert "Original source image." in prompt.text
     assert "nodes/fusion/runs/001/output/elements.json" in prompt.text
-    assert "input_manifest.json" in prompt.text
     assert "Absolute path: <workflow_run_root>/nodes/fusion/runs/001/output/elements.json" in prompt.text
-    assert "From Agent cwd: ../../../nodes/fusion/runs/001/output/elements.json" in prompt.text
+    assert "From Agent cwd: nodes/fusion/runs/001/output/elements.json" in prompt.text
     assert "Fused boxes from SAM and OCR." in prompt.text
     assert "## Declared Output Files" in prompt.text
     assert "output/element_analysis.json" in prompt.text
@@ -73,6 +72,8 @@ def test_run0_agent_prompt_renders_inputs_and_output_contract() -> None:
     assert "## Built-in Script Files" in prompt.text
     assert "assets_visualization.py" in prompt.text
     assert "node_run.json" in prompt.text
+    assert "## DrawAI Tools" in prompt.text
+    assert "Tool `format`" in prompt.text
     assert "## Type And Format Contracts" in prompt.text
     assert "Type `image`" in prompt.text
     assert "Type `element_plans`" in prompt.text

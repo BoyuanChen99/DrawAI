@@ -84,7 +84,6 @@ def execute_agent_prompt(request: AgentExecutionRequest) -> AgentExecutionResult
     request.workdir.mkdir(parents=True, exist_ok=True)
     prompt_path = request.workdir / "prompt.md"
     prompt_path.write_text(request.prompt.text, encoding="utf-8")
-    _write_agent_input_manifest(request)
     _require_input_files(request)
     _validate_declared_output_paths(request)
     _write_execution_request_manifest(request, prompt_path)
@@ -136,7 +135,7 @@ def _execute_codex_sdk_agent(
             try:
                 with sdk.Codex(
                     sdk.CodexConfig(
-                        cwd=str(request.workdir),
+                        cwd=str(_agent_cwd(request)),
                         config_overrides=controlled_codex_config_overrides(),
                         env=_codex_sdk_env(prepared_codex_home.codex_home),
                     )
@@ -144,7 +143,7 @@ def _execute_codex_sdk_agent(
                     thread = codex.thread_start(
                         approval_mode=sdk.ApprovalMode.deny_all,
                         config={"model_reasoning_effort": reasoning_effort},
-                        cwd=str(request.workdir),
+                        cwd=str(_agent_cwd(request)),
                         developer_instructions=_developer_instructions(request),
                         ephemeral=True,
                         model=model_name,
@@ -162,7 +161,7 @@ def _execute_codex_sdk_agent(
                             "type": "agent_request",
                             "provider_id": "codex_sdk",
                             "node_id": request.node_id,
-                            "cwd": str(request.workdir),
+                            "cwd": str(_agent_cwd(request)),
                             "prompt_path": str(prompt_path),
                             "input_paths": [str(path) for path in _input_paths(request)],
                             "image_input_paths": [str(path) for path in image_paths],
@@ -179,7 +178,7 @@ def _execute_codex_sdk_agent(
                         trace_path=trace_path,
                         timeout_seconds=timeout_seconds,
                         approval_mode=sdk.ApprovalMode.deny_all,
-                        cwd=str(request.workdir),
+                        cwd=str(_agent_cwd(request)),
                         effort=reasoning_effort,
                         model=model_name,
                         sandbox=sdk.Sandbox.full_access,
@@ -367,7 +366,7 @@ def _execute_codex_cli_agent(
         "plugins",
         "--json",
         "-C",
-        str(request.workdir),
+        str(_agent_cwd(request)),
         "-s",
         "danger-full-access",
         "-o",
@@ -427,7 +426,7 @@ def _execute_kimi_cli_agent(
     command = [
         executable,
         "--work-dir",
-        str(request.workdir),
+        str(_agent_cwd(request)),
         "--print",
         "--input-format",
         "text",
@@ -502,7 +501,7 @@ def _execute_subprocess_agent(
             "type": "agent_request",
             "provider_id": provider_id,
             "node_id": request.node_id,
-            "cwd": str(request.workdir),
+            "cwd": str(_agent_cwd(request)),
             "prompt_path": str(prompt_path),
             "command": _redact_command(command),
             "input_paths": [str(path) for path in _input_paths(request)],
@@ -516,7 +515,7 @@ def _execute_subprocess_agent(
                 list(command),
                 stdin=subprocess.PIPE,
                 text=True,
-                cwd=str(request.workdir),
+                cwd=str(_agent_cwd(request)),
                 env=env,
                 stdout=stdout_handle,
                 stderr=stderr_handle,
@@ -680,7 +679,8 @@ def _write_execution_manifest(
             "schema": "drawai.workflow_agent_execution.v1",
             "node_id": request.node_id,
             "provider_id": result.provider_id,
-            "cwd": str(request.workdir),
+            "cwd": str(_agent_cwd(request)),
+            "node_workdir": str(request.workdir),
             "prompt_path": _relative_or_absolute(result.prompt_path, request.run_root),
             "stdout_path": _relative_or_absolute(result.stdout_path, request.run_root),
             "stderr_path": _relative_or_absolute(result.stderr_path, request.run_root),
@@ -718,7 +718,8 @@ def _write_execution_request_manifest(
             "node_id": request.node_id,
             "node_type": request.node_type,
             "provider_id": request.prompt.provider_id,
-            "cwd": str(request.workdir),
+            "cwd": str(_agent_cwd(request)),
+            "node_workdir": str(request.workdir),
             "run_root": str(request.run_root),
             "prompt_path": _relative_or_absolute(prompt_path, request.run_root),
             "declared_inputs": [dict(item) for item in request.prompt.inputs],
@@ -732,31 +733,6 @@ def _write_execution_request_manifest(
             ],
             "declared_outputs": list(request.prompt.outputs),
             "options": dict(request.prompt.options),
-        },
-    )
-    return path
-
-
-def _write_agent_input_manifest(request: AgentExecutionRequest) -> Path:
-    path = request.workdir / "input_manifest.json"
-    input_paths = _input_paths(request)
-    inputs: list[dict[str, Any]] = []
-    for item, absolute_path in zip(request.prompt.inputs, input_paths, strict=False):
-        enriched = dict(item)
-        enriched["absolute_path"] = str(absolute_path)
-        enriched["from_agent_cwd"] = _relative_from_workdir(absolute_path, request.workdir)
-        enriched["exists"] = absolute_path.is_file()
-        inputs.append(enriched)
-    _write_json(
-        path,
-        {
-            "schema": "drawai.workflow_input_manifest.v1",
-            "node_id": request.node_id,
-            "node_type": request.node_type,
-            "provider_id": request.prompt.provider_id,
-            "run_root": str(request.run_root),
-            "workdir": str(request.workdir),
-            "inputs": inputs,
         },
     )
     return path
@@ -843,11 +819,15 @@ def _declared_output_path(
 
 def _developer_instructions(request: AgentExecutionRequest) -> str:
     return (
-        "You are a DrawAI file-backed Agent node. Run inside the current node workdir, "
-        "read only the connected input files and built-in script files declared by the prompt, and write "
+        "You are a DrawAI file-backed Agent node. Run inside the workflow run root, "
+        "read only the connected input files, built-in script files, and DrawAI tools declared by the prompt, and write "
         "the declared output files exactly. Do not use web search, external apps, hooks, memories, or "
         "multi-agent delegation."
     )
+
+
+def _agent_cwd(request: AgentExecutionRequest) -> Path:
+    return request.run_root.expanduser().resolve(strict=False)
 
 
 def _timeout_seconds(options: Mapping[str, Any]) -> float:
@@ -943,10 +923,6 @@ def _relative_or_absolute(path: Path | None, root: Path) -> str:
         return resolved.relative_to(root.expanduser().resolve(strict=False)).as_posix()
     except ValueError:
         return str(resolved)
-
-
-def _relative_from_workdir(path: Path, workdir: Path) -> str:
-    return os.path.relpath(path.resolve(strict=False), workdir.resolve(strict=False))
 
 
 def _redact_command(command: Sequence[str]) -> list[str]:
