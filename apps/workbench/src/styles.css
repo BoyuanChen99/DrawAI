@@ -3918,7 +3918,7 @@ button.asset-status-unsupported {
 }
 
 .element-filter-bar input,
-.element-filter-bar select {
+.element-filter-group button {
   height: 32px;
   min-height: 32px;
   border-radius: 6px;
@@ -3935,10 +3935,36 @@ button.asset-status-unsupported {
   padding: 0 10px;
 }
 
-.element-filter-bar select {
-  min-width: 94px;
-  max-width: 132px;
+.element-filter-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.element-filter-group > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.element-filter-chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.element-filter-group button {
   padding: 0 8px;
+  white-space: nowrap;
+}
+
+.element-filter-group button.active {
+  border-color: rgba(10, 140, 93, 0.36);
+  background: #e8f6ef;
+  color: #08724d;
 }
 
 .element-filter-clear {

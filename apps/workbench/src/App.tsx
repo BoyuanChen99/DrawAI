@@ -65,7 +65,12 @@ type CanvasMode = "select" | "add" | "polygon";
 type AssetEditorView = "extraction" | "processing";
 type PipelineNodeState = "waiting" | "running" | "done" | "failed" | "review" | "stale";
 type AssetPlanChangeOptions = { track?: boolean };
-type V2ElementFilter = { query: string; elementType: string; processingType: string; status: string };
+type V2ElementFilter = {
+  query: string;
+  elementTypes: string[] | null;
+  processingTypes: string[] | null;
+  statuses: string[] | null;
+};
 type V2ProcessorType = "crop" | "crop_nobg" | "image_generate" | "image_edit" | "chart_rebuild_reserved";
 type SvgEditableElement = { path: string; tag: string; label: string; detail: string; text: string; textEditable: boolean };
 type SvgDragState =
@@ -149,7 +154,12 @@ const V2_PROCESSABLE_PROCESSORS: V2ProcessorType[] = ["crop", "crop_nobg", "imag
 const SUPPORTED_UPLOAD_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".zip"];
 const WORKBENCH_PROCESSING_APPLIED_REASON = "工作台处理结果为";
 const WORKBENCH_PROCESSING_MODE_REASON = "工作台处理模式设为";
-const EMPTY_V2_ELEMENT_FILTER: V2ElementFilter = { query: "", elementType: "", processingType: "", status: "" };
+const EMPTY_V2_ELEMENT_FILTER: V2ElementFilter = {
+  query: "",
+  elementTypes: null,
+  processingTypes: null,
+  statuses: null
+};
 
 const PIPELINE_GROUPS = [
   {
@@ -2337,10 +2347,22 @@ function V2ElementFilterControls({
       : [],
     [elements, packageByElementId, statusFallback, showStatus]
   );
-  const active = Boolean(filter.query || filter.elementType || filter.processingType || filter.status);
+  const active = Boolean(filter.query || filter.elementTypes !== null || filter.processingTypes !== null || filter.statuses !== null);
 
   function update(patch: Partial<V2ElementFilter>) {
     onChange({ ...filter, ...patch });
+  }
+
+  function toggleElementType(value: string) {
+    update({ elementTypes: toggleMultiFilterValue(filter.elementTypes, value, elementTypeOptions) });
+  }
+
+  function toggleProcessingType(value: string) {
+    update({ processingTypes: toggleMultiFilterValue(filter.processingTypes, value, processingOptions) });
+  }
+
+  function toggleStatus(value: string) {
+    update({ statuses: toggleMultiFilterValue(filter.statuses, value, statusOptions) });
   }
 
   return (
@@ -2350,31 +2372,66 @@ function V2ElementFilterControls({
         onChange={(event) => update({ query: event.target.value })}
         placeholder="筛选框"
       />
-      <select value={filter.elementType} onChange={(event) => update({ elementType: event.target.value })} aria-label="元素类型">
-        <option value="">全部类型</option>
-        {elementTypeOptions.map((value) => (
-          <option key={value} value={value}>{humanize(value)}</option>
-        ))}
-      </select>
-      <select value={filter.processingType} onChange={(event) => update({ processingType: event.target.value })} aria-label="处理类型">
-        <option value="">全部处理</option>
-        {processingOptions.map((value) => (
-          <option key={value} value={value}>{humanize(value)}</option>
-        ))}
-      </select>
+      <MultiFilterGroup
+        label="类型"
+        options={elementTypeOptions}
+        selected={filter.elementTypes}
+        onToggle={toggleElementType}
+      />
+      <MultiFilterGroup
+        label="处理"
+        options={processingOptions}
+        selected={filter.processingTypes}
+        onToggle={toggleProcessingType}
+      />
       {showStatus && (
-        <select value={filter.status} onChange={(event) => update({ status: event.target.value })} aria-label="资产状态">
-          <option value="">全部状态</option>
-          {statusOptions.map((value) => (
-            <option key={value} value={value}>{humanize(value)}</option>
-          ))}
-        </select>
+        <MultiFilterGroup
+          label="状态"
+          options={statusOptions}
+          selected={filter.statuses}
+          onToggle={toggleStatus}
+        />
       )}
       {active && (
         <button type="button" className="element-filter-clear" onClick={() => onChange(EMPTY_V2_ELEMENT_FILTER)}>
           清除
         </button>
       )}
+    </div>
+  );
+}
+
+function MultiFilterGroup({
+  label,
+  options,
+  selected,
+  onToggle
+}: {
+  label: string;
+  options: string[];
+  selected: string[] | null;
+  onToggle: (value: string) => void;
+}) {
+  if (options.length === 0) return null;
+  return (
+    <div className="element-filter-group" aria-label={label}>
+      <span>{label}</span>
+      <div className="element-filter-chips">
+        {options.map((value) => {
+          const pressed = multiFilterValueSelected(selected, value);
+          return (
+            <button
+              key={value}
+              type="button"
+              className={pressed ? "active" : ""}
+              aria-pressed={pressed}
+              onClick={() => onToggle(value)}
+            >
+              {humanize(value)}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -5520,6 +5577,23 @@ function uniqueSorted(values: string[]): string[] {
   return Array.from(new Set(values.filter(Boolean))).sort((left, right) => left.localeCompare(right));
 }
 
+function toggleMultiFilterValue(selected: string[] | null, value: string, options: string[]): string[] | null {
+  const optionSet = new Set(options);
+  const current = selected === null ? options : selected.filter((item) => optionSet.has(item));
+  const next = new Set(current);
+  if (next.has(value)) {
+    next.delete(value);
+  } else {
+    next.add(value);
+  }
+  if (next.size === options.length) return null;
+  return options.filter((item) => next.has(item));
+}
+
+function multiFilterValueSelected(selected: string[] | null, value: string): boolean {
+  return selected === null || selected.includes(value);
+}
+
 function filterV2Elements(
   elements: V2ElementPlan[],
   filter: V2ElementFilter,
@@ -5535,10 +5609,10 @@ function v2ElementMatchesFilter(
   packageByElementId: Map<string, V2AssetPackage> | null,
   statusFallback: string
 ): boolean {
-  if (filter.elementType && element.element_type !== filter.elementType) return false;
-  if (filter.processingType && element.processing_intent.processing_type !== filter.processingType) return false;
+  if (!multiFilterValueSelected(filter.elementTypes, element.element_type)) return false;
+  if (!multiFilterValueSelected(filter.processingTypes, element.processing_intent.processing_type)) return false;
   const status = v2ElementFilterStatus(element, packageByElementId, statusFallback);
-  if (filter.status && status !== filter.status) return false;
+  if (!multiFilterValueSelected(filter.statuses, status)) return false;
   const query = filter.query.trim().toLowerCase();
   if (!query) return true;
   return v2ElementFilterHaystack(element, status).includes(query);
