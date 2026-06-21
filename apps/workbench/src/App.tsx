@@ -3208,6 +3208,9 @@ function workflowStageForNode(node: WorkflowTemplate["nodes"][number]): string {
   if (node.node_type === "output") return "output";
   if (node.node_type === "processor") {
     const processorId = String(node.config.processor_id || "");
+    if (processorId === "page_spec_analyze") return "fuse_elements";
+    if (processorId === "asset_prepare") return "process_assets";
+    if (processorId === "svg_compose") return "compose_svg";
     if (processorId === "asset_planner") return "plan_assets";
     return "process_assets";
   }

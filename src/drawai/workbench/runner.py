@@ -18,6 +18,12 @@ import yaml
 
 from drawai.artifacts import DrawAiArtifactPaths, prepare_artifact_paths, write_json
 from drawai.config import load_drawai_config
+from drawai.page_spec import (
+    element_plans_from_page_spec,
+    load_page_spec,
+    page_spec_from_run_package,
+    write_page_spec,
+)
 from drawai.pipeline import run_drawai_pipeline_from_stage
 from drawai.rmbg_client import RemoteRmbgClient
 from drawai.svg_to_ppt_check import check_svg_to_ppt_compatibility
@@ -520,6 +526,63 @@ class WorkbenchRunner:
     ) -> tuple[Mapping[str, Any], ...]:
         processor_id = str(context.node.config.get("processor_id") or "")
         paths = prepare_artifact_paths(case.run_root)
+        if processor_id == "page_spec_analyze":
+            self._ensure_workflow_stage(case, "fuse_elements", stage_state)
+            run_package = json.loads(paths.run_package_json.read_text(encoding="utf-8"))
+            if not isinstance(run_package, Mapping):
+                raise ValueError("DrawAI run package must be a JSON object")
+            page_spec = page_spec_from_run_package(
+                run_package,
+                page_id=case.case_id,
+                source_image=str(paths.figure_image),
+            )
+            canonical_path = write_page_spec(Path(case.run_root) / "page_spec.json", page_spec)
+            output_path = _copy_workflow_json(canonical_path, context.output_dir / "page_spec.json")
+            return (_workflow_output(context, "page_spec", output_path, "page_spec", "drawai.page_spec.v1"),)
+        if processor_id == "asset_prepare":
+            page_spec_source = _input_path_by_type(
+                case.run_root,
+                inputs,
+                "page_spec",
+                format_id="drawai.page_spec.v1",
+            )
+            page_spec = load_page_spec(page_spec_source)
+            write_page_spec(Path(case.run_root) / "page_spec.json", page_spec)
+            plans = element_plans_from_page_spec(page_spec)
+            _write_workflow_run_package(case, plans, last_stage="page_spec_asset_prepare")
+            if not stage_state.get("plan_assets"):
+                self._run_stage(case.case_id, "plan_assets")
+                stage_state["plan_assets"] = True
+            if not stage_state.get("process_assets"):
+                self._run_stage(case.case_id, "process_assets")
+                stage_state["process_assets"] = True
+            output_path = _write_asset_packages_artifact(
+                paths.run_package_json,
+                context.output_dir / "asset_packages.json",
+            )
+            return (_workflow_output(context, "asset_packages", output_path, "asset_packages", "drawai.asset_packages.v1"),)
+        if processor_id == "svg_compose":
+            page_spec_source = _input_path_by_type(
+                case.run_root,
+                inputs,
+                "page_spec",
+                format_id="drawai.page_spec.v1",
+            )
+            write_page_spec(Path(case.run_root) / "page_spec.json", load_page_spec(page_spec_source))
+            if not stage_state.get("compose_svg"):
+                self._run_stage(case.case_id, "compose_svg")
+                stage_state["compose_svg"] = True
+            output_path = _copy_workflow_file(paths.semantic_svg, context.output_dir / "semantic.svg")
+            return (
+                _workflow_output(
+                    context,
+                    "semantic_svg",
+                    output_path,
+                    "semantic_svg",
+                    "drawai.semantic_svg.v1",
+                    deliverable=True,
+                ),
+            )
         if processor_id == "asset_planner":
             analysis_source = _first_input_path(case.run_root, inputs)
             _copy_workflow_json(
@@ -539,7 +602,10 @@ class WorkbenchRunner:
             if not stage_state.get("process_assets"):
                 self._run_stage(case.case_id, "process_assets")
                 stage_state["process_assets"] = True
-            output_path = _copy_workflow_json(paths.run_package_json, context.output_dir / "asset_packages.json")
+            output_path = _write_asset_packages_artifact(
+                paths.run_package_json,
+                context.output_dir / "asset_packages.json",
+            )
             return (_workflow_output(context, "asset_packages", output_path, "asset_packages", "drawai.asset_packages.v1"),)
         raise ValueError(f"unsupported processor node: {processor_id or context.node.node_id}")
 
@@ -1154,6 +1220,36 @@ def _copy_workflow_json(source: str | Path, target: str | Path) -> Path:
     return target_path
 
 
+def _write_asset_packages_artifact(source: str | Path, target: str | Path) -> Path:
+    source_path = Path(source).expanduser().resolve(strict=False)
+    if not source_path.is_file():
+        raise FileNotFoundError(f"workflow asset package source does not exist: {source_path}")
+    payload = json.loads(source_path.read_text(encoding="utf-8"))
+    if isinstance(payload, Mapping):
+        raw_packages = payload.get("asset_packages")
+        metadata = {
+            "source_schema": str(payload.get("schema") or ""),
+            "run_id": str(payload.get("run_id") or ""),
+        }
+    elif isinstance(payload, list):
+        raw_packages = payload
+        metadata = {}
+    else:
+        raise ValueError(f"workflow asset package source must be a JSON object or array: {source_path}")
+    if isinstance(raw_packages, str) or not isinstance(raw_packages, list):
+        raise ValueError("workflow asset package source must contain an asset_packages list")
+    target_path = Path(target).expanduser().resolve(strict=False)
+    write_json(
+        target_path,
+        {
+            "schema": "drawai.asset_packages.v1",
+            "asset_packages": raw_packages,
+            "metadata": metadata,
+        },
+    )
+    return target_path
+
+
 def _read_optional_workflow_json(path: str | Path) -> Mapping[str, Any] | list[Any] | None:
     source_path = Path(path).expanduser().resolve(strict=False)
     if not source_path.is_file():
@@ -1300,6 +1396,27 @@ def _first_input_path(run_root: str | Path, inputs: tuple[Mapping[str, Any], ...
         raise ValueError("workflow input artifact path is missing")
     path_obj = Path(path)
     return path_obj if path_obj.is_absolute() else Path(run_root) / path_obj
+
+
+def _input_path_by_type(
+    run_root: str | Path,
+    inputs: tuple[Mapping[str, Any], ...],
+    artifact_type: str,
+    *,
+    format_id: str = "",
+) -> Path:
+    for item in inputs:
+        if item.get("type") != artifact_type:
+            continue
+        if format_id and item.get("format_id") != format_id:
+            continue
+        path = item.get("path")
+        if not isinstance(path, str) or not path:
+            raise ValueError(f"workflow {artifact_type} input artifact path is missing")
+        path_obj = Path(path)
+        return path_obj if path_obj.is_absolute() else Path(run_root) / path_obj
+    expected = f"{artifact_type} ({format_id})" if format_id else artifact_type
+    raise ValueError(f"workflow node requires an input artifact of type {expected}")
 
 
 def create_case_config(

@@ -267,6 +267,8 @@ const WORKFLOW_TYPE_CONTRACTS: Record<string, string> = {
     "Parser candidate elements before fusion/refinement. JSON contains candidates with candidate_id, source_parser, element_type, bbox [x, y, width, height], geometry, confidence, optional text, evidence_files, provenance, and raw_ref.",
   element_plans:
     "Refined/planned DrawAI elements. JSON contains elements with element_id, source_candidate_ids, element_type, bbox [x, y, width, height], geometry, z_order, confidence low|medium|high, processing_intent {object_type, processing_type, parameters}, review_status, created_by_stage, and change_reason.",
+  page_spec:
+    "Canonical page composition model. JSON contains schema drawai.page_spec.v1, page_id, source, canvas, optional background, and elements with id, kind, box_px, z_index, role, build instructions, style, measurement, source_refs, and metadata.",
   element_analysis:
     "Run0 asset/source analysis JSON. JSON contains schema drawai.codex_element_analysis.v1, case_dir, source, strategy_summary, refinement_summary, categories, refinement_actions, elements, optional removal_records, and notes. Each retained element uses box_id or element_id, source_candidate_ids, refinement_action, category svg_self_draw|crop|crop_nobg, confidence, visual_role, reason, evidence, bbox [x1, y1, x2, y2], type, current_pipeline_method, and recommended_asset_source. Top-level removal_records cover removed/merged source candidates and must include action or refinement_action removed|merged, source_candidate_ids or removed_source_candidate_ids, and reason or removal_reason.",
   asset_packages:
@@ -279,6 +281,8 @@ const WORKFLOW_FORMAT_CONTRACTS: Record<string, string> = {
   "drawai.image.v1": "Openable raster image file, usually PNG/JPEG/WebP.",
   "drawai.element_candidates.v1": "UTF-8 JSON object with a candidates array, or a JSON array of element candidate objects.",
   "drawai.element_plans.v1": "UTF-8 JSON object with an elements array, or a JSON array of element plan objects.",
+  "drawai.page_spec.v1":
+    "UTF-8 JSON object with schema drawai.page_spec.v1. It is the PageSpec-first DAG artifact: source, canvas, optional background, and canonical page elements.",
   "drawai.codex_element_analysis.v1":
     "UTF-8 JSON object with schema drawai.codex_element_analysis.v1 and an elements array. Retained elements use box_id/element_id, bbox as x1,y1,x2,y2, category svg_self_draw|crop|crop_nobg, source_candidate_ids, type, confidence, reason, and evidence. Top-level removal_records cover removed/merged source candidates and must include action or refinement_action removed|merged, source_candidate_ids or removed_source_candidate_ids, and reason or removal_reason.",
   "drawai.asset_package.v1": "UTF-8 JSON object for one DrawAI asset package.",
@@ -314,6 +318,12 @@ const WORKFLOW_FORMAT_OPTIONS: WorkflowFormatOption[] = [
     type: "element_plans",
     label: "Element Plans",
     description: "DrawAI element plan JSON."
+  },
+  {
+    format_id: "drawai.page_spec.v1",
+    type: "page_spec",
+    label: "Page Spec",
+    description: "Canonical page composition JSON."
   },
   {
     format_id: "drawai.codex_element_analysis.v1",
@@ -469,6 +479,42 @@ const NODE_PRESETS: NodePreset[] = [
         }
       ]
     }
+  },
+  {
+    key: "page-spec-analyze",
+    node_type: "processor",
+    title: "PageSpec Analyze",
+    icon: "R",
+    description: "Parse and fuse source evidence into a canonical PageSpec.",
+    inputs: [port("image", "Image", ["image"], "drawai.image.v1")],
+    outputs: [port("page_spec", "Page Spec", ["page_spec"], "drawai.page_spec.v1", false)],
+    config: { processor_id: "page_spec_analyze", stage: "fuse_elements", prompts: DEFAULT_SAM_PROMPTS }
+  },
+  {
+    key: "asset-prepare",
+    node_type: "processor",
+    title: "Asset Prepare",
+    icon: "R",
+    description: "Prepare asset packages from PageSpec build instructions.",
+    inputs: [
+      port("image", "Image", ["image"], "drawai.image.v1"),
+      port("page_spec", "Page Spec", ["page_spec"], "drawai.page_spec.v1")
+    ],
+    outputs: [port("asset_packages", "Asset Packages", ["asset_packages"], "drawai.asset_packages.v1", false)],
+    config: { processor_id: "asset_prepare", stage: "process_assets" }
+  },
+  {
+    key: "svg-compose",
+    node_type: "processor",
+    title: "SVG Compose",
+    icon: "R",
+    description: "Compose semantic SVG from PageSpec and prepared assets.",
+    inputs: [
+      port("page_spec", "Page Spec", ["page_spec"], "drawai.page_spec.v1"),
+      port("asset_packages", "Asset Packages", ["asset_packages"], "drawai.asset_packages.v1")
+    ],
+    outputs: [port("semantic_svg", "Semantic SVG", ["semantic_svg"], "drawai.semantic_svg.v1", false, "single", "deliverable")],
+    config: { processor_id: "svg_compose", stage: "compose_svg" }
   },
   {
     key: "asset-planner",

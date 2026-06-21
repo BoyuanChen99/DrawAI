@@ -2327,7 +2327,7 @@ def _workflow_node_overlay_source(
             kind = _workflow_overlay_kind(output_type, format_id, path)
             if kind:
                 candidates.append((_workflow_overlay_priority(kind), kind, path))
-    for filename in ("elements.json", "candidates.json", "element_analysis.json"):
+    for filename in ("page_spec.json", "elements.json", "candidates.json", "element_analysis.json"):
         path = _case_relative_path(root, run_dir / "output" / filename)
         kind = _workflow_overlay_kind("", "", path)
         if kind:
@@ -2350,6 +2350,8 @@ def _workflow_node_overlay_source(
 
 def _workflow_overlay_kind(output_type: str, format_id: str, path: str) -> str:
     probe = f"{output_type} {format_id} {path}".lower()
+    if "page_spec" in probe or path.endswith("page_spec.json"):
+        return "page_spec"
     if "element_candidates" in probe or path.endswith("candidates.json"):
         return "element_candidates"
     if "element_plans" in probe or path.endswith("elements.json"):
@@ -2362,6 +2364,8 @@ def _workflow_overlay_kind(output_type: str, format_id: str, path: str) -> str:
 def _workflow_overlay_kind_from_payload(payload: object, *, fallback: str) -> str:
     if isinstance(payload, Mapping):
         schema = str(payload.get("schema") or "")
+        if schema == "drawai.page_spec.v1":
+            return "page_spec"
         if "element_candidate" in schema or "candidates" in payload:
             return "element_candidates"
         if "element_plan" in schema or "run_package" in schema:
@@ -2373,9 +2377,10 @@ def _workflow_overlay_kind_from_payload(payload: object, *, fallback: str) -> st
 
 def _workflow_overlay_priority(kind: str) -> int:
     return {
-        "element_plans": 10,
-        "element_candidates": 20,
-        "element_analysis": 30,
+        "page_spec": 10,
+        "element_plans": 20,
+        "element_candidates": 30,
+        "element_analysis": 40,
     }.get(kind, 100)
 
 
@@ -2383,6 +2388,13 @@ def _workflow_viewer_elements_from_payload(
     payload: Mapping[str, Any] | list[Any],
     kind: str,
 ) -> list[dict[str, Any]]:
+    if kind == "page_spec":
+        items = payload.get("elements", []) if isinstance(payload, Mapping) else payload
+        return [
+            element
+            for index, item in enumerate(_json_list(items))
+            if (element := _workflow_viewer_element_from_page_spec(item, index)) is not None
+        ]
     if kind == "element_candidates":
         items = payload.get("candidates", []) if isinstance(payload, Mapping) else payload
         return [
@@ -2405,6 +2417,32 @@ def _workflow_viewer_elements_from_payload(
             if (element := _workflow_viewer_element_from_analysis(item, index)) is not None
         ]
     return []
+
+
+def _workflow_viewer_element_from_page_spec(item: Mapping[str, Any], index: int) -> dict[str, Any] | None:
+    bbox = _coerce_bbox_xywh(item.get("box_px"), item.get("geometry"))
+    if bbox is None:
+        return None
+    build = item.get("build")
+    build_mapping = build if isinstance(build, Mapping) else {}
+    element_id = str(item.get("id") or f"E{index + 1:03d}")
+    kind = str(item.get("kind") or "unknown")
+    role = str(item.get("role") or kind)
+    return _workflow_viewer_element(
+        element_id=element_id,
+        bbox=bbox,
+        element_type=kind,
+        source_candidate_ids=_page_spec_source_ids(item) or (element_id,),
+        confidence=_confidence_label(item.get("confidence")),
+        processing_type=str(build_mapping.get("processing_type") or build_mapping.get("mode") or "page_spec"),
+        object_type=role,
+        review_status="page_spec",
+        created_by_stage=str(_mapping_value(item.get("metadata"), "created_by_stage") or "page_spec"),
+        change_reason=str(_mapping_value(item.get("metadata"), "change_reason") or "PageSpec element."),
+        z_order=_int_or_default(item.get("z_index"), index),
+        geometry=item.get("geometry"),
+        parameters=build_mapping.get("parameters") if isinstance(build_mapping.get("parameters"), Mapping) else {},
+    )
 
 
 def _workflow_viewer_element_from_candidate(item: Mapping[str, Any], index: int) -> dict[str, Any] | None:
@@ -2518,6 +2556,24 @@ def _workflow_viewer_element(
         "created_by_stage": created_by_stage,
         "change_reason": change_reason,
     }
+
+
+def _page_spec_source_ids(item: Mapping[str, Any]) -> tuple[str, ...]:
+    source_refs = item.get("source_refs")
+    if isinstance(source_refs, list | tuple):
+        ids: list[str] = []
+        for ref in source_refs:
+            if isinstance(ref, Mapping) and isinstance(ref.get("id"), str) and ref["id"]:
+                ids.append(ref["id"])
+        if ids:
+            return tuple(ids)
+    return ()
+
+
+def _mapping_value(value: object, key: str) -> object:
+    if isinstance(value, Mapping):
+        return value.get(key)
+    return None
 
 
 def _coerce_bbox_xywh(value: object, geometry: object = None) -> tuple[float, float, float, float] | None:
