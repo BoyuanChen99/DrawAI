@@ -1272,14 +1272,18 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
   function updateAgentOutput(index: number, patch: Partial<AgentOutputConfig>) {
     if (!selectedNode || selectedNode.node_type !== "agent") return;
     const outputs = agentOutputsForNode(selectedNode);
-    outputs[index] = { ...outputs[index], ...patch };
+    const previousPortId = outputs[index]?.port_id || "";
+    outputs[index] = canonicalAgentOutputConfig({ ...outputs[index], ...patch });
+    const nextPortId = outputs[index]?.port_id || "";
     updateNode(selectedNode.node_id, (node) => {
-      const outputConfig = outputs.map((item) => ({ ...item }));
-      const nextPorts = node.outputs.map((port) => {
-        const config = outputConfig.find((item) => item.port_id === port.port_id);
+      const outputConfig = outputs.map(canonicalAgentOutputConfig);
+      const nextPorts = node.outputs.map((port, portIndex) => {
+        const config = outputConfig[portIndex] || outputConfig.find((item) => item.port_id === port.port_id);
         if (!config) return port;
         return {
           ...port,
+          port_id: config.port_id,
+          label: config.port_id,
           types: [config.type].filter(Boolean),
           formats: [config.format_id].filter(Boolean),
           description: port.description.includes("deliverable") ? `deliverable · ${config.description}` : config.description
@@ -1291,6 +1295,21 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
         config: { ...node.config, outputs: outputConfig }
       };
     });
+    if (previousPortId && nextPortId && previousPortId !== nextPortId) {
+      setDraft((current) =>
+        current
+          ? {
+              ...current,
+              edges: current.edges.map((edge) =>
+                edge.source_node_id === selectedNode.node_id && edge.source_port_id === previousPortId
+                  ? { ...edge, source_port_id: nextPortId }
+                  : edge
+              )
+            }
+          : current
+      );
+      setValidation(null);
+    }
   }
 
   function updateAgentOutputFormat(index: number, formatId: string) {
@@ -1302,7 +1321,6 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
     updateAgentOutput(index, {
       format_id: option.format_id,
       type: option.type,
-      path: defaultOutputPathForPort(current.port_id, option.format_id),
       description: option.description
     });
   }
@@ -1323,10 +1341,11 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
       type: defaultOption.type,
       description: defaultOption.description
     };
+    const canonicalOutput = canonicalAgentOutputConfig(output);
     updateNode(selectedNode.node_id, (node) => ({
       ...node,
-      outputs: [...node.outputs, port(portId, portId, [output.type], output.format_id, false)],
-      config: { ...node.config, outputs: [...agentOutputsForNode(node), output] }
+      outputs: [...node.outputs, port(canonicalOutput.port_id, canonicalOutput.port_id, [canonicalOutput.type], canonicalOutput.format_id, false)],
+      config: { ...node.config, outputs: [...agentOutputsForNode(node), canonicalOutput] }
     }));
   }
 
@@ -1913,7 +1932,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                         </label>
                         <label>
                           <span>数据类型</span>
-                          <input value={output.type} disabled={readOnly} onChange={(event) => updateAgentOutput(index, { type: event.target.value })} />
+                          <code>{output.type}</code>
                         </label>
                         <label>
                           <span>文件格式</span>
@@ -1926,8 +1945,8 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                           </select>
                         </label>
                         <label>
-                          <span>输出路径</span>
-                          <input value={output.path} disabled={readOnly} onChange={(event) => updateAgentOutput(index, { path: event.target.value })} />
+                          <span>自动输出路径</span>
+                          <code>{output.path}</code>
                         </label>
                       </div>
                       <textarea
@@ -3090,30 +3109,31 @@ function nextNodeIndex(template: WorkflowTemplate, nodeType: string): number {
 function agentOutputsForNode(node: WorkflowNode): AgentOutputConfig[] {
   const raw = node.config.outputs || node.config.output_declarations;
   if (Array.isArray(raw)) {
-    return raw.filter(isAgentOutputConfig).map((item) => ({ ...item }));
+    return raw.map(agentOutputConfigFromRaw).filter((item): item is AgentOutputConfig => Boolean(item));
   }
-  return node.outputs.map((output) => ({
-    port_id: output.port_id,
-    path: defaultOutputPath(output),
-    format_id: output.formats[0] || "",
-    type: output.types[0] || "",
-    description: output.description || `${output.label} output`
-  }));
+  return node.outputs.map(agentOutputConfigForPort);
 }
 
-function isAgentOutputConfig(value: unknown): value is AgentOutputConfig {
-  if (!value || typeof value !== "object") return false;
+function agentOutputConfigFromRaw(value: unknown): AgentOutputConfig | null {
+  if (!value || typeof value !== "object") return null;
   const item = value as Record<string, unknown>;
-  return ["port_id", "path", "format_id", "type", "description"].every((key) => typeof item[key] === "string");
+  if (typeof item.port_id !== "string" || typeof item.format_id !== "string") return null;
+  const option = workflowFormatOption(item.format_id);
+  return canonicalAgentOutputConfig({
+    port_id: item.port_id,
+    path: typeof item.path === "string" ? item.path : "",
+    format_id: option.format_id,
+    type: typeof item.type === "string" ? item.type : option.type,
+    description: typeof item.description === "string" ? item.description : option.description
+  });
 }
 
 function defaultOutputPath(output: WorkflowPort): string {
-  const extension = fileExtensionForFormat(output.formats[0] || "");
-  return `output/${output.port_id}.${extension}`;
+  return defaultOutputPathForPort(output.port_id, output.formats[0] || "");
 }
 
 function defaultOutputPathForPort(portId: string, formatId: string): string {
-  return `output/${portId}.${fileExtensionForFormat(formatId)}`;
+  return `output/${safePortId(portId)}.${fileExtensionForFormat(formatId)}`;
 }
 
 function agentOutputConfigForPort(output: WorkflowPort): AgentOutputConfig {
@@ -3123,7 +3143,20 @@ function agentOutputConfigForPort(output: WorkflowPort): AgentOutputConfig {
     port_id: output.port_id,
     path: defaultOutputPathForPort(output.port_id, option.format_id),
     format_id: option.format_id,
-    type: output.types[0] || option.type,
+    type: option.type,
+    description: output.description || option.description
+  };
+}
+
+function canonicalAgentOutputConfig(output: AgentOutputConfig): AgentOutputConfig {
+  const option = workflowFormatOption(output.format_id);
+  const portId = output.port_id.trim() || "output";
+  return {
+    ...output,
+    port_id: portId,
+    path: defaultOutputPathForPort(portId, option.format_id),
+    format_id: option.format_id,
+    type: option.type,
     description: output.description || option.description
   };
 }

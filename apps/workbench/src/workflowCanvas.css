@@ -659,6 +659,20 @@
   font-size: 11px;
 }
 
+.workflow-output-grid code {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  padding: 5px 7px;
+  border: 1px solid #d0d5dc;
+  border-radius: 8px;
+  background: #f9fafb;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .workflow-output-grid select {
   height: 30px;
   padding: 0 7px;
@@ -677,6 +691,12 @@
 .workflow-agent-editor .workflow-output-grid select {
   height: 38px;
   padding: 0 12px;
+  font-size: 13px;
+}
+
+.workflow-agent-editor .workflow-output-grid code {
+  min-height: 38px;
+  padding: 8px 12px;
   font-size: 13px;
 }
 
