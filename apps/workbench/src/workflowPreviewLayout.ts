@@ -39,6 +39,7 @@ type Rect = { left: number; top: number; right: number; bottom: number };
 type EdgeRoute = { points: Point[]; d: string; start: Point; end: Point };
 type Segment = { a: Point; b: Point };
 type PortSlot = { index: number; total: number };
+type EdgeRouteContext = { sourceRank: number; targetRank: number };
 
 const DEFAULT_LAYOUT_OPTIONS = {
   maxColumns: 4,
@@ -131,7 +132,10 @@ export function buildWorkflowPreviewLayout(
     const targetKey = portSlotKey(edge.target_node_id, sides.endSide);
     const sourceSlot = nextPortSlot(portUse, sourceKey, portTotals.get(sourceKey) || 1);
     const targetSlot = nextPortSlot(portUse, targetKey, portTotals.get(targetKey) || 1);
-    const route = routePreviewEdge(source, target, nodeLayouts, routedSegments, { width, height }, sides, sourceSlot, targetSlot);
+    const route = routePreviewEdge(source, target, nodeLayouts, routedSegments, { width, height }, sides, sourceSlot, targetSlot, {
+      sourceRank: ranks.get(edge.source_node_id) ?? 0,
+      targetRank: ranks.get(edge.target_node_id) ?? 0
+    });
     routedSegments.push(...segmentsFromPoints(route.points));
     return [{ edge, start: route.start, end: route.end, d: route.d }];
   });
@@ -210,17 +214,38 @@ function routePreviewEdge(
   bounds: { width: number; height: number },
   sides = edgeSides(source, target),
   sourceSlot: PortSlot = { index: 0, total: 1 },
-  targetSlot: PortSlot = { index: 0, total: 1 }
+  targetSlot: PortSlot = { index: 0, total: 1 },
+  context: EdgeRouteContext = { sourceRank: 0, targetRank: 0 }
 ): EdgeRoute {
   const clearance = 12;
   const start = anchorPoint(source, sides.startSide, sourceSlot);
   const end = anchorPoint(target, sides.endSide, targetSlot);
   const startOutside = offsetPoint(start, sides.startSide, clearance);
   const endOutside = offsetPoint(end, sides.endSide, clearance);
+  if (isShortcutEdge(context)) {
+    const points = outsideRailRoute(start, startOutside, endOutside, end, bounds);
+    return { start, end, points, d: pointsToPath(points) };
+  }
   const obstacles = nodes.map((node) => expandRect(nodeRect(node), 7));
   const routedMiddle = orthogonalRoute(startOutside, endOutside, obstacles, existingSegments, bounds);
   const points = simplifyPoints([start, startOutside, ...routedMiddle.slice(1, -1), endOutside, end]);
   return { start, end, points, d: pointsToPath(points) };
+}
+
+function isShortcutEdge(context: EdgeRouteContext): boolean {
+  return Math.abs(context.targetRank - context.sourceRank) > 1;
+}
+
+function outsideRailRoute(start: Point, startOutside: Point, endOutside: Point, end: Point, bounds: { width: number; height: number }): Point[] {
+  const railY = start.y <= bounds.height / 2 ? 6 : Math.max(6, bounds.height - 6);
+  return simplifyPoints([
+    start,
+    startOutside,
+    { x: startOutside.x, y: railY },
+    { x: endOutside.x, y: railY },
+    endOutside,
+    end
+  ]);
 }
 
 function edgeSides(source: WorkflowPreviewNode, target: WorkflowPreviewNode): { startSide: Side; endSide: Side } {
