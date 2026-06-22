@@ -2394,8 +2394,14 @@ select:focus {
   inset: 0;
   z-index: 0;
   border-radius: inherit;
-  background: linear-gradient(90deg, #022c22 0%, #047857 18%, #bbf7d0 34%, #065f46 50%, #4ade80 68%, #022c22 86%, #022c22 100%);
-  background-size: 220% 100%;
+  background-image:
+    linear-gradient(90deg, #022c22 0%, #047857 22%, #bbf7d0 40%, #4ade80 52%, #065f46 66%, #022c22 86%, #022c22 100%),
+    linear-gradient(180deg, #022c22 0%, #047857 22%, #bbf7d0 40%, #4ade80 52%, #065f46 66%, #022c22 86%, #022c22 100%),
+    linear-gradient(270deg, #022c22 0%, #047857 22%, #bbf7d0 40%, #4ade80 52%, #065f46 66%, #022c22 86%, #022c22 100%),
+    linear-gradient(0deg, #022c22 0%, #047857 22%, #bbf7d0 40%, #4ade80 52%, #065f46 66%, #022c22 86%, #022c22 100%);
+  background-position: 0 0, 100% 0, 0 100%, 0 0;
+  background-repeat: repeat-x, repeat-y, repeat-x, repeat-y;
+  background-size: 180% 2px, 2px 180%, 180% 2px, 2px 180%;
   padding: 2px;
   pointer-events: none;
   animation: dag-running-border 1.8s linear infinite;
@@ -2645,7 +2651,7 @@ button.dag-run-node.running.active {
 
 @keyframes dag-running-border {
   to {
-    background-position: -220% 0;
+    background-position: 180% 0, 100% 180%, -180% 100%, 0 -180%;
   }
 }
 
