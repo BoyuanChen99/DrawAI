@@ -1664,6 +1664,24 @@ function DagRunPanel({
           {layout ? (
             <div className="dag-run-stage" style={{ width: layout.width, height: layout.height }}>
               <svg className="dag-run-edges" viewBox={`0 0 ${layout.width} ${layout.height}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+                <defs>
+                  <linearGradient id="dag-edge-flow-gradient" x1="0" y1="0" x2={layout.width} y2="0" gradientUnits="userSpaceOnUse">
+                    <stop offset="0%" stopColor="#022c22" />
+                    <stop offset="20%" stopColor="#047857" />
+                    <stop offset="38%" stopColor="#bbf7d0" />
+                    <stop offset="52%" stopColor="#065f46" />
+                    <stop offset="70%" stopColor="#4ade80" />
+                    <stop offset="100%" stopColor="#022c22" />
+                    <animateTransform
+                      attributeName="gradientTransform"
+                      type="translate"
+                      from={`${-layout.width} 0`}
+                      to={`${layout.width} 0`}
+                      dur="2.4s"
+                      repeatCount="indefinite"
+                    />
+                  </linearGradient>
+                </defs>
                 {layout.edges.map((edgeLayout) => {
                   const source = viewByNodeId.get(edgeLayout.edge.source_node_id);
                   const target = viewByNodeId.get(edgeLayout.edge.target_node_id);

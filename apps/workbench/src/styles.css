@@ -2300,28 +2300,30 @@ select:focus {
 
 .dag-run-edges path {
   fill: none;
-  stroke: rgba(100, 116, 139, 0.5);
+  stroke: url("#dag-edge-flow-gradient");
   stroke-width: 2.2;
-  stroke-dasharray: 9 7;
-  animation: dag-edge-flow 900ms linear infinite;
   stroke-linecap: round;
   stroke-linejoin: round;
   vector-effect: non-scaling-stroke;
 }
 
 .dag-run-edges path.done {
-  stroke: var(--teal);
+  opacity: 0.94;
 }
 
 .dag-run-edges path.running {
-  stroke: var(--blue);
-  stroke-dasharray: 12 6;
-  filter: drop-shadow(0 0 5px rgba(37, 99, 235, 0.28));
+  opacity: 1;
+  filter: drop-shadow(0 0 5px rgba(16, 185, 129, 0.28));
+}
+
+.dag-run-edges path.waiting {
+  opacity: 0.42;
 }
 
 .dag-run-node {
   position: absolute;
   z-index: 2;
+  isolation: isolate;
   min-height: 0;
   display: grid;
   grid-template-columns: 25px minmax(0, 1fr);
@@ -2338,6 +2340,11 @@ select:focus {
   padding: 8px;
   text-align: left;
   cursor: pointer;
+}
+
+.dag-run-node > * {
+  position: relative;
+  z-index: 1;
 }
 
 .dag-run-node .dag-node-icon {
@@ -2377,16 +2384,25 @@ select:focus {
 
 .dag-run-node.running {
   border-color: transparent;
-  background:
-    linear-gradient(90deg, var(--blue) 50%, transparent 0) repeat-x,
-    linear-gradient(90deg, var(--blue) 50%, transparent 0) repeat-x,
-    linear-gradient(0deg, var(--blue) 50%, transparent 0) repeat-y,
-    linear-gradient(0deg, var(--blue) 50%, transparent 0) repeat-y,
-    #ffffff;
-  background-size: 18px 2px, 18px 2px, 2px 18px, 2px 18px, auto;
-  background-position: 0 0, 0 100%, 0 0, 100% 0, 0 0;
-  animation: dag-running-border 900ms linear infinite;
-  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.1), var(--shadow-soft);
+  background: #ffffff;
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.12), var(--shadow-soft);
+}
+
+.dag-run-node.running::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #022c22 0%, #047857 18%, #bbf7d0 34%, #065f46 50%, #4ade80 68%, #022c22 86%, #022c22 100%);
+  background-size: 220% 100%;
+  padding: 2px;
+  pointer-events: none;
+  animation: dag-running-border 1.8s linear infinite;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
 }
 
 .dag-run-node.review {
@@ -2453,15 +2469,8 @@ button.dag-run-node.stale.active {
 
 button.dag-run-node.running.active {
   border-color: transparent;
-  background:
-    linear-gradient(90deg, var(--blue) 50%, transparent 0) repeat-x,
-    linear-gradient(90deg, var(--blue) 50%, transparent 0) repeat-x,
-    linear-gradient(0deg, var(--blue) 50%, transparent 0) repeat-y,
-    linear-gradient(0deg, var(--blue) 50%, transparent 0) repeat-y,
-    #ffffff;
-  background-size: 18px 2px, 18px 2px, 2px 18px, 2px 18px, auto;
-  background-position: 0 0, 0 100%, 0 0, 100% 0, 0 0;
-  box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.14), var(--shadow-soft);
+  background: #ffffff;
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.18), var(--shadow-soft);
 }
 
 .dag-run-node.node-parser .dag-node-icon {
@@ -2607,7 +2616,8 @@ button.dag-run-node.running.active {
     transition: none;
   }
 
-  .dag-run-node.running {
+  .dag-run-node.running,
+  .dag-run-node.running::before {
     animation: none;
   }
 }
@@ -2635,7 +2645,7 @@ button.dag-run-node.running.active {
 
 @keyframes dag-running-border {
   to {
-    background-position: 36px 0, -36px 100%, 0 -36px, 100% 36px, 0 0;
+    background-position: -220% 0;
   }
 }
 
