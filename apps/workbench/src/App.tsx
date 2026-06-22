@@ -1662,8 +1662,8 @@ function DagRunPanel({
       <div className="dag-run-body">
         <div className="dag-run-canvas">
           {layout ? (
-            <>
-              <svg className="dag-run-edges" viewBox={`0 0 ${layout.width} ${layout.height}`} preserveAspectRatio="none" aria-hidden="true">
+            <div className="dag-run-stage" style={{ width: layout.width, height: layout.height }}>
+              <svg className="dag-run-edges" viewBox={`0 0 ${layout.width} ${layout.height}`} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
                 {layout.edges.map((edgeLayout) => {
                   const source = viewByNodeId.get(edgeLayout.edge.source_node_id);
                   const target = viewByNodeId.get(edgeLayout.edge.target_node_id);
@@ -1684,10 +1684,10 @@ function DagRunPanel({
                   key={view.node.node_id}
                   className={`dag-run-node ${view.state} node-${view.node.node_type} ${selectedView?.node.node_id === view.node.node_id ? "active" : ""}`}
                   style={{
-                    left: `${toPercent(view.x, layout.width)}%`,
-                    top: `${toPercent(view.y, layout.height)}%`,
-                    width: `${toPercent(view.width, layout.width)}%`,
-                    height: `${toPercent(view.height, layout.height)}%`
+                    left: view.x,
+                    top: view.y,
+                    width: view.width,
+                    height: view.height
                   }}
                   onClick={() => setSelectedNodeId(view.node.node_id)}
                 >
@@ -1698,7 +1698,7 @@ function DagRunPanel({
                   <em>{stateLabel(view.state)}</em>
                 </button>
               ))}
-            </>
+            </div>
           ) : (
             <EmptyState label="还没有 Workflow 节点" />
           )}
@@ -3380,11 +3380,6 @@ function buildDagNodeViews(
       height: nodeLayout?.height || 62
     };
   });
-}
-
-function toPercent(value: number, total: number): number {
-  if (!Number.isFinite(value) || !Number.isFinite(total) || total <= 0) return 0;
-  return (value / total) * 100;
 }
 
 function workflowNodeRuntimeState(

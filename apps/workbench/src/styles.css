@@ -2271,7 +2271,10 @@ select:focus {
 .dag-run-canvas {
   position: relative;
   min-height: 420px;
-  overflow: hidden;
+  display: flex;
+  align-items: safe center;
+  justify-content: safe center;
+  overflow: auto;
   border: 1px solid var(--line);
   border-radius: 6px;
   background:
@@ -2279,6 +2282,12 @@ select:focus {
     linear-gradient(90deg, rgba(18, 32, 24, 0.045) 1px, transparent 1px),
     #ffffff;
   background-size: 26px 26px;
+  padding: 24px;
+}
+
+.dag-run-stage {
+  position: relative;
+  flex: 0 0 auto;
 }
 
 .dag-run-edges {
@@ -2297,16 +2306,15 @@ select:focus {
   animation: dag-edge-flow 900ms linear infinite;
   stroke-linecap: round;
   stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
 }
 
 .dag-run-edges path.done {
   stroke: var(--teal);
-  stroke-width: 2.8;
 }
 
 .dag-run-edges path.running {
   stroke: var(--blue);
-  stroke-width: 4.6;
   stroke-dasharray: 12 6;
   filter: drop-shadow(0 0 5px rgba(37, 99, 235, 0.28));
 }
