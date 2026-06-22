@@ -42,6 +42,12 @@ from drawai.workflow.agent_execution import (
 )
 from drawai.workflow.agents import agent_preset_by_id, default_agent_provider_registry, render_agent_prompt
 from drawai.workflow.formats import element_plans_from_payload
+from drawai.workflow.llm_execution import (
+    LLMExecutionRequest,
+    LLMExecutionResult,
+    execute_llm_prompt,
+    render_llm_prompt,
+)
 from drawai.workflow.runner import NodeRunContext, WorkflowRunner
 from drawai.workflow.schema import WorkflowEdge, WorkflowTemplate
 from drawai.workflow.templates import load_workflow_template_by_id
@@ -67,6 +73,7 @@ from .store import WorkbenchStore
 
 StageExecutor = Callable[[CaseRecord, str], None]
 AgentExecutor = Callable[[AgentExecutionRequest], AgentExecutionResult]
+LLMExecutor = Callable[[LLMExecutionRequest], LLMExecutionResult]
 RerunStage = Literal[
     "analysis",
     "asset_analyze",
@@ -139,11 +146,13 @@ class WorkbenchRunner:
         *,
         stage_executor: StageExecutor | None = None,
         agent_executor: AgentExecutor | None = None,
+        llm_executor: LLMExecutor | None = None,
     ) -> None:
         self.store = store
         self.settings = settings
         self.stage_executor = stage_executor
         self.agent_executor = agent_executor or execute_agent_prompt
+        self.llm_executor = llm_executor or execute_llm_prompt
         self.executor = ThreadPoolExecutor(max_workers=max(1, settings.max_concurrent_cases))
         self._futures: set[Future[Any]] = set()
         self._futures_lock = threading.Lock()
@@ -379,6 +388,11 @@ class WorkbenchRunner:
                         stage_state,
                         agent_settings=agent_settings,
                     ),
+                    "llm": lambda context, inputs: self._run_workflow_llm_node(
+                        case,
+                        context,
+                        inputs,
+                    ),
                     "processor": lambda context, inputs: self._run_workflow_processor_node(
                         case,
                         context,
@@ -593,6 +607,59 @@ class WorkbenchRunner:
                     stderr_path=result.stderr_path,
                     trace_path=result.trace_path,
                     session_log_path=result.session_log_path,
+                    execution_manifest_path=result.execution_manifest_path,
+                    exit_code=result.exit_code,
+                )
+            )
+        return tuple(outputs)
+
+    def _run_workflow_llm_node(
+        self,
+        case: CaseRecord,
+        context: NodeRunContext,
+        inputs: tuple[Mapping[str, Any], ...],
+    ) -> tuple[Mapping[str, Any], ...]:
+        preset_id = str(context.node.config.get("preset_id") or "custom_agent")
+        node_config = {**dict(context.node.config), "node_id": context.node.node_id}
+        prompt = render_llm_prompt(
+            agent_preset_by_id(preset_id),
+            inputs=inputs,
+            node_config=node_config,
+            runtime_context={
+                "workflow_run_root": context.run_root,
+                "node_workdir": context.record.workdir,
+                "agent_cwd": context.run_root,
+                "repo_root": _repo_root(),
+                "attempt_id": context.record.attempt_id,
+            },
+        )
+        runtime_config = _workflow_llm_runtime_config(case, context.node.config, prompt.provider_id)
+        resource = f"llm_provider:{prompt.provider_id}"
+        with self._resource_slot(resource):
+            result = self.llm_executor(
+                LLMExecutionRequest(
+                    prompt=prompt,
+                    workdir=context.record.workdir,
+                    run_root=context.run_root,
+                    node_id=context.node.node_id,
+                    node_type=context.node.node_type,
+                    runtime_config=runtime_config,
+                )
+            )
+        outputs: list[dict[str, Any]] = []
+        for declared in prompt.outputs:
+            output_path = context.record.workdir / str(declared["path"])
+            outputs.append(
+                _workflow_output(
+                    context,
+                    str(declared["port_id"]),
+                    output_path,
+                    str(declared["type"]),
+                    str(declared["format_id"]),
+                    deliverable=_node_output_port_is_deliverable(context, str(declared["port_id"])),
+                    prompt_path=result.prompt_path,
+                    stdout_path=result.stdout_path,
+                    trace_path=result.trace_path,
                     execution_manifest_path=result.execution_manifest_path,
                     exit_code=result.exit_code,
                 )
@@ -1216,6 +1283,28 @@ def _workflow_failure_detail(result: Any) -> str:
         if error:
             return str(error)
     return ""
+
+
+def _workflow_llm_runtime_config(
+    case: CaseRecord,
+    node_config: Mapping[str, Any],
+    provider_id: str,
+) -> dict[str, Any]:
+    cfg = load_drawai_config(case.config_path, validate_input_exists=False)
+    runtime = cfg.model_runtime.to_runtime_dict()
+    runtime["provider"] = provider_id
+    runtime["connection_id"] = provider_id
+    model = str(node_config.get("model") or "").strip()
+    if model:
+        runtime["model_name"] = model
+    timeout = node_config.get("timeout_seconds")
+    if timeout not in (None, ""):
+        runtime["timeout_seconds"] = timeout
+    for key in ("base_url", "api_key", "api_key_env", "wire_api", "extra_body"):
+        value = node_config.get(key)
+        if value not in (None, ""):
+            runtime[key] = value
+    return runtime
 
 
 def _has_external_refinement_analysis(paths: DrawAiArtifactPaths) -> bool:

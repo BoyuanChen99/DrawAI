@@ -83,7 +83,7 @@ def validate_workflow_template(template: WorkflowTemplate) -> WorkflowValidation
         adjacency[source_node.node_id].append(target_node.node_id)
 
     for node in template.nodes:
-        if node.node_type == "agent":
+        if node.node_type in {"agent", "llm"}:
             errors.extend(_validate_agent_outputs(node))
         for input_port in node.inputs:
             incoming = incoming_by_target_port.get((node.node_id, input_port.port_id), [])

@@ -203,7 +203,7 @@ def test_create_batch_applies_saved_workbench_agent_to_case_config(
     assert payload["model_runtime"]["cli"]["command"][0] == str(bin_dir / "kimi")
 
 
-def test_workbench_agent_settings_rewrites_workflow_agent_provider_metadata(tmp_path: Path) -> None:
+def test_workbench_agent_settings_do_not_rewrite_builtin_llm_nodes(tmp_path: Path) -> None:
     template = load_workflow_template_by_id(tmp_path / "workspace", "default_drawai_dag")
 
     effective = _workflow_template_with_agent_settings(
@@ -215,11 +215,11 @@ def test_workbench_agent_settings_rewrites_workflow_agent_provider_metadata(tmp_
         ),
     )
 
-    agent_nodes = [node for node in effective.nodes if node.node_type == "agent"]
-    assert agent_nodes
-    assert {node.config["provider_id"] for node in agent_nodes} == {"kimi_cli"}
-    assert {node.config["reasoning_effort"] for node in agent_nodes} == {"medium"}
-    assert {node.config["timeout_seconds"] for node in agent_nodes} == {900}
+    assert not [node for node in effective.nodes if node.node_type == "agent"]
+    llm_nodes = [node for node in effective.nodes if node.node_type == "llm"]
+    assert {node.node_id for node in llm_nodes} == {"page_spec_refine", "svg_compose"}
+    assert {node.config["provider_id"] for node in llm_nodes} == {"openai_responses"}
+    assert {node.config["reasoning_effort"] for node in llm_nodes} == {"high", "xhigh"}
 
 
 def test_create_batch_binds_selected_workflow_template(tmp_path: Path) -> None:

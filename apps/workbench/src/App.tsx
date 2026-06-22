@@ -3799,7 +3799,7 @@ function workflowStageForNode(node: WorkflowTemplate["nodes"][number]): string {
     if (processorId === "asset_planner") return "plan_assets";
     return "process_assets";
   }
-  if (node.node_type === "agent") {
+  if (node.node_type === "agent" || node.node_type === "llm") {
     const presetId = String(node.config.preset_id || "");
     if (presetId === "svg_generation") return "compose_svg";
     return "refine_elements";

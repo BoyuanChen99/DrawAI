@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 import mimetypes
+import os
 from ipaddress import ip_address
 import re
 from dataclasses import dataclass, field
@@ -39,6 +40,8 @@ class RuntimeSettings:
     concurrency_mode: str = "auto"
     max_concurrent: int = 20
     max_critic_rounds: int = 3
+    wire_api: str = "responses"
+    extra_body: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -52,6 +55,8 @@ class RuntimeSettings:
             "concurrency_mode": self.concurrency_mode,
             "max_concurrent": self.max_concurrent,
             "max_critic_rounds": self.max_critic_rounds,
+            "wire_api": self.wire_api,
+            "extra_body": dict(self.extra_body),
         }
 
 
@@ -64,13 +69,33 @@ def invoke_vision_text(
     trace_path: str | Path | None = None,
     max_output_tokens: int = 4096,
 ) -> str:
+    normalized_image_paths = _normalize_image_paths(image_paths)
+    if not normalized_image_paths:
+        raise ModelRuntimeError("at least one image path is required for vision invocation")
+    return invoke_multimodal_text(
+        image_paths=normalized_image_paths,
+        prompt=prompt,
+        task_name=task_name,
+        runtime_config=runtime_config,
+        trace_path=trace_path,
+        max_output_tokens=max_output_tokens,
+    )
+
+
+def invoke_multimodal_text(
+    *,
+    image_paths: str | Path | Sequence[str | Path] = (),
+    prompt: str,
+    task_name: str,
+    runtime_config: RuntimeSettings | dict[str, Any] | None = None,
+    trace_path: str | Path | None = None,
+    max_output_tokens: int = 4096,
+) -> str:
     if runtime_config is None:
         raise ModelRuntimeError(
             "runtime_config is required for DrawAI model runtime usage without an injected invoker"
         )
     normalized_image_paths = _normalize_image_paths(image_paths)
-    if not normalized_image_paths:
-        raise ModelRuntimeError("at least one image path is required for vision invocation")
     settings = _resolve_settings(runtime_config)
     if settings.provider_connection is None:
         raise ModelRuntimeError("runtime_config did not resolve to a provider connection")
@@ -111,16 +136,26 @@ def invoke_vision_text(
         },
     )
     _raise_if_running_loop()
-    output = asyncio.run(
-        _invoke_openai_compatible_response(
-            settings=settings,
-            input_content=input_content,
-            max_output_tokens=max_output_tokens,
-            timeout_seconds=timeout_seconds,
+    if settings.wire_api == "chat_completions":
+        output = asyncio.run(
+            _invoke_openai_compatible_chat_completion(
+                settings=settings,
+                input_content=input_content,
+                max_output_tokens=max_output_tokens,
+                timeout_seconds=timeout_seconds,
+            )
         )
-    )
+    else:
+        output = asyncio.run(
+            _invoke_openai_compatible_response(
+                settings=settings,
+                input_content=input_content,
+                max_output_tokens=max_output_tokens,
+                timeout_seconds=timeout_seconds,
+            )
+        )
     if not output:
-        raise ModelRuntimeError(f"vision model returned no text output for task {task_name!r}")
+        raise ModelRuntimeError(f"model returned no text output for task {task_name!r}")
     _append_trace(
         trace,
         {
@@ -183,6 +218,84 @@ async def _invoke_openai_compatible_response(
     return ""
 
 
+async def _invoke_openai_compatible_chat_completion(
+    *,
+    settings: RuntimeSettings,
+    input_content: list[dict[str, Any]],
+    max_output_tokens: int,
+    timeout_seconds: float,
+) -> str:
+    try:
+        from openai import AsyncOpenAI
+    except Exception as exc:  # pragma: no cover - dependency is installed for normal runs.
+        raise ModelRuntimeError("openai Python SDK is required for model_runtime chat completion calls") from exc
+
+    http_client = None
+    if _is_loopback_base_url(settings.base_url):
+        try:
+            import httpx
+        except Exception as exc:  # pragma: no cover - dependency comes with openai.
+            raise ModelRuntimeError("httpx is required for loopback OpenAI-compatible gateways") from exc
+        http_client = httpx.AsyncClient(trust_env=False)
+
+    client = AsyncOpenAI(
+        api_key=settings.api_key or "no-api-key",
+        base_url=settings.base_url or None,
+        timeout=timeout_seconds,
+        max_retries=0,
+        default_headers=settings.extra_headers or None,
+        http_client=http_client,
+    )
+    try:
+        request_payload: dict[str, Any] = {
+            "model": settings.model_name,
+            "messages": [{"role": "user", "content": _chat_message_content(input_content)}],
+            "max_tokens": int(max_output_tokens),
+        }
+        if settings.extra_body:
+            request_payload["extra_body"] = settings.extra_body
+        response = await client.chat.completions.create(**request_payload)
+    finally:
+        close = getattr(client, "close", None)
+        if callable(close):
+            await close()
+
+    choices = getattr(response, "choices", []) or []
+    if choices:
+        message = getattr(choices[0], "message", None)
+        content = getattr(message, "content", None)
+        if isinstance(content, str) and content.strip():
+            return content
+        if isinstance(content, Sequence) and not isinstance(content, str | bytes | bytearray):
+            parts: list[str] = []
+            for item in content:
+                text = getattr(item, "text", None)
+                if isinstance(text, str):
+                    parts.append(text)
+                elif isinstance(item, Mapping) and isinstance(item.get("text"), str):
+                    parts.append(str(item["text"]))
+            if "".join(parts).strip():
+                return "".join(parts)
+    return ""
+
+
+def _chat_message_content(input_content: list[dict[str, Any]]) -> str | list[dict[str, Any]]:
+    if len(input_content) == 1 and input_content[0].get("type") == "input_text":
+        return str(input_content[0].get("text") or "")
+    content: list[dict[str, Any]] = []
+    for item in input_content:
+        if item.get("type") == "input_text":
+            content.append({"type": "text", "text": str(item.get("text") or "")})
+        elif item.get("type") == "input_image":
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": str(item.get("image_url") or "")},
+                }
+            )
+    return content
+
+
 def _normalize_image_paths(image_paths: str | Path | Sequence[str | Path]) -> list[Path]:
     if isinstance(image_paths, (str, Path)):
         return [Path(image_paths)]
@@ -210,9 +323,30 @@ def _resolve_settings(runtime_config: RuntimeSettings | dict[str, Any]) -> Runti
         raise ModelRuntimeError("runtime_config.model_name is required")
     base_url = str(runtime_config.get("base_url") or "").strip()
     api_key = str(runtime_config.get("api_key") or "").strip()
+    api_key_env = str(runtime_config.get("api_key_env") or "").strip()
+    if not api_key and api_key_env and os.environ.get(api_key_env):
+        api_key = str(os.environ[api_key_env])
     extra_headers = (
         dict(runtime_config.get("extra_headers") or {})
         if isinstance(runtime_config.get("extra_headers"), Mapping)
+        else {}
+    )
+    api_provider = runtime_config.get("api_provider")
+    wire_api = str(runtime_config.get("wire_api") or "").strip()
+    if isinstance(api_provider, Mapping) and str(api_provider.get("mode") or "auth").strip().lower() == "thirdparty":
+        base_url = str(api_provider.get("base_url") or base_url).strip()
+        api_key = _api_provider_key(api_provider) or api_key
+        wire_api = str(api_provider.get("wire_api") or wire_api).strip()
+    if not api_key:
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+    wire_api = (wire_api or "responses").strip().lower().replace("-", "_")
+    if wire_api in {"chat", "chat_completion", "chat_completions"}:
+        wire_api = "chat_completions"
+    elif wire_api != "responses":
+        raise ModelRuntimeError("runtime_config.wire_api must be responses or chat_completions")
+    extra_body = (
+        dict(runtime_config.get("extra_body") or {})
+        if isinstance(runtime_config.get("extra_body"), Mapping)
         else {}
     )
     provider_connection = ProviderConnection(
@@ -234,7 +368,20 @@ def _resolve_settings(runtime_config: RuntimeSettings | dict[str, Any]) -> Runti
         concurrency_mode=str(runtime_config.get("concurrency_mode") or "auto"),
         max_concurrent=int(runtime_config.get("max_concurrent") or 20),
         max_critic_rounds=int(runtime_config.get("max_critic_rounds") or 3),
+        wire_api=wire_api,
+        extra_body=extra_body,
     )
+
+
+def _api_provider_key(api_provider: Mapping[str, Any]) -> str:
+    api_key = str(api_provider.get("api_key") or "").strip()
+    if api_key:
+        return api_key
+    for key_name in ("api_key_env", "env_key"):
+        env_name = str(api_provider.get(key_name) or "").strip()
+        if env_name and os.environ.get(env_name):
+            return str(os.environ[env_name])
+    return ""
 
 
 def _runtime_timeout_seconds(runtime_config: RuntimeSettings | dict[str, Any]) -> float:

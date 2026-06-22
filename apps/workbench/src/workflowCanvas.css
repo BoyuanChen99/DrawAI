@@ -219,6 +219,11 @@
   background: var(--teal);
 }
 
+.workflow-tool.node-llm span,
+.workflow-node.node-llm .workflow-node-icon {
+  background: #4f46e5;
+}
+
 .workflow-tool.node-human_review span,
 .workflow-node.node-human_review .workflow-node-icon {
   background: #7c3aed;
@@ -381,6 +386,10 @@
 
 .workflow-node.node-agent {
   border-left-color: var(--teal);
+}
+
+.workflow-node.node-llm {
+  border-left-color: #4f46e5;
 }
 
 .workflow-node.node-human_review {
@@ -1179,6 +1188,7 @@
 
 .workflow-node.node-parser,
 .workflow-node.node-agent,
+.workflow-node.node-llm,
 .workflow-node.node-human_review,
 .workflow-node.node-processor,
 .workflow-node.node-export,
@@ -1969,6 +1979,10 @@
   fill: var(--teal);
 }
 
+.workflow-template-preview rect.node-llm {
+  fill: #4f46e5;
+}
+
 .workflow-template-preview rect.node-processor {
   fill: var(--amber);
 }
@@ -2003,6 +2017,10 @@
 
 .workflow-template-preview span.node-agent {
   background: var(--teal);
+}
+
+.workflow-template-preview span.node-llm {
+  background: #4f46e5;
 }
 
 .workflow-template-preview span.node-processor {
