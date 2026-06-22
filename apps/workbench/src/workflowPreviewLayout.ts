@@ -39,7 +39,7 @@ type Rect = { left: number; top: number; right: number; bottom: number };
 type EdgeRoute = { points: Point[]; d: string; start: Point; end: Point };
 type Segment = { a: Point; b: Point };
 type PortSlot = { index: number; total: number };
-type EdgeRouteContext = { sourceRank: number; targetRank: number };
+type EdgeRouteContext = { sourceRank: number; targetRank: number; sequentialSourceTotal: number; sequentialTargetTotal: number };
 
 const DEFAULT_LAYOUT_OPTIONS = {
   maxColumns: 4,
@@ -112,12 +112,20 @@ export function buildWorkflowPreviewLayout(
   const byId = new Map(nodeLayouts.map((node) => [node.node.node_id, node]));
   const edgeSidesById = new Map<string, { startSide: Side; endSide: Side }>();
   const portTotals = new Map<string, number>();
+  const sequentialOutTotals = new Map<string, number>();
+  const sequentialInTotals = new Map<string, number>();
   template.edges.forEach((edge) => {
     const source = byId.get(edge.source_node_id);
     const target = byId.get(edge.target_node_id);
     if (!source || !target) return;
-    const sides = edgeSides(source, target);
+    const sourceRank = ranks.get(edge.source_node_id) ?? 0;
+    const targetRank = ranks.get(edge.target_node_id) ?? 0;
+    const sides = edgeRouteSides(source, target, { width, height }, sourceRank, targetRank);
     edgeSidesById.set(edge.edge_id, sides);
+    if (areSequentialRanks(sourceRank, targetRank)) {
+      incrementMap(sequentialOutTotals, sequentialOutKey(edge.source_node_id, targetRank, sides.startSide));
+      incrementMap(sequentialInTotals, sequentialInKey(edge.target_node_id, sourceRank, sides.endSide));
+    }
     incrementMap(portTotals, portSlotKey(edge.source_node_id, sides.startSide));
     incrementMap(portTotals, portSlotKey(edge.target_node_id, sides.endSide));
   });
@@ -132,9 +140,13 @@ export function buildWorkflowPreviewLayout(
     const targetKey = portSlotKey(edge.target_node_id, sides.endSide);
     const sourceSlot = nextPortSlot(portUse, sourceKey, portTotals.get(sourceKey) || 1);
     const targetSlot = nextPortSlot(portUse, targetKey, portTotals.get(targetKey) || 1);
+    const sourceRank = ranks.get(edge.source_node_id) ?? 0;
+    const targetRank = ranks.get(edge.target_node_id) ?? 0;
     const route = routePreviewEdge(source, target, nodeLayouts, routedSegments, { width, height }, sides, sourceSlot, targetSlot, {
-      sourceRank: ranks.get(edge.source_node_id) ?? 0,
-      targetRank: ranks.get(edge.target_node_id) ?? 0
+      sourceRank,
+      targetRank,
+      sequentialSourceTotal: sequentialOutTotals.get(sequentialOutKey(edge.source_node_id, targetRank, sides.startSide)) || 1,
+      sequentialTargetTotal: sequentialInTotals.get(sequentialInKey(edge.target_node_id, sourceRank, sides.endSide)) || 1
     });
     routedSegments.push(...segmentsFromPoints(route.points));
     return [{ edge, start: route.start, end: route.end, d: route.d }];
@@ -215,8 +227,11 @@ function routePreviewEdge(
   sides = edgeSides(source, target),
   sourceSlot: PortSlot = { index: 0, total: 1 },
   targetSlot: PortSlot = { index: 0, total: 1 },
-  context: EdgeRouteContext = { sourceRank: 0, targetRank: 0 }
+  context: EdgeRouteContext = { sourceRank: 0, targetRank: 0, sequentialSourceTotal: 1, sequentialTargetTotal: 1 }
 ): EdgeRoute {
+  if (areSequentialRanks(context.sourceRank, context.targetRank)) {
+    return routeSequentialEdge(source, target, sides, context);
+  }
   const clearance = 12;
   const start = anchorPoint(source, sides.startSide, sourceSlot);
   const end = anchorPoint(target, sides.endSide, targetSlot);
@@ -234,6 +249,76 @@ function routePreviewEdge(
 
 function isShortcutEdge(context: EdgeRouteContext): boolean {
   return Math.abs(context.targetRank - context.sourceRank) > 1;
+}
+
+function areSequentialRanks(sourceRank: number, targetRank: number): boolean {
+  return Math.abs(targetRank - sourceRank) === 1;
+}
+
+function edgeRouteSides(
+  source: WorkflowPreviewNode,
+  target: WorkflowPreviewNode,
+  bounds: { width: number; height: number },
+  sourceRank: number,
+  targetRank: number
+): { startSide: Side; endSide: Side } {
+  if (Math.abs(targetRank - sourceRank) > 1) {
+    const railSide: Side = nodeCenter(source).y <= bounds.height / 2 ? "top" : "bottom";
+    return { startSide: railSide, endSide: railSide };
+  }
+  return edgeSides(source, target);
+}
+
+function routeSequentialEdge(
+  source: WorkflowPreviewNode,
+  target: WorkflowPreviewNode,
+  sides: { startSide: Side; endSide: Side },
+  context: EdgeRouteContext
+): EdgeRoute {
+  const clearance = 12;
+  const start = anchorPoint(source, sides.startSide);
+  const end = anchorPoint(target, sides.endSide);
+  const forked = context.sequentialSourceTotal > 1;
+  const merged = context.sequentialTargetTotal > 1;
+  if (!forked && !merged && pointsAligned(start, end)) {
+    const points = [start, end];
+    return { start, end, points, d: pointsToPath(points) };
+  }
+
+  const startOutside = offsetPoint(start, sides.startSide, clearance);
+  const endOutside = offsetPoint(end, sides.endSide, clearance);
+  const routeStart = forked ? startOutside : start;
+  const routeEnd = merged ? endOutside : end;
+  const middle = sequentialMiddleRoute(routeStart, routeEnd, sides, forked, merged);
+  const points = simplifyPoints([start, ...(forked ? [startOutside] : []), ...middle.slice(1), ...(merged ? [end] : [])]);
+  return { start, end, points, d: pointsToPath(points) };
+}
+
+function sequentialMiddleRoute(
+  start: Point,
+  end: Point,
+  sides: { startSide: Side; endSide: Side },
+  forked: boolean,
+  merged: boolean
+): Point[] {
+  if (pointsAligned(start, end)) return [start, end];
+  if (forked) {
+    if (sides.startSide === "left" || sides.startSide === "right") return [start, { x: start.x, y: end.y }, end];
+    return [start, { x: end.x, y: start.y }, end];
+  }
+  if (merged) {
+    if (sides.endSide === "left" || sides.endSide === "right") return [start, { x: end.x, y: start.y }, end];
+    return [start, { x: start.x, y: end.y }, end];
+  }
+  return fallbackRoute(start, end);
+}
+
+function sequentialOutKey(nodeId: string, targetRank: number, side: Side): string {
+  return `${nodeId}:${targetRank}:${side}`;
+}
+
+function sequentialInKey(nodeId: string, sourceRank: number, side: Side): string {
+  return `${nodeId}:${sourceRank}:${side}`;
 }
 
 function outsideRailRoute(start: Point, startOutside: Point, endOutside: Point, end: Point, bounds: { width: number; height: number }): Point[] {
@@ -401,6 +486,10 @@ function fallbackRoute(start: Point, end: Point): Point[] {
   return Math.abs(end.x - start.x) >= Math.abs(end.y - start.y)
     ? [start, { x: midX, y: start.y }, { x: midX, y: end.y }, end]
     : [start, { x: start.x, y: midY }, { x: end.x, y: midY }, end];
+}
+
+function pointsAligned(start: Point, end: Point): boolean {
+  return sameValue(start.x, end.x) || sameValue(start.y, end.y);
 }
 
 function anchorPoint(node: WorkflowPreviewNode, side: Side, slot: PortSlot = { index: 0, total: 1 }): Point {

@@ -16,20 +16,28 @@ const PREVIEW_OPTIONS = {
   paddingY: 16
 };
 
-test("long-range feed-forward dependencies use the outside reading rail", async () => {
+test("adjacent one-to-many edges share one short source fork", async () => {
   const { buildWorkflowPreviewLayout } = await loadLayoutModule();
   const layout = buildWorkflowPreviewLayout(imageToPptxTemplate(), PREVIEW_OPTIONS);
-  const edge = edgeById(layout, "input_svg_compose");
-  const points = pathPoints(edge.d);
+  const ocrEdge = edgeById(layout, "input_ocr_parse");
+  const samEdge = edgeById(layout, "input_sam_parse");
+  const ocrPoints = pathPoints(ocrEdge.d);
+  const samPoints = pathPoints(samEdge.d);
 
-  assert.ok(
-    points.some((point) => point.y <= 8),
-    `expected shortcut edge to use the top outside rail, got: ${edge.d}`
-  );
-  assert.ok(
-    points.some((point) => point.x >= edge.end.x - 14 && point.y <= 8),
-    `expected shortcut edge to stay on the outside rail until it reaches the target column, got: ${edge.d}`
-  );
+  assert.deepEqual(ocrPoints[0], samPoints[0]);
+  assert.deepEqual(ocrPoints[1], samPoints[1]);
+});
+
+test("adjacent many-to-one edges share one short target merge", async () => {
+  const { buildWorkflowPreviewLayout } = await loadLayoutModule();
+  const layout = buildWorkflowPreviewLayout(imageToPptxTemplate(), PREVIEW_OPTIONS);
+  const ocrEdge = edgeById(layout, "ocr_parse_page_spec_fuse");
+  const samEdge = edgeById(layout, "sam_parse_page_spec_fuse");
+  const ocrPoints = pathPoints(ocrEdge.d);
+  const samPoints = pathPoints(samEdge.d);
+
+  assert.deepEqual(ocrPoints.at(-1), samPoints.at(-1));
+  assert.deepEqual(ocrPoints.at(-2), samPoints.at(-2));
 });
 
 test("adjacent second-row flow remains a compact direct connection", async () => {
@@ -40,6 +48,24 @@ test("adjacent second-row flow remains a compact direct connection", async () =>
 
   assert.equal(points.length, 2);
   assert.equal(points[0].y, points[1].y);
+});
+
+test("long-range shortcuts leave and enter through vertical node ports", async () => {
+  const { buildWorkflowPreviewLayout } = await loadLayoutModule();
+  const layout = buildWorkflowPreviewLayout(imageToPptxTemplate(), PREVIEW_OPTIONS);
+  const source = nodeById(layout, "input");
+  const target = nodeById(layout, "svg_compose");
+  const edge = edgeById(layout, "input_svg_compose");
+  const points = pathPoints(edge.d);
+
+  assert.equal(edge.start.y, source.y);
+  assert.ok(edge.start.x > source.x && edge.start.x < source.x + source.width);
+  assert.equal(edge.end.y, target.y);
+  assert.ok(edge.end.x > target.x && edge.end.x < target.x + target.width);
+  assert.ok(
+    points.some((point) => point.y <= 8),
+    `expected shortcut edge to use the top outside rail, got: ${edge.d}`
+  );
 });
 
 async function loadLayoutModule() {
@@ -134,6 +160,12 @@ function edge(sourceNodeId, targetNodeId) {
 function edgeById(layout, edgeId) {
   const item = layout.edges.find((edgeLayout) => edgeLayout.edge.edge_id === edgeId);
   assert.ok(item, `expected edge ${edgeId}`);
+  return item;
+}
+
+function nodeById(layout, nodeId) {
+  const item = layout.nodes.find((nodeLayout) => nodeLayout.node.node_id === nodeId);
+  assert.ok(item, `expected node ${nodeId}`);
   return item;
 }
 
