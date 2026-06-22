@@ -393,6 +393,46 @@ def test_svg_to_ppt_check_rejects_conversion_that_drops_native_text(tmp_path: Pa
     assert any(issue["code"] == "drawai_conversion_report_text_loss" for issue in report["issues"])
 
 
+def test_svg_to_ppt_check_uses_prepared_svg_text_count_after_formula_strip(tmp_path: Path):
+    svg = tmp_path / "formula_heavy.svg"
+    prepared_svg = tmp_path / "formula_heavy.prepared.svg"
+    svg.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80">'
+        '<text x="10" y="20">A</text><text x="20" y="30">B</text>'
+        '<text x="30" y="40">C</text><text x="40" y="50">D</text>'
+        '<text x="50" y="60">Caption</text><text x="60" y="70">Axis</text></svg>',
+        encoding="utf-8",
+    )
+    prepared_svg.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80">'
+        '<text x="50" y="60">Caption</text><text x="60" y="70">Axis</text></svg>',
+        encoding="utf-8",
+    )
+
+    def compiler_with_formula_stripped_svg(svg_path: Path, output_pptx: Path):
+        output_pptx.write_bytes(b"pptx")
+        return {
+            "backend": "drawai_native_shapes",
+            "prepared_svg": str(prepared_svg),
+            "source_svg": str(svg_path),
+            "formula_export": {"status": "ok", "count": 4, "converted": 4, "fallback": 0},
+            "pptx_structure": {
+                "is_single_screenshot_like": False,
+                "text_run_count": 2,
+            },
+        }
+
+    report = check_svg_to_ppt_compatibility(
+        svg,
+        output_dir=tmp_path,
+        export_pptx=True,
+        compiler=compiler_with_formula_stripped_svg,
+    )
+
+    assert report["status"] == "ok"
+    assert report["prepared_svg"] == str(prepared_svg)
+
+
 def test_svg_to_ppt_check_rejects_doctype_script_af_placeholder_and_missing_viewbox(tmp_path: Path):
     cases = {
         "doctype.svg": '<!DOCTYPE svg [<!ENTITY local SYSTEM "file:///etc/passwd">]><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 80"></svg>',

@@ -105,7 +105,12 @@ def check_svg_to_ppt_compatibility(
     if prepared_svg is not None:
         report["prepared_svg"] = prepared_svg
 
-    conversion_report_issues = _conversion_report_issues(compiler_report, source_svg=source_svg)
+    prepared_svg_path = Path(prepared_svg).expanduser().resolve(strict=False) if prepared_svg is not None else None
+    conversion_report_issues = _conversion_report_issues(
+        compiler_report,
+        source_svg=source_svg,
+        prepared_svg=prepared_svg_path,
+    )
     if conversion_report_issues:
         failure_class = (
             "svg_profile_issue"
@@ -382,7 +387,12 @@ def _extract_prepared_svg(compiler_report: Any) -> str | None:
     return None
 
 
-def _conversion_report_issues(compiler_report: Any, *, source_svg: Path | None = None) -> list[dict[str, Any]]:
+def _conversion_report_issues(
+    compiler_report: Any,
+    *,
+    source_svg: Path | None = None,
+    prepared_svg: Path | None = None,
+) -> list[dict[str, Any]]:
     if not isinstance(compiler_report, Mapping):
         return []
     external_report = compiler_report.get("external_report")
@@ -445,8 +455,9 @@ def _conversion_report_issues(compiler_report: Any, *, source_svg: Path | None =
                 {"pptx_structure": dict(pptx_structure)},
             )
         )
+    conversion_svg = _existing_svg_path(prepared_svg) or _existing_svg_path(source_svg)
     if isinstance(pptx_structure, Mapping):
-        svg_text_count = max(_external_report_text_count(external_report), _svg_element_count(source_svg, "text"))
+        svg_text_count = _expected_svg_element_count(external_report, conversion_svg, "text")
         ppt_text_run_count = _report_int(pptx_structure.get("text_run_count"))
         minimum_native_text_runs = 1 if svg_text_count < 5 else max(1, int(svg_text_count * 0.8))
         if svg_text_count > 0 and ppt_text_run_count < minimum_native_text_runs:
@@ -463,7 +474,7 @@ def _conversion_report_issues(compiler_report: Any, *, source_svg: Path | None =
                     },
                 )
             )
-    image_count = max(_external_report_image_count(external_report), _svg_element_count(source_svg, "image"))
+    image_count = _expected_svg_element_count(external_report, conversion_svg, "image")
     if image_count > 0 and isinstance(pptx_structure, Mapping):
         media_count = _report_int(pptx_structure.get("media_count"))
         picture_tag_count = _report_int(pptx_structure.get("picture_tag_count"))
@@ -482,6 +493,23 @@ def _conversion_report_issues(compiler_report: Any, *, source_svg: Path | None =
                 )
             )
     return issues
+
+
+def _existing_svg_path(svg_path: Path | None) -> Path | None:
+    if svg_path is None or not svg_path.exists():
+        return None
+    return svg_path
+
+
+def _expected_svg_element_count(external_report: Mapping[str, Any], svg_path: Path | None, local_name: str) -> int:
+    path_count = _svg_element_count(svg_path, local_name)
+    if svg_path is not None:
+        return path_count
+    if local_name == "text":
+        return _external_report_text_count(external_report)
+    if local_name == "image":
+        return _external_report_image_count(external_report)
+    return 0
 
 
 def _svg_element_count(svg_path: Path | None, local_name: str) -> int:
