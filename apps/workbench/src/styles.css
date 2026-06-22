@@ -2300,7 +2300,7 @@ select:focus {
 
 .dag-run-edges path {
   fill: none;
-  stroke: url("#dag-edge-flow-gradient");
+  stroke: rgba(100, 116, 139, 0.48);
   stroke-width: 2.2;
   stroke-linecap: round;
   stroke-linejoin: round;
@@ -2308,16 +2308,17 @@ select:focus {
 }
 
 .dag-run-edges path.done {
-  opacity: 0.94;
+  stroke: rgba(100, 116, 139, 0.56);
 }
 
 .dag-run-edges path.running {
+  stroke: url("#dag-edge-flow-gradient");
   opacity: 1;
   filter: drop-shadow(0 0 5px rgba(16, 185, 129, 0.28));
 }
 
 .dag-run-edges path.waiting {
-  opacity: 0.42;
+  stroke: rgba(100, 116, 139, 0.32);
 }
 
 .dag-run-node {
