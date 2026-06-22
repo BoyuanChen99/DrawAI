@@ -250,8 +250,15 @@ Target the DrawAI Scientific SVG Profile v1 for editable PPT conversion. Treat t
 - Filled or thick block arrows should be one closed shape. Thin connectors should keep shaft and arrowhead together after SVG-to-PPT conversion.
 - Render connector arrows after background panels/modules and before raster image assets.
 - Preserve editable text with text/tspan. For formulas, render a visible SVG fallback with Unicode math characters and tspan superscript/subscript, and also keep the original LaTeX source on the formula group for PPT export.
+- A formula includes standalone mathematical variables or symbols with subscripts, superscripts, accents, Greek letters, operators, or relation signs. Mark these as formula groups even when they are short labels, legends, or isolated variables.
+- Do not flatten formula structure into plain text such as alphai, xi2, yhat, or theta0. Use LaTeX for the source and use tspan baseline-shift in the visible fallback for subscripts and superscripts.
 - Formula groups must use data-pb-role="formula", data-pb-editable="true", a stable id, data-pb-formula-bbox="x y width height" in SVG viewBox coordinates, and data-pb-formula-latex-b64 with UTF-8 base64 LaTeX. Use data-pb-formula-latex only when the LaTeX is fully XML-escaped.
 - Do not display raw LaTeX in the visible SVG text layer. The visible layer is only the SVG fallback; svg_to_ppt reads the hidden LaTeX metadata and exports it as editable Office Math when possible.
+- Formula SVG example:
+  <g id="label-formula-example" data-pb-role="formula" data-pb-editable="true" data-pb-formula-bbox="100 112 220 40" data-pb-formula-latex-b64="XGFscGhhX2leMitcYmV0YV9pPWNfaQ==">
+    <text id="label-formula-example-fallback" x="100" y="140" font-family="Arial, Helvetica, sans-serif" font-size="30" font-weight="700" fill="#111" text-anchor="start" data-pb-role="formula" data-pb-editable="true" data-pb-text-source="visual_inferred" data-pb-orientation="horizontal">&#945;<tspan baseline-shift="sub" font-size="18">i</tspan><tspan baseline-shift="super" font-size="18">2</tspan> + &#946;<tspan baseline-shift="sub" font-size="18">i</tspan> = c<tspan baseline-shift="sub" font-size="18">i</tspan></text>
+    <desc>LaTeX: \\alpha_i^2+\\beta_i=c_i</desc>
+  </g>
 - Mark non-editable raster assets with data-pb-editable=\"false\" and editable vectors/text with data-pb-editable=\"true\".
 
 FINAL CHECK BEFORE ENDING THIS RUN

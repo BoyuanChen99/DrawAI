@@ -121,6 +121,14 @@ def test_svg_agent_prompt_uses_same_agent_contract() -> None:
     assert 'data-pb-formula-bbox="x y width height"' in prompt.text
     assert "Office Math" in prompt.text
     assert "Do not display raw LaTeX" in prompt.text
+    assert "A formula includes standalone mathematical variables or symbols with subscripts, superscripts, accents, Greek letters, operators, or relation signs." in prompt.text
+    assert "Do not flatten formula structure into plain text such as alphai, xi2, yhat, or theta0." in prompt.text
+    assert "Formula SVG example" in prompt.text
+    assert "label-formula-example" in prompt.text
+    assert "\\alpha_i^2+\\beta_i=c_i" in prompt.text
+    assert "baseline-shift=\"sub\"" in prompt.text
+    assert "label-formula-delta-ae" not in prompt.text
+    assert "\\Delta^\\phi_{AE}" not in prompt.text
     assert "semantic_3.svg" not in prompt.text
     assert "Do not look for unconnected OCR, template, layout, request, or parser files." in prompt.text
     assert "OCR boxes JSON" not in prompt.text
