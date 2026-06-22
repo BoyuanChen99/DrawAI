@@ -3374,6 +3374,14 @@ button.asset-status-unsupported {
   gap: 16px;
 }
 
+.agent-settings-shell.category-llm {
+  grid-template-columns: 116px minmax(360px, 1fr);
+}
+
+.agent-settings-shell.category-llm .agent-settings-panel {
+  grid-column: 2;
+}
+
 .settings-nav,
 .agent-settings-list-panel,
 .agent-settings-list,
@@ -3951,6 +3959,7 @@ button.asset-status-unsupported {
 }
 
 .upload-workflow-select,
+.upload-execution-mode,
 .upload-review-toggle {
   display: grid;
   gap: 10px;
@@ -3959,15 +3968,51 @@ button.asset-status-unsupported {
   padding: 11px 12px;
 }
 
-.upload-workflow-select {
+.upload-workflow-select,
+.upload-execution-mode {
   grid-template-columns: 92px minmax(0, 1fr);
   align-items: center;
 }
 
-.upload-workflow-select span {
+.upload-workflow-select span,
+.upload-execution-mode > span {
   color: var(--ink-soft);
   font-size: 13px;
   font-weight: 560;
+}
+
+.upload-runtime-toggle {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.upload-runtime-toggle button {
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 9px 10px;
+  color: var(--muted);
+  font-weight: 640;
+}
+
+.upload-runtime-toggle button + button {
+  border-left: 1px solid var(--line);
+}
+
+.upload-runtime-toggle button:hover:not(:disabled) {
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.upload-runtime-toggle button.active {
+  background: var(--teal);
+  color: #ffffff;
 }
 
 .upload-review-toggle {
@@ -5672,6 +5717,10 @@ button.asset-status-unsupported {
     overflow: auto;
   }
 
+  .agent-settings-shell.category-llm {
+    grid-template-columns: 88px minmax(0, 1fr);
+  }
+
   .settings-nav {
     padding-right: 8px;
   }
@@ -5725,6 +5774,10 @@ button.asset-status-unsupported {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .agent-settings-shell.category-llm {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .settings-nav {
     display: flex;
     border-right: 0;
@@ -5743,6 +5796,10 @@ button.asset-status-unsupported {
   }
 
   .agent-settings-panel {
+    grid-column: auto;
+  }
+
+  .agent-settings-shell.category-llm .agent-settings-panel {
     grid-column: auto;
   }
 }

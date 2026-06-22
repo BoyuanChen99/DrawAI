@@ -146,7 +146,6 @@ def test_workbench_agent_settings_api_discovers_validates_and_saves_cli_provider
             "model": "kimi-code/kimi-for-coding",
             "reasoning_effort": "high",
             "timeout_seconds": 3600,
-            "execution_mode": "llm",
             "llm_model": "minimax/minimax-m3",
             "llm_base_url": "https://openrouter.ai/api/v1",
             "llm_api_key_env": "OPENROUTER_API_KEY",
@@ -161,7 +160,7 @@ def test_workbench_agent_settings_api_discovers_validates_and_saves_cli_provider
     assert settings["model"] == "kimi-code/kimi-for-coding"
     assert settings["reasoning_effort"] == "high"
     assert settings["timeout_seconds"] == 3600
-    assert settings["execution_mode"] == "llm"
+    assert "execution_mode" not in settings
     assert settings["llm_model"] == "minimax/minimax-m3"
     assert settings["llm_base_url"] == "https://openrouter.ai/api/v1"
     assert settings["llm_api_key_env"] == "OPENROUTER_API_KEY"
@@ -199,10 +198,12 @@ def test_create_batch_applies_saved_workbench_agent_to_case_config(
             "auto_run_svg_after_analysis": False,
             "max_concurrent_cases": 1,
             "base_config_path": str(_base_config(tmp_path)),
+            "execution_mode": "agent",
         },
     )
 
     assert response.status_code == 200
+    assert response.json()["batch"]["execution_mode"] == "agent"
     config_path = Path(response.json()["cases"][0]["config_path"])
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert payload["svg"]["generation_backend"] == "agent_cli"
@@ -222,7 +223,6 @@ def test_create_batch_applies_saved_workbench_llm_runtime_to_case_config(tmp_pat
     save_response = client.put(
         "/api/workbench/agent-settings",
         json={
-            "execution_mode": "llm",
             "llm_model": "minimax/minimax-m3",
             "llm_base_url": "https://openrouter.ai/api/v1",
             "llm_api_key_env": "OPENROUTER_API_KEY",
@@ -242,10 +242,12 @@ def test_create_batch_applies_saved_workbench_llm_runtime_to_case_config(tmp_pat
             "auto_run_svg_after_analysis": False,
             "max_concurrent_cases": 1,
             "base_config_path": str(_base_config(tmp_path)),
+            "execution_mode": "llm",
         },
     )
 
     assert response.status_code == 200
+    assert response.json()["batch"]["execution_mode"] == "llm"
     config_path = Path(response.json()["cases"][0]["config_path"])
     payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert payload["svg"]["generation_backend"] == "responses"
@@ -272,6 +274,7 @@ def test_workbench_agent_mode_keeps_default_agent_nodes(tmp_path: Path) -> None:
             reasoning_effort="medium",
             timeout_seconds=900,
         ),
+        execution_mode="agent",
     )
 
     original_nodes = {node.node_id: node for node in template.nodes}
@@ -292,7 +295,6 @@ def test_workbench_llm_mode_projects_default_agent_nodes_to_llm(tmp_path: Path) 
     effective = _workflow_template_with_agent_settings(
         template,
         WorkbenchAgentSettings(
-            execution_mode="llm",
             llm_model="minimax/minimax-m3",
             llm_base_url="https://openrouter.ai/api/v1",
             llm_api_key_env="OPENROUTER_API_KEY",
@@ -301,6 +303,7 @@ def test_workbench_llm_mode_projects_default_agent_nodes_to_llm(tmp_path: Path) 
             reasoning_effort="high",
             timeout_seconds=900,
         ),
+        execution_mode="llm",
     )
 
     original_nodes = {node.node_id: node for node in template.nodes}
@@ -321,6 +324,25 @@ def test_workbench_llm_mode_projects_default_agent_nodes_to_llm(tmp_path: Path) 
     assert effective_nodes["page_spec_refine"].config["extra_body"] == {"reasoning": {"enabled": True}}
     assert effective_nodes["page_spec_refine"].config["reasoning_effort"] == "high"
     assert effective_nodes["svg_compose"].config["timeout_seconds"] == 900
+
+
+def test_workbench_default_mode_preserves_dag_prompt_node_types(tmp_path: Path) -> None:
+    template = load_workflow_template_by_id(tmp_path / "workspace", "default_drawai_dag")
+
+    effective = _workflow_template_with_agent_settings(
+        template,
+        WorkbenchAgentSettings(
+            selected_provider_id="kimi_cli",
+            llm_model="minimax/minimax-m3",
+            llm_base_url="https://openrouter.ai/api/v1",
+        ),
+        execution_mode="default",
+    )
+
+    effective_nodes = {node.node_id: node for node in effective.nodes}
+    assert effective_nodes["page_spec_refine"].node_type == "agent"
+    assert effective_nodes["svg_compose"].node_type == "agent"
+    assert effective_nodes["page_spec_refine"].config["provider_id"] == "kimi_cli"
 
 
 def test_create_batch_binds_selected_workflow_template(tmp_path: Path) -> None:

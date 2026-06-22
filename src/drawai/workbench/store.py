@@ -9,6 +9,7 @@ from typing import Any, Iterable, Mapping
 
 from .models import (
     ArtifactRecord,
+    BatchExecutionMode,
     BatchRecord,
     BatchStatus,
     CaseRecord,
@@ -42,6 +43,7 @@ class WorkbenchStore:
         auto_run_svg_after_analysis: bool,
         config_path: str | Path,
         workflow_template_id: str = DEFAULT_WORKFLOW_TEMPLATE_ID,
+        execution_mode: BatchExecutionMode = "default",
     ) -> BatchRecord:
         now = utc_now()
         record = BatchRecord(
@@ -55,6 +57,7 @@ class WorkbenchStore:
             updated_at=now,
             config_path=str(Path(config_path).expanduser().resolve(strict=False)),
             workflow_template_id=workflow_template_id,
+            execution_mode=execution_mode,
         )
         with self._connect() as db:
             db.execute(
@@ -62,8 +65,8 @@ class WorkbenchStore:
                 INSERT INTO batches (
                   batch_id, name, input_mode, status, max_concurrent_cases,
                   auto_run_svg_after_analysis, created_at, updated_at, config_path,
-                  workflow_template_id, error_message
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  workflow_template_id, execution_mode, error_message
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.batch_id,
@@ -76,6 +79,7 @@ class WorkbenchStore:
                     record.updated_at,
                     record.config_path,
                     record.workflow_template_id,
+                    record.execution_mode,
                     record.error_message,
                 ),
             )
@@ -386,6 +390,7 @@ class WorkbenchStore:
                   updated_at TEXT NOT NULL,
                   config_path TEXT NOT NULL,
                   workflow_template_id TEXT NOT NULL DEFAULT 'default_drawai_dag',
+                  execution_mode TEXT NOT NULL DEFAULT 'default',
                   error_message TEXT NOT NULL DEFAULT ''
                 );
 
@@ -433,6 +438,12 @@ class WorkbenchStore:
                 "workflow_template_id",
                 "TEXT NOT NULL DEFAULT 'default_drawai_dag'",
             )
+            _ensure_column(
+                db,
+                "batches",
+                "execution_mode",
+                "TEXT NOT NULL DEFAULT 'default'",
+            )
 
 
 def _resolve_inside(root: Path, path: str | Path) -> Path:
@@ -458,8 +469,14 @@ def _batch_from_row(row: Mapping[str, Any]) -> BatchRecord:
         updated_at=str(row["updated_at"]),
         config_path=str(row["config_path"]),
         workflow_template_id=str(row["workflow_template_id"] or DEFAULT_WORKFLOW_TEMPLATE_ID),
+        execution_mode=str(_row_value(row, "execution_mode", "default")),  # type: ignore[arg-type]
         error_message=str(row["error_message"]),
     )
+
+
+def _row_value(row: Mapping[str, Any], key: str, default: Any) -> Any:
+    keys = row.keys() if hasattr(row, "keys") else row
+    return row[key] if key in keys else default
 
 
 def _ensure_column(

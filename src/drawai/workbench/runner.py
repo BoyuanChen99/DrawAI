@@ -341,6 +341,7 @@ class WorkbenchRunner:
             ocr_timeout_seconds=self.settings.ocr_timeout_seconds,
             rmbg_base_url=self.settings.rmbg_base_url,
             agent_settings=read_workbench_agent_settings(self.store.workspace).to_dict(),
+            execution_mode=batch.execution_mode,
         )
         self.store.update_case_config_path(case.case_id, config_path)
         return self.store.get_case(case.case_id)
@@ -351,7 +352,11 @@ class WorkbenchRunner:
         try:
             agent_settings = read_workbench_agent_settings(self.store.workspace)
             template = load_workflow_template_by_id(self.store.workspace, batch.workflow_template_id)
-            template = _workflow_template_with_agent_settings(template, agent_settings)
+            template = _workflow_template_with_agent_settings(
+                template,
+                agent_settings,
+                execution_mode=batch.execution_mode,
+            )
             review_template = _workflow_until_first_human_review(template)
             run_template = template if batch.auto_run_svg_after_analysis or review_template is None else review_template
             parser_ids = _workflow_parser_ids(run_template)
@@ -1395,14 +1400,20 @@ def _pipeline_failure_message(summary: dict[str, Any]) -> str:
 def _workflow_template_with_agent_settings(
     template: WorkflowTemplate,
     settings: WorkbenchAgentSettings,
+    *,
+    execution_mode: str = "default",
 ) -> WorkflowTemplate:
+    mode = execution_mode.strip().lower()
+    if mode not in {"default", "agent", "llm"}:
+        raise ValueError(f"unsupported execution_mode: {execution_mode!r}. Expected one of: default, agent, llm")
     nodes = []
     for node in template.nodes:
-        if node.node_type != "agent":
+        if node.node_type not in {"agent", "llm"}:
             nodes.append(node)
             continue
         base_config = {**dict(node.config), "node_id": node.node_id}
-        if settings.execution_mode == "llm":
+        effective_type = node.node_type if mode == "default" else mode
+        if effective_type == "llm":
             nodes.append(
                 replace(
                     node,
@@ -1414,6 +1425,7 @@ def _workflow_template_with_agent_settings(
             nodes.append(
                 replace(
                     node,
+                    node_type="agent",
                     config=apply_workbench_agent_settings_to_node_config(base_config, settings),
                 )
             )
@@ -1840,6 +1852,7 @@ def create_case_config(
     ocr_timeout_seconds: float | None = None,
     rmbg_base_url: str = "",
     agent_settings: Mapping[str, Any] | None = None,
+    execution_mode: str = "default",
 ) -> Path:
     base_path = Path(base_config_path).expanduser().resolve()
     with base_path.open("r", encoding="utf-8") as handle:
@@ -1888,6 +1901,7 @@ def create_case_config(
         apply_workbench_agent_settings_to_config_payload(
             payload,
             normalize_workbench_agent_settings(agent_settings),
+            execution_mode=execution_mode,
         )
     target = Path(target_path).expanduser().resolve(strict=False)
     target.parent.mkdir(parents=True, exist_ok=True)

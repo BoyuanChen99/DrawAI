@@ -7,6 +7,7 @@ export type AssetGeometry =
   | { kind: "mask"; mask_path?: string; bbox: [number, number, number, number]; coordinate_system?: string };
 
 export type BatchStatus = "queued" | "running" | "waiting_review" | "completed" | "failed" | "canceled";
+export type BatchExecutionMode = "default" | "agent" | "llm";
 export type CaseStatus =
   | "queued"
   | "analysis_running"
@@ -44,7 +45,6 @@ export interface WorkbenchAgentSettings {
   model: string;
   reasoning_effort: string;
   timeout_seconds: number;
-  execution_mode: "agent" | "llm";
   llm_model: string;
   llm_base_url: string;
   llm_api_key: string;
@@ -89,6 +89,7 @@ export interface BatchRecord {
   updated_at: string;
   case_counts: Record<string, number>;
   workflow_template_id: string;
+  execution_mode: BatchExecutionMode;
   error_message: string;
 }
 

@@ -53,7 +53,7 @@ from ..v2.workbench import (
     fork_v2_case_from_source,
     process_case_asset,
 )
-from .models import CaseRecord, WorkbenchSettings
+from .models import BatchExecutionMode, CaseRecord, WorkbenchSettings
 from .runner import WorkbenchRunner, create_case_config
 from .store import WorkbenchStore
 from drawai.workflow.agents import (
@@ -354,6 +354,7 @@ def create_app(
             load_workflow_template_by_id(resolved_store.workspace, workflow_template_id)
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=f"workflow template is not available: {workflow_template_id}") from exc
+        execution_mode = _batch_execution_mode(payload.get("execution_mode"))
         try:
             agent_settings = read_workbench_agent_settings(resolved_store.workspace)
         except ValueError as exc:
@@ -365,6 +366,7 @@ def create_app(
             auto_run_svg_after_analysis=_as_bool(payload.get("auto_run_svg_after_analysis")),
             config_path=base_config,
             workflow_template_id=workflow_template_id,
+            execution_mode=execution_mode,
         )
         try:
             sources = await _collect_sources(
@@ -395,6 +397,7 @@ def create_app(
                 ocr_timeout_seconds=resolved_settings.ocr_timeout_seconds,
                 rmbg_base_url=resolved_settings.rmbg_base_url,
                 agent_settings=agent_settings.to_dict(),
+                execution_mode=execution_mode,
             )
             resolved_store.update_case_config_path(case.case_id, config_path)
         resolved_runner.submit_batch(batch.batch_id)
@@ -3347,6 +3350,13 @@ def _as_bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return False
+
+
+def _batch_execution_mode(value: Any) -> BatchExecutionMode:
+    mode = str(value or "default").strip().lower()
+    if mode not in {"default", "agent", "llm"}:
+        raise HTTPException(status_code=400, detail="execution_mode must be default, agent, or llm")
+    return mode  # type: ignore[return-value]
 
 
 def _optional_positive_float_env(name: str) -> float | None:

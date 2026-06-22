@@ -15,10 +15,8 @@ from drawai.workflow.agents import SUPPORTED_REASONING_EFFORTS
 
 SETTINGS_SCHEMA = "drawai.workbench.agent_settings.v1"
 DEFAULT_AGENT_PROVIDER_ID = "codex_sdk"
-DEFAULT_EXECUTION_MODE = "agent"
 DEFAULT_LLM_PROVIDER_ID = "openai_compatible"
 DEFAULT_LLM_WIRE_API = "chat_completions"
-SUPPORTED_EXECUTION_MODES = ("agent", "llm")
 SUPPORTED_LLM_WIRE_APIS = ("chat_completions", "responses")
 VERSION_TIMEOUT_SECONDS = 8
 
@@ -40,7 +38,6 @@ class WorkbenchAgentSettings:
     model: str = ""
     reasoning_effort: str = ""
     timeout_seconds: int = 0
-    execution_mode: str = DEFAULT_EXECUTION_MODE
     llm_model: str = ""
     llm_base_url: str = ""
     llm_api_key: str = ""
@@ -142,10 +139,6 @@ def normalize_workbench_agent_settings(payload: Mapping[str, Any] | None) -> Wor
     if provider_id not in AGENT_DEFINITIONS:
         supported = ", ".join(sorted(AGENT_DEFINITIONS))
         raise ValueError(f"unsupported Workbench agent provider: {provider_id!r}. Expected one of: {supported}")
-    execution_mode = str(data.get("execution_mode") or DEFAULT_EXECUTION_MODE).strip().lower()
-    if execution_mode not in SUPPORTED_EXECUTION_MODES:
-        supported = ", ".join(SUPPORTED_EXECUTION_MODES)
-        raise ValueError(f"unsupported execution_mode: {execution_mode!r}. Expected one of: {supported}")
     reasoning_effort = str(data.get("reasoning_effort") or "").strip().lower()
     if reasoning_effort and reasoning_effort not in SUPPORTED_REASONING_EFFORTS:
         supported = ", ".join(SUPPORTED_REASONING_EFFORTS)
@@ -165,7 +158,6 @@ def normalize_workbench_agent_settings(payload: Mapping[str, Any] | None) -> Wor
         model=str(data.get("model") or "").strip(),
         reasoning_effort=reasoning_effort,
         timeout_seconds=timeout_seconds,
-        execution_mode=execution_mode,
         llm_model=str(data.get("llm_model") or "").strip(),
         llm_base_url=str(data.get("llm_base_url") or "").strip().rstrip("/"),
         llm_api_key=str(data.get("llm_api_key") or "").strip(),
@@ -234,10 +226,15 @@ def workbench_agent_runtime_options(settings: WorkbenchAgentSettings) -> dict[st
 def apply_workbench_agent_settings_to_config_payload(
     payload: dict[str, Any],
     settings: WorkbenchAgentSettings,
+    *,
+    execution_mode: str = "default",
 ) -> None:
-    if settings.execution_mode == "llm":
+    mode = execution_mode.strip().lower()
+    if mode == "llm":
         _apply_workbench_llm_settings_to_config_payload(payload, settings)
         return
+    if mode not in {"default", "agent"}:
+        raise ValueError(f"unsupported execution_mode: {execution_mode!r}. Expected one of: default, agent, llm")
     definition = AGENT_DEFINITIONS[settings.selected_provider_id]
     svg_config = _mapping_child(payload, "svg")
     runtime_config = _mapping_child(payload, "model_runtime")
