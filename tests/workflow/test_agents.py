@@ -195,8 +195,8 @@ def test_drawai_tool_agent_prompt_uses_same_agent_contract_with_tool_call_invoca
     assert "Use only the DrawAI tools listed here." in prompt.text
     assert "run_drawai_tool" in prompt.text
     assert 'run_drawai_tool({"tool_id": "page-spec-assets"' in prompt.text
-    assert 'run_drawai_tool({"tool_id": "page-spec-svg-draft"' in prompt.text
-    assert "do not hand-write a complete SVG" in prompt.text
+    assert "page-spec-svg-draft" not in prompt.text
+    assert "do not hand-write a complete SVG" not in prompt.text
     assert "Exact command prefix" not in prompt.text
     assert "Tool Runtime Contract" not in prompt.text
     assert "Direct Output Runtime Override" not in prompt.text

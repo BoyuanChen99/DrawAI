@@ -126,7 +126,9 @@ def test_default_template_routes_page_spec_through_assets_and_svg() -> None:
         for edge in template.edges
     }
 
-    assert "page-spec-svg-draft" in nodes["svg_compose"].config["drawai_tools"]
+    assert "page-spec-svg-draft" not in nodes["svg_compose"].config["drawai_tools"]
+    assert "page-spec-assets" in nodes["svg_compose"].config["drawai_tools"]
+    assert "svg-validate" in nodes["svg_compose"].config["drawai_tools"]
     assert ("input", "image", "sam_parse", "image") in edges
     assert ("input", "image", "ocr_parse", "image") in edges
     assert ("input", "image", "asset_prepare", "image") in edges

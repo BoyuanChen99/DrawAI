@@ -497,7 +497,11 @@ def _render_prompt_text(
                 "edit, finalize immediately. Only call `open_file` for small targeted offsets after the copied output "
                 "exists."
             )
-        if semantic_svg_output is not None and page_spec_input is not None:
+        if (
+            semantic_svg_output is not None
+            and page_spec_input is not None
+            and "page-spec-svg-draft" in drawai_tools
+        ):
             semantic_svg_path = _output_path_from_run_root(node_id, semantic_svg_output["path"], runtime_context)
             page_spec_path = str(page_spec_input["path"])
             output_dir = semantic_svg_path.rsplit("/", 1)[0]
@@ -935,11 +939,15 @@ def _configured_drawai_tools(config: Mapping[str, Any]) -> tuple[str, ...]:
         for index, raw_tool in enumerate(raw_tools):
             if not isinstance(raw_tool, str) or not raw_tool.strip():
                 raise ValueError(f"drawai_tools[{index}] must be a non-empty string")
-            tool_ids.append(raw_tool.strip())
+            tool_id = raw_tool.strip()
+            if tool_id in DISABLED_DRAWAI_TOOLS:
+                continue
+            tool_ids.append(tool_id)
     return _ordered_unique(tool_ids)
 
 
-PAGE_SPEC_ONLY_DRAWAI_TOOLS = frozenset({"page-spec-assets", "page-spec-svg-draft", "svg-validate"})
+DISABLED_DRAWAI_TOOLS = frozenset({"page-spec-svg-draft"})
+PAGE_SPEC_ONLY_DRAWAI_TOOLS = frozenset({"page-spec-assets", "svg-validate"})
 
 
 def _drawai_tools_for_inputs(
