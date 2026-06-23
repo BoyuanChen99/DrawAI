@@ -2945,11 +2945,14 @@ def _agent_session_events(path: Path) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         event_item = item.get("item")
+        summary = _agent_session_event_summary(event_item)
+        if not summary:
+            continue
         events.append(
             {
                 "index": item.get("index"),
                 "kind": _agent_event_kind(event_item),
-                "summary": _truncate_progress_text(_compact_json_text(event_item), limit=1200),
+                "summary": _truncate_progress_text(summary, limit=1200),
             }
         )
     return events
@@ -2969,16 +2972,22 @@ def _codex_runtime_log_tail(path: Path) -> list[dict[str, Any]]:
             connection.close()
     except (OSError, sqlite3.Error):
         return []
-    return [
-        {
-            "ts": row[0],
-            "level": str(row[1] or ""),
-            "target": str(row[2] or ""),
-            "message": _truncate_progress_text(str(row[3] or ""), limit=900),
-        }
-        for row in reversed(rows)
-        if str(row[3] or "").strip()
-    ]
+    events: list[dict[str, Any]] = []
+    for row in reversed(rows):
+        message = str(row[3] or "")
+        event_type = _codex_runtime_event_type_from_message(message)
+        if _is_low_value_codex_runtime_event(event_type, message):
+            continue
+        events.append(
+            {
+                "ts": row[0],
+                "level": str(row[1] or ""),
+                "target": str(row[2] or ""),
+                "event_type": event_type,
+                "message": _truncate_progress_text(message, limit=900),
+            }
+        )
+    return events
 
 
 def _codex_runtime_event_tail(path: Path) -> list[dict[str, Any]]:
@@ -2998,6 +3007,8 @@ def _codex_runtime_event_tail(path: Path) -> list[dict[str, Any]]:
                 message = text
             elif isinstance(delta, str) and delta:
                 message = delta
+        if _is_low_value_codex_runtime_event(event_type or event_kind, message):
+            continue
         events.append(
             {
                 "ts": item.get("ts"),
@@ -3008,6 +3019,86 @@ def _codex_runtime_event_tail(path: Path) -> list[dict[str, Any]]:
             }
         )
     return events
+
+
+LOW_VALUE_CODEX_RUNTIME_EVENT_TYPES = {
+    "response.output_text.delta",
+    "response.function_call_arguments.delta",
+}
+
+
+def _agent_session_event_summary(value: Any) -> str:
+    if not isinstance(value, Mapping):
+        return _compact_json_text(value)
+
+    item_type = str(value.get("type") or "")
+    if item_type == "agentMessage":
+        phase = str(value.get("phase") or "message").strip()
+        text = str(value.get("text") or "").strip()
+        return f"{phase}: {text}" if text else phase
+
+    if item_type == "commandExecution":
+        command = str(value.get("command") or "").strip()
+        status = str(value.get("status") or "").strip()
+        exit_code = value.get("exitCode")
+        output = str(value.get("aggregatedOutput") or "").strip()
+        parts = []
+        if command:
+            parts.append("command: " + _truncate_progress_text(command, limit=520))
+        status_parts = []
+        if status:
+            status_parts.append(status)
+        if exit_code is not None:
+            status_parts.append(f"exit={exit_code}")
+        if status_parts:
+            parts.append("status: " + " ".join(status_parts))
+        if output:
+            parts.append("output: " + _truncate_progress_text(output, limit=360))
+        return " | ".join(parts)
+
+    if item_type == "imageView":
+        path = str(value.get("path") or "").strip()
+        return f"image: {path}" if path else "image viewed"
+
+    if item_type == "fileChange":
+        path = str(value.get("path") or "").strip()
+        action = str(value.get("action") or value.get("status") or "").strip()
+        return " ".join(part for part in ("file", action, path) if part)
+
+    if item_type == "userMessage":
+        text = str(value.get("text") or "").strip()
+        return f"user: {text}" if text else "user message"
+
+    if item_type == "reasoning":
+        summary = value.get("summary")
+        if isinstance(summary, list) and summary:
+            return _compact_json_text(summary)
+        if isinstance(summary, str) and summary.strip():
+            return summary.strip()
+        return ""
+
+    for key in ("summary", "message", "text", "name"):
+        item = value.get(key)
+        if isinstance(item, str) and item.strip():
+            return item.strip()
+    return _compact_json_text(value)
+
+
+def _codex_runtime_event_type_from_message(message: str) -> str:
+    if "websocket event:" not in message:
+        return ""
+    payload_text = message.partition("websocket event:")[2].strip()
+    try:
+        payload = json.loads(payload_text)
+    except json.JSONDecodeError:
+        return ""
+    return str(payload.get("type") or "") if isinstance(payload, Mapping) else ""
+
+
+def _is_low_value_codex_runtime_event(event_type: str, message: str) -> bool:
+    if event_type in LOW_VALUE_CODEX_RUNTIME_EVENT_TYPES:
+        return True
+    return not message.strip()
 
 
 def _read_jsonl_tail(path: Path, *, limit: int) -> list[Any]:

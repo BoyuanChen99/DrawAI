@@ -2678,11 +2678,21 @@ function WorkflowNodeArtifactWorkspace({
     runtime_log_tail: []
   };
   const agentLogLinks = agentLogs.files.filter((file) => file.exists && file.url);
-  const agentLogItems = [
+  const sessionLogItems = agentLogs.session_events
+    .map((item) => ({ source: "session", item }))
+    .filter(agentLogEntryVisible);
+  const summaryLogItem = agentLogSummaryItem(agentLogs.session_summary);
+  const fallbackLogItems = [
     ...agentLogs.trace_events.map((item) => ({ source: "trace", item })),
-    ...agentLogs.session_events.map((item) => ({ source: "session", item })),
     ...agentLogs.runtime_log_tail.map((item) => ({ source: "runtime", item }))
-  ].slice(-12);
+  ].filter(agentLogEntryVisible);
+  const agentLogItems = (
+    sessionLogItems.length > 0
+      ? sessionLogItems
+      : summaryLogItem
+        ? [summaryLogItem]
+        : fallbackLogItems
+  ).slice(-16);
 
   const changeZoom = useCallback((delta: number) => {
     setZoom((value) => clamp(Number((value + delta).toFixed(2)), 0.25, 2.5));
@@ -2819,7 +2829,30 @@ function WorkflowNodeArtifactWorkspace({
 function agentLogEntryText(source: string, item: Record<string, unknown>): string {
   const kind = stringField(item, "type") || stringField(item, "kind") || stringField(item, "level") || source;
   const summary = stringField(item, "summary") || stringField(item, "message") || JSON.stringify(item);
-  return `[${source}] ${kind}: ${summary}`;
+  const index = item.index;
+  const prefix = typeof index === "number" || typeof index === "string" ? `[${source} #${index}]` : `[${source}]`;
+  return `${prefix} ${kind}: ${summary}`;
+}
+
+function agentLogSummaryItem(summary: Record<string, unknown>): { source: string; item: Record<string, unknown> } | null {
+  const finalResponse = stringField(summary, "final_response").trim();
+  if (!finalResponse) return null;
+  return {
+    source: "summary",
+    item: {
+      kind: stringField(summary, "status") || "final",
+      summary: finalResponse
+    }
+  };
+}
+
+function agentLogEntryVisible(entry: { source: string; item: Record<string, unknown> }): boolean {
+  const eventType = stringField(entry.item, "event_type");
+  if (eventType === "response.output_text.delta" || eventType === "response.function_call_arguments.delta") {
+    return false;
+  }
+  const summary = stringField(entry.item, "summary") || stringField(entry.item, "message");
+  return summary.trim().length > 0;
 }
 
 function stringField(item: Record<string, unknown>, key: string): string {

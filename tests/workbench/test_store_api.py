@@ -1342,6 +1342,128 @@ def test_api_exposes_workflow_node_viewer_for_analysis_xyxy_bboxes(tmp_path: Pat
     assert payload["elements"][0]["processing_intent"]["processing_type"] == "crop"
 
 
+def test_api_workflow_node_viewer_summarizes_agent_logs_without_runtime_deltas(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    settings = _settings(tmp_path, base_config)
+    runner = WorkbenchRunner(
+        store,
+        settings,
+        stage_executor=_deterministic_stage_executor,
+        agent_executor=_deterministic_agent_executor,
+    )
+    app = create_app(settings, store=store, runner=runner)
+    client = TestClient(app)
+    batch = store.create_batch(
+        name="viewer batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    _write_minimal_v2_package(Path(case.run_root), case.case_id)
+    _write_workflow_node_run(
+        Path(case.run_root),
+        "asset_refine_agent",
+        output_type="element_analysis",
+        format_id="drawai.codex_element_analysis.v1",
+        output_payload={
+            "schema": "drawai.codex_element_analysis.v1",
+            "elements": [
+                {
+                    "box_id": "R0_A001",
+                    "source_candidate_ids": ["sam3:B001"],
+                    "category": "crop",
+                    "confidence": "high",
+                    "reason": "Retained crop.",
+                    "bbox": [2, 3, 10, 12],
+                    "type": "picture",
+                }
+            ],
+        },
+        output_name="element_analysis.json",
+    )
+    session_dir = Path(case.run_root) / "nodes" / "asset_refine_agent" / "runs" / "001" / "codex_session_log"
+    session_dir.mkdir(parents=True)
+    _write_json(
+        session_dir / "turn_result_summary.json",
+        {
+            "schema": "drawai.codex_sdk_turn_result.v1",
+            "status": "completed",
+            "final_response": "Done.",
+        },
+    )
+    _write_jsonl(
+        session_dir / "codex_session_events.jsonl",
+        [
+            {
+                "index": 1,
+                "item": {"type": "reasoning", "summary": []},
+            },
+            {
+                "index": 2,
+                "item": {"type": "agentMessage", "phase": "commentary", "text": "Checking output files."},
+            },
+            {
+                "index": 3,
+                "item": {
+                    "type": "commandExecution",
+                    "command": "/bin/zsh -lc 'ls output'",
+                    "status": "completed",
+                    "exitCode": 0,
+                    "aggregatedOutput": "semantic.svg\n",
+                },
+            },
+            {
+                "index": 4,
+                "item": {"type": "agentMessage", "phase": "final_answer", "text": "Done."},
+            },
+        ],
+    )
+    _write_jsonl(
+        session_dir / "codex_runtime_events.jsonl",
+        [
+            {
+                "event_type": "response.output_text.delta",
+                "level": "TRACE",
+                "message": "sem",
+                "event": {"type": "response.output_text.delta", "delta": "sem"},
+            },
+            {
+                "event_type": "response.output_item.done",
+                "level": "TRACE",
+                "message": "function_call exec_command",
+                "event": {"type": "response.output_item.done"},
+            },
+        ],
+    )
+
+    response = client.get(f"/api/cases/{case.case_id}/workflow/nodes/asset_refine_agent/viewer")
+
+    assert response.status_code == 200
+    logs = response.json()["agent_logs"]
+    session_summaries = [item["summary"] for item in logs["session_events"]]
+    assert session_summaries == [
+        "commentary: Checking output files.",
+        "command: /bin/zsh -lc 'ls output' | status: completed exit=0 | output: semantic.svg",
+        "final_answer: Done.",
+    ]
+    assert [item["kind"] for item in logs["session_events"]] == [
+        "agentMessage",
+        "commandExecution",
+        "agentMessage",
+    ]
+    assert [item["event_type"] for item in logs["runtime_log_tail"]] == ["response.output_item.done"]
+
+
 def test_api_workflow_node_viewer_reports_unavailable_node_output(tmp_path: Path) -> None:
     store = WorkbenchStore(tmp_path / "workspace")
     base_config = _base_config(tmp_path)
@@ -3978,6 +4100,12 @@ def _write_single_text_slide_pptx(path: Path, text: str) -> None:
 def _write_json(path: Path, payload: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _write_jsonl(path: Path, payloads: list[object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = "".join(json.dumps(payload, ensure_ascii=False) + "\n" for payload in payloads)
+    path.write_text(text, encoding="utf-8")
 
 
 class FakeApiRmbgClient:
