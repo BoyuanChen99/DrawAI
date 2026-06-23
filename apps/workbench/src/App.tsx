@@ -73,6 +73,7 @@ import type {
   CaseDetail,
   CaseRecord,
   CaseProgress,
+  CaseProgressFile,
   HealthResponse,
   ProcessorSettingsResponse,
   RuntimeActivityStatus,
@@ -97,6 +98,7 @@ type AppView = "board" | "editor" | "svg" | "nodeArtifact";
 type BoardMode = "generate" | "process" | "workflow";
 type CanvasMode = "select" | "add" | "polygon";
 type AssetEditorView = "extraction" | "processing";
+type NodeArtifactViewMode = "artifact" | "agent_log";
 type WorkbenchSettingsCategory = "api" | "agent" | "llm" | "processor";
 type PipelineNodeState = DagRunNodeState;
 type AssetPlanChangeOptions = { track?: boolean };
@@ -2665,6 +2667,7 @@ function WorkflowNodeArtifactWorkspace({
   const [zoom, setZoom] = useState(0.72);
   const [selectedElementId, setSelectedElementId] = useState(viewer.elements[0]?.element_id || "");
   const [elementFilter, setElementFilter] = useState<V2ElementFilter>(EMPTY_V2_ELEMENT_FILTER);
+  const [viewMode, setViewMode] = useState<NodeArtifactViewMode>("artifact");
   const filteredElements = useMemo(
     () => filterV2Elements(viewer.elements, elementFilter, null, viewer.kind),
     [viewer.elements, elementFilter, viewer.kind]
@@ -2693,6 +2696,7 @@ function WorkflowNodeArtifactWorkspace({
         ? [summaryLogItem]
         : fallbackLogItems
   ).slice(-16);
+  const agentLogCount = agentLogItems.length;
 
   const changeZoom = useCallback((delta: number) => {
     setZoom((value) => clamp(Number((value + delta).toFixed(2)), 0.25, 2.5));
@@ -2702,6 +2706,7 @@ function WorkflowNodeArtifactWorkspace({
     setZoom(0.72);
     setSelectedElementId(viewer.elements[0]?.element_id || "");
     setElementFilter(EMPTY_V2_ELEMENT_FILTER);
+    setViewMode("artifact");
   }, [viewer.case_id, viewer.node_id, viewer.attempt_id, viewer.source_path]);
 
   useEffect(() => {
@@ -2738,27 +2743,53 @@ function WorkflowNodeArtifactWorkspace({
             <div>
               <strong>{activeCase?.case.name || viewer.title || viewer.node_id}</strong>
               <span>
-                {viewer.node_id} · {viewer.attempt_id ? `run ${viewer.attempt_id}` : "not run"} · {filteredElements.length}/{viewer.elements.length} 框
+                {viewer.node_id} · {nodeViewerKindLabel(viewer.kind)} · {viewer.attempt_id ? `run ${viewer.attempt_id}` : "not run"} · {filteredElements.length}/{viewer.elements.length} 框
               </span>
             </div>
           </div>
-          <div className="artifact-kind-pill">{nodeViewerKindLabel(viewer.kind)}</div>
+          <div className={`asset-type-switch node-artifact-view-switch is-${viewMode}`} role="tablist" aria-label="节点产物查看模式">
+            <span className="asset-type-switch__thumb" aria-hidden="true" />
+            <button
+              type="button"
+              role="tab"
+              aria-selected={viewMode === "artifact"}
+              className={viewMode === "artifact" ? "active" : ""}
+              onClick={() => setViewMode("artifact")}
+            >
+              产物
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={viewMode === "agent_log"}
+              className={viewMode === "agent_log" ? "active" : ""}
+              onClick={() => setViewMode("agent_log")}
+            >
+              Agent log
+            </button>
+          </div>
           <div className="editor-toolbar">
-            <V2ElementFilterControls
-              elements={viewer.elements}
-              filter={elementFilter}
-              onChange={setElementFilter}
-              packageByElementId={null}
-              statusFallback={viewer.kind}
-              showStatus={false}
-            />
+            {viewMode === "artifact" ? (
+              <V2ElementFilterControls
+                elements={viewer.elements}
+                filter={elementFilter}
+                onChange={setElementFilter}
+                packageByElementId={null}
+                statusFallback={viewer.kind}
+                showStatus={false}
+              />
+            ) : (
+              <div className="toolbar-note">{agentLogCount} 条事件 · {agentLogLinks.length} 个日志文件</div>
+            )}
           </div>
           <div className="editor-actions">
-            <div className="tool-group">
-              <button className="icon-button" title="缩小" onClick={() => changeZoom(-0.1)}>−</button>
-              <span className="zoom-readout">{Math.round(zoom * 100)}%</span>
-              <button className="icon-button" title="放大" onClick={() => changeZoom(0.1)}>+</button>
-            </div>
+            {viewMode === "artifact" && (
+              <div className="tool-group">
+                <button className="icon-button" title="缩小" onClick={() => changeZoom(-0.1)}>−</button>
+                <span className="zoom-readout">{Math.round(zoom * 100)}%</span>
+                <button className="icon-button" title="放大" onClick={() => changeZoom(0.1)}>+</button>
+              </div>
+            )}
           </div>
         </div>,
         topbarTarget
@@ -2768,61 +2799,87 @@ function WorkflowNodeArtifactWorkspace({
   return (
     <>
       {topbarPortal}
-      <main ref={editorRef} className="editor-workspace v2-assets-workspace node-artifact-workspace">
-        <div className="asset-stage v2-assets-stage" data-asset-view="extraction">
-          {viewer.available && viewer.source_image.url ? (
-            <V2AssetCanvas
-              activeCase={activeCase}
-              runPackage={null}
-              elements={viewer.elements}
-              selectedElementId={selectedElementId}
-              selectedAssetPackage={null}
-              figureUrl={viewer.source_image.url}
-              zoom={zoom}
-              filter={elementFilter}
-              statusFallback={viewer.kind}
-              onSelectElement={setSelectedElementId}
-            />
-          ) : (
-            <section className="canvas-layout v2-assets-layout node-artifact-empty">
-              <div className="canvas-stage v2-assets-canvas">
-                <EmptyState label={viewer.message || "这个节点没有可视化产物"} />
-              </div>
-            </section>
-          )}
+      <main ref={editorRef} className={`editor-workspace v2-assets-workspace node-artifact-workspace is-${viewMode}`}>
+        {viewMode === "artifact" ? (
+          <>
+            <div className="asset-stage v2-assets-stage" data-asset-view="extraction">
+              {viewer.available && viewer.source_image.url ? (
+                <V2AssetCanvas
+                  activeCase={activeCase}
+                  runPackage={null}
+                  elements={viewer.elements}
+                  selectedElementId={selectedElementId}
+                  selectedAssetPackage={null}
+                  figureUrl={viewer.source_image.url}
+                  zoom={zoom}
+                  filter={elementFilter}
+                  statusFallback={viewer.kind}
+                  onSelectElement={setSelectedElementId}
+                />
+              ) : (
+                <section className="canvas-layout v2-assets-layout node-artifact-empty">
+                  <div className="canvas-stage v2-assets-canvas">
+                    <EmptyState label={viewer.message || "这个节点没有可视化产物"} />
+                  </div>
+                </section>
+              )}
+            </div>
+            <div className="node-artifact-file-strip" aria-label="节点产物文件">
+              <span>来源：{viewer.source_path || viewer.source_image.relative_path || "-"}</span>
+              <span>工作目录：{viewer.workdir || "-"}</span>
+              {fileLinks.slice(0, 5).map((file) => (
+                <a key={file.relative_path} href={file.url} target="_blank" rel="noreferrer">
+                  {file.label}
+                </a>
+              ))}
+            </div>
+          </>
+        ) : (
+          <NodeAgentLogWorkspace
+            agentLogItems={agentLogItems}
+            agentLogLinks={agentLogLinks}
+            viewer={viewer}
+          />
+        )}
+      </main>
+    </>
+  );
+}
+
+function NodeAgentLogWorkspace({
+  agentLogItems,
+  agentLogLinks,
+  viewer
+}: {
+  agentLogItems: Array<{ source: string; item: Record<string, unknown> }>;
+  agentLogLinks: CaseProgressFile[];
+  viewer: WorkflowNodeViewer;
+}) {
+  return (
+    <section className="node-agent-log-workspace" aria-label="Agent 执行日志">
+      <header className="node-agent-log-workspace-head">
+        <div>
+          <strong>Agent log</strong>
+          <span>{viewer.node_id} · {viewer.attempt_id ? `run ${viewer.attempt_id}` : "not run"} · {agentLogItems.length} 条事件</span>
         </div>
-        <div className="node-artifact-file-strip" aria-label="节点产物文件">
-          <span>来源：{viewer.source_path || viewer.source_image.relative_path || "-"}</span>
-          <span>工作目录：{viewer.workdir || "-"}</span>
-          {fileLinks.slice(0, 5).map((file) => (
+        <div className="node-agent-log-links" aria-label="Agent 日志文件">
+          {agentLogLinks.slice(0, 8).map((file) => (
             <a key={file.relative_path} href={file.url} target="_blank" rel="noreferrer">
               {file.label}
             </a>
           ))}
         </div>
-        {(agentLogItems.length > 0 || agentLogLinks.length > 0) && (
-          <section className="node-agent-log-panel" aria-label="Agent 执行日志">
-            <header>
-              <span>Agent log</span>
-              {agentLogLinks.slice(0, 6).map((file) => (
-                <a key={file.relative_path} href={file.url} target="_blank" rel="noreferrer">
-                  {file.label}
-                </a>
-              ))}
-            </header>
-            <div className="node-agent-log-list">
-              {agentLogItems.length > 0 ? (
-                agentLogItems.map((entry, index) => (
-                  <pre key={`${entry.source}-${index}`}>{agentLogEntryText(entry.source, entry.item)}</pre>
-                ))
-              ) : (
-                <span>日志文件已生成，等待事件写入。</span>
-              )}
-            </div>
-          </section>
+      </header>
+      <div className="node-agent-log-list node-agent-log-list--workspace">
+        {agentLogItems.length > 0 ? (
+          agentLogItems.map((entry, index) => (
+            <pre key={`${entry.source}-${index}`}>{agentLogEntryText(entry.source, entry.item)}</pre>
+          ))
+        ) : (
+          <span>日志文件已生成，等待事件写入。</span>
         )}
-      </main>
-    </>
+      </div>
+    </section>
   );
 }
 
