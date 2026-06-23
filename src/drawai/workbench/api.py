@@ -29,6 +29,15 @@ from .agent_settings import (
     workbench_agent_settings_payload,
     write_workbench_agent_settings,
 )
+from .api_presets import (
+    workbench_api_presets_payload,
+    write_workbench_api_presets,
+)
+from .processor_settings import (
+    require_processor_configured,
+    workbench_processor_settings_payload,
+    write_workbench_processor_settings,
+)
 from ..codex_python_sdk_imagegen import (
     CodexPythonSdkImageGenError,
     CodexImageGenResult,
@@ -242,6 +251,36 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return workbench_agent_settings_payload(resolved_store.workspace)
+
+    @app.get("/api/workbench/api-presets")
+    def get_workbench_api_presets_api() -> dict[str, Any]:
+        return workbench_api_presets_payload(resolved_store.workspace)
+
+    @app.put("/api/workbench/api-presets")
+    async def save_workbench_api_presets_api(request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Workbench API presets payload must be an object")
+        try:
+            write_workbench_api_presets(resolved_store.workspace, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return workbench_api_presets_payload(resolved_store.workspace)
+
+    @app.get("/api/workbench/processor-settings")
+    def get_workbench_processor_settings_api() -> dict[str, Any]:
+        return workbench_processor_settings_payload(resolved_store.workspace)
+
+    @app.put("/api/workbench/processor-settings")
+    async def save_workbench_processor_settings_api(request: Request) -> dict[str, Any]:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="Workbench processor settings payload must be an object")
+        try:
+            write_workbench_processor_settings(resolved_store.workspace, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return workbench_processor_settings_payload(resolved_store.workspace)
 
     @app.post("/api/workflow/agent-prompt-preview")
     async def workflow_agent_prompt_preview_api(request: Request) -> dict[str, Any]:
@@ -573,6 +612,7 @@ def create_app(
         if not isinstance(processor, str) or not processor:
             raise HTTPException(status_code=400, detail="processor must be a non-empty string")
         try:
+            require_processor_configured(resolved_store.workspace, processor)
             asset_package = process_case_asset(
                 case,
                 element_id,

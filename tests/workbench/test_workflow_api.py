@@ -4,6 +4,7 @@ import json
 import zipfile
 from pathlib import Path
 
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -15,6 +16,7 @@ from drawai.workflow.schema import WorkflowNode, WorkflowPort, WorkflowTemplate
 from drawai.workbench.agent_settings import WorkbenchAgentSettings
 from drawai.workbench.api import create_app
 from drawai.workbench.models import WorkbenchSettings
+from drawai.workbench.processor_settings import require_processor_configured
 from drawai.workbench.runner import WorkbenchRunner, _workflow_template_with_agent_settings
 from drawai.workbench.store import WorkbenchStore
 from drawai.workflow.templates import load_workflow_template_by_id, user_workflow_template_path
@@ -166,6 +168,221 @@ def test_workbench_agent_settings_api_discovers_validates_and_saves_cli_provider
     assert settings["llm_api_key_env"] == "OPENROUTER_API_KEY"
     assert settings["llm_wire_api"] == "chat_completions"
     assert settings["llm_extra_body"] == {"reasoning": {"enabled": True}}
+
+
+def test_workbench_api_presets_api_saves_and_validates_presets(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get("/api/workbench/api-presets")
+
+    assert response.status_code == 200
+    assert response.json()["schema"] == "drawai.workbench.api_presets.v1"
+    assert response.json()["presets"] == []
+    assert "images_api" in response.json()["preset_types"]
+
+    save_response = client.put(
+        "/api/workbench/api-presets",
+        json={
+            "presets": [
+                {
+                    "id": "openai_images",
+                    "label": "OpenAI Images",
+                    "type": "images_api",
+                    "base_url": "https://api.openai.com",
+                    "model": "gpt-image-2",
+                    "api_key_env": "OPENAI_API_KEY",
+                    "api_key": "sk-local",
+                }
+            ]
+        },
+    )
+
+    assert save_response.status_code == 200
+    saved = save_response.json()["presets"][0]
+    assert saved["id"] == "openai_images"
+    assert saved["type"] == "images_api"
+    assert saved["api_key"] == "sk-local"
+    assert (tmp_path / "workspace" / "settings" / "api_presets.json").is_file()
+
+
+def test_workbench_api_presets_api_rejects_invalid_payloads(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    duplicate_response = client.put(
+        "/api/workbench/api-presets",
+        json={
+            "presets": [
+                {
+                    "id": "openai",
+                    "label": "OpenAI",
+                    "type": "images_api",
+                    "base_url": "https://api.openai.com",
+                    "model": "gpt-image-2",
+                    "api_key_env": "OPENAI_API_KEY",
+                },
+                {
+                    "id": "openai",
+                    "label": "OpenAI Again",
+                    "type": "images_api",
+                    "base_url": "https://api.openai.com",
+                    "model": "gpt-image-2",
+                    "api_key_env": "OPENAI_API_KEY",
+                },
+            ]
+        },
+    )
+    assert duplicate_response.status_code == 400
+    assert "duplicate API preset id" in duplicate_response.json()["detail"]
+
+    unknown_type_response = client.put(
+        "/api/workbench/api-presets",
+        json={
+            "presets": [
+                {
+                    "id": "bad",
+                    "label": "Bad",
+                    "type": "not_real",
+                    "base_url": "https://api.example.com",
+                    "model": "model",
+                    "api_key_env": "OPENAI_API_KEY",
+                }
+            ]
+        },
+    )
+    assert unknown_type_response.status_code == 400
+    assert "unsupported API preset type" in unknown_type_response.json()["detail"]
+
+
+def test_workbench_processor_settings_api_lists_registered_processors(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get("/api/workbench/processor-settings")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["schema"] == "drawai.workbench.processor_settings.v1"
+    assert "crop" in payload["definitions"]["processors"]
+    assert "image_generate" in payload["definitions"]["processors"]
+    assert "openai_images_api" in payload["definitions"]["drivers"]
+    assert payload["settings"]["processors"]["crop"]["enabled"] is True
+    assert payload["validation"]["processors"]["crop"]["configured"] is True
+    assert payload["settings"]["processors"]["image_generate"]["enabled"] is False
+
+
+def test_workbench_processor_settings_api_saves_driver_and_operation_overrides(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+    preset_response = client.put(
+        "/api/workbench/api-presets",
+        json={
+            "presets": [
+                {
+                    "id": "openai_images",
+                    "label": "OpenAI Images",
+                    "type": "images_api",
+                    "base_url": "https://api.openai.com",
+                    "model": "gpt-image-2",
+                    "api_key_env": "OPENAI_API_KEY",
+                }
+            ]
+        },
+    )
+    assert preset_response.status_code == 200
+
+    save_response = client.put(
+        "/api/workbench/processor-settings",
+        json={
+            "processors": {
+                "image_generate": {
+                    "enabled": True,
+                    "driver_id": "openai_images_api",
+                    "api_preset_id": "openai_images",
+                    "operation": {
+                        "meaning": "Workspace image generation meaning.",
+                        "choose_when": "Workspace choose image generation.",
+                        "avoid_when": "Workspace avoid image generation.",
+                    },
+                }
+            }
+        },
+    )
+
+    assert save_response.status_code == 200
+    image_generate = save_response.json()["settings"]["processors"]["image_generate"]
+    assert image_generate["enabled"] is True
+    assert image_generate["driver_id"] == "openai_images_api"
+    assert image_generate["api_preset_id"] == "openai_images"
+    assert image_generate["operation"]["meaning"] == "Workspace image generation meaning."
+
+
+def test_workbench_processor_settings_api_rejects_invalid_processor_settings(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    unknown_processor = client.put(
+        "/api/workbench/processor-settings",
+        json={"processors": {"not_real": {"enabled": True}}},
+    )
+    assert unknown_processor.status_code == 400
+    assert "unsupported processor" in unknown_processor.json()["detail"]
+
+    bad_driver = client.put(
+        "/api/workbench/processor-settings",
+        json={"processors": {"crop": {"enabled": True, "driver_id": "openai_images_api"}}},
+    )
+    assert bad_driver.status_code == 400
+    assert "unsupported driver" in bad_driver.json()["detail"]
+
+    missing_preset = client.put(
+        "/api/workbench/processor-settings",
+        json={
+            "processors": {
+                "image_generate": {
+                    "enabled": True,
+                    "driver_id": "openai_images_api",
+                    "api_preset_id": "missing",
+                }
+            }
+        },
+    )
+    assert missing_preset.status_code == 400
+    assert "API preset not found" in missing_preset.json()["detail"]
+
+
+def test_workbench_processor_settings_allows_disabled_incomplete_api_driver(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    save_response = client.put(
+        "/api/workbench/processor-settings",
+        json={
+            "processors": {
+                "image_generate": {
+                    "enabled": False,
+                    "driver_id": "openai_images_api",
+                    "api_preset_id": "",
+                }
+            }
+        },
+    )
+
+    assert save_response.status_code == 200
+    image_generate = save_response.json()["settings"]["processors"]["image_generate"]
+    assert image_generate["enabled"] is False
+    assert image_generate["driver_id"] == "openai_images_api"
+    assert save_response.json()["validation"]["processors"]["image_generate"]["configured"] is False
+
+
+def test_workbench_processor_settings_guard_rejects_disabled_processor(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    with pytest.raises(ValueError, match="processor is disabled: image_generate"):
+        require_processor_configured(tmp_path / "workspace", "image_generate")
+
+    save_response = client.put(
+        "/api/workbench/processor-settings",
+        json={"processors": {"image_generate": {"enabled": True, "driver_id": "codex_imagegen_builtin"}}},
+    )
+    assert save_response.status_code == 200
+    setting = require_processor_configured(tmp_path / "workspace", "image_generate")
+    assert setting.driver_id == "codex_imagegen_builtin"
 
 
 def test_create_batch_applies_saved_workbench_agent_to_case_config(
@@ -343,6 +560,29 @@ def test_workbench_default_mode_preserves_dag_prompt_node_types(tmp_path: Path) 
     assert effective_nodes["page_spec_refine"].node_type == "agent"
     assert effective_nodes["svg_compose"].node_type == "agent"
     assert effective_nodes["page_spec_refine"].config["provider_id"] == "kimi_cli"
+
+
+def test_workbench_workflow_template_injects_processor_operation_config(tmp_path: Path) -> None:
+    template = load_workflow_template_by_id(tmp_path / "workspace", "default_drawai_dag")
+
+    effective = _workflow_template_with_agent_settings(
+        template,
+        WorkbenchAgentSettings(),
+        processor_operation_config={
+            "page_spec_processing_types": ["no_process", "image_edit"],
+            "page_spec_processing_operations": {
+                "image_edit": {
+                    "meaning": "Workspace image edit meaning.",
+                    "choose_when": "Workspace image edit choose.",
+                    "avoid_when": "Workspace image edit avoid.",
+                }
+            },
+        },
+    )
+
+    node = {item.node_id: item for item in effective.nodes}["page_spec_refine"]
+    assert node.config["page_spec_processing_types"] == ["no_process", "image_edit"]
+    assert node.config["page_spec_processing_operations"]["image_edit"]["meaning"] == "Workspace image edit meaning."
 
 
 def test_create_batch_binds_selected_workflow_template(tmp_path: Path) -> None:
