@@ -96,12 +96,13 @@ def _render_element(element: Mapping[str, Any], active_assets: Mapping[str, Mapp
     role = _attr(str(element.get("role") or kind))
     processing_type = _processing_type(element)
     asset = active_assets.get(str(element.get("id") or ""))
-    if processing_type in {"crop", "crop_nobg"} and asset is not None:
+    if processing_type in {"crop", "crop_nobg", "image_generate", "image_edit"} and asset is not None:
         href = _attr(str(asset["svg_href"]))
         return (
             f'  <image id="image-{element_id}" href="{href}" x="{_num(x)}" y="{_num(y)}" '
             f'width="{_num(width)}" height="{_num(height)}" preserveAspectRatio="none" '
-            f'data-pb-editable="false" data-drawai-element-id="{element_id}" data-drawai-role="{role}"/>'
+            f'data-pb-editable="false" data-drawai-element-id="{element_id}" data-drawai-role="{role}" '
+            f'data-drawai-source="{_attr(processing_type)}"/>'
         )
     if kind == "text" or _element_text(element):
         return _render_text(element, x, y, width, height, element_id, role)

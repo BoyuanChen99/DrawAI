@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PIL import Image
@@ -14,6 +16,38 @@ from drawai.page_spec import (
 from drawai.page_spec_assets import materialize_page_spec_assets, materialized_asset_records
 from drawai.page_spec_svg import draft_semantic_svg_from_page_spec
 from drawai.tooling import drawai_tool_cli
+
+
+class _FakeProviderImage:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.width = 18
+        self.height = 12
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "image_id": self.path.stem,
+            "path": str(self.path),
+            "source_path": str(self.path),
+            "width": self.width,
+            "height": self.height,
+            "mime_type": "image/png",
+        }
+
+
+class _FakeProviderResult:
+    def __init__(self, operation: str, output_dir: Path, path: Path) -> None:
+        self.operation = operation
+        self.output_dir = output_dir
+        self.images = (_FakeProviderImage(path),)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "schema": "drawai.test.fake_image_provider.v1",
+            "operation": self.operation,
+            "output_dir": str(self.output_dir),
+            "images": [image.to_dict() for image in self.images],
+        }
 
 
 def test_fuse_page_specs_outputs_page_spec_elements_without_legacy_payloads() -> None:
@@ -187,7 +221,72 @@ def test_draft_semantic_svg_from_materialized_page_spec_uses_active_asset_href(t
     assert result["asset_images"] == 1
     assert 'href="../node/output/assets/E001/active.png"' in svg
     assert 'data-pb-editable="false"' in svg
+    assert 'data-drawai-source="crop"' in svg or 'data-drawai-source="image' in svg
     assert ">Hello</text>" in svg
+
+
+def test_materialize_page_spec_assets_runs_image_generate_and_edit(tmp_path: Path) -> None:
+    source = tmp_path / "source.png"
+    Image.new("RGBA", (96, 64), (255, 255, 255, 255)).save(source)
+    output_dir = tmp_path / "bundle"
+    calls: list[tuple[str, str]] = []
+
+    def fake_generate(**kwargs):
+        calls.append(("generate", str(kwargs["prompt"])))
+        result_dir = Path(kwargs["output_dir"])
+        result_dir.mkdir(parents=True, exist_ok=True)
+        result_path = result_dir / "generated.png"
+        Image.new("RGBA", (18, 12), (20, 90, 220, 255)).save(result_path)
+        return _FakeProviderResult("generate", result_dir, result_path)
+
+    def fake_edit(**kwargs):
+        calls.append(("edit", str(kwargs["prompt"])))
+        with Image.open(kwargs["source_image_path"]) as crop:
+            assert crop.size == (16, 12)
+        result_dir = Path(kwargs["output_dir"])
+        result_dir.mkdir(parents=True, exist_ok=True)
+        result_path = result_dir / "edited.png"
+        Image.new("RGBA", (16, 12), (220, 80, 20, 255)).save(result_path)
+        return _FakeProviderResult("edit", result_dir, result_path)
+
+    page_spec = _page_spec(
+        "refine",
+        [
+            {
+                "id": "E001",
+                "kind": "image",
+                "role": "representation",
+                "box_px": [2, 3, 18, 12],
+                "z_index": 1,
+                "build": {"mode": "asset_ref", "processing_type": "image_generate"},
+                "measurement": {"text": "Future representation"},
+            },
+            {
+                "id": "E002",
+                "kind": "image",
+                "role": "representation",
+                "box_px": [24, 3, 16, 12],
+                "z_index": 2,
+                "build": {"mode": "asset_ref", "processing_type": "image_edit"},
+            },
+        ],
+    )
+
+    materialized = materialize_page_spec_assets(
+        page_spec,
+        source_image_path=source,
+        output_dir=output_dir,
+        image_generate=fake_generate,
+        image_edit=fake_edit,
+        processor_workers=2,
+    )
+
+    assert {call[0] for call in calls} == {"generate", "edit"}
+    first, second = materialized["elements"]
+    assert first["materialization"]["processing_type"] == "image_generate"
+    assert second["materialization"]["processing_type"] == "image_edit"
+    assert (output_dir / first["materialization"]["outputs"]["active"]["path"]).is_file()
+    assert (output_dir / second["materialization"]["outputs"]["active"]["path"]).is_file()
 
 
 def test_page_spec_svg_draft_tool_promotes_validated_draft_outputs(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
