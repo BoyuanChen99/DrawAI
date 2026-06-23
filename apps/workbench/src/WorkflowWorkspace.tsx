@@ -191,15 +191,15 @@ const PAGE_SPEC_PROCESSING_OPERATION_OPTIONS: PageSpecProcessingOperationOption[
     processing_type: "image_generate",
     label: "Image generate",
     meaning: "Generate a new raster image asset from the element's semantic role, nearby labels, page context, and target box size.",
-    chooseWhen: "Use for conceptual graphics, illustrative icons, missing or low-quality visual assets, and regions where copying pixels would preserve noise.",
-    avoidWhen: "Avoid for editable text, lines, simple shapes, tables, charts, acceptable source crops, and foreground objects needing only background removal."
+    chooseWhen: "Use for conceptual graphics, illustrative icons, predicted/future representation thumbnails, missing assets, and low-quality visuals where copying pixels would preserve noise.",
+    avoidWhen: "Avoid for editable text, lines, simple shapes, tables, charts, pixel-identical source crops, and foreground objects needing only background removal."
   },
   {
     processing_type: "image_edit",
     label: "Image edit",
     meaning: "Crop the source element and edit it into a cleaner raster asset while preserving composition, visual role, colors, aspect, and placement.",
-    chooseWhen: "Use when the source crop contains the target object but needs cleanup, redraw, deblurring, background adjustment, or style harmonization.",
-    avoidWhen: "Avoid for structural elements, direct crops that are already good enough, and standalone foreground objects where crop_nobg is sufficient."
+    chooseWhen: "Use when the source crop contains the target object but needs cleanup, redraw, deblurring, style harmonization, or higher-quality preservation of a tiny conceptual icon.",
+    avoidWhen: "Avoid for structural elements, crops that must remain pixel-identical, fully missing assets better suited to generation, and standalone foreground objects where crop_nobg is sufficient."
   }
 ];
 const AGENT_DEFAULT_TASKS: Record<string, string> = {
