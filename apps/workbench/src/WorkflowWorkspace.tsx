@@ -150,7 +150,7 @@ const DEFAULT_WORKFLOW_FOLDERS: WorkflowFolder[] = [
   { folder_id: BUILTIN_WORKFLOW_FOLDER_ID, name: "DrawAI默认工作流", builtin: true },
   { folder_id: CUSTOM_WORKFLOW_FOLDER_ID, name: "自定义工作流" }
 ];
-const DEFAULT_PAGE_SPEC_PROCESSING_TYPES = ["no_process", "crop", "crop_nobg", "chart_rebuild_reserved"];
+const DEFAULT_PAGE_SPEC_PROCESSING_TYPES = ["no_process", "crop", "crop_nobg"];
 const PAGE_SPEC_PROCESSING_OPERATION_OPTIONS: PageSpecProcessingOperationOption[] = [
   {
     processing_type: "no_process",

@@ -212,6 +212,20 @@ def test_page_spec_refine_prompt_uses_configured_processing_types() -> None:
     assert "### svg_self_draw" not in prompt.text
 
 
+def test_page_spec_refine_prompt_keeps_chart_rebuild_available_when_configured() -> None:
+    prompt = render_agent_prompt(
+        agent_preset_by_id("page_spec_refine"),
+        inputs=(),
+        node_config={
+            "node_id": "page_spec_refine",
+            "page_spec_processing_types": ["chart_rebuild_reserved"],
+        },
+    )
+
+    assert "### chart_rebuild_reserved" in prompt.text
+    assert "### no_process" not in prompt.text
+
+
 def test_page_spec_refine_prompt_rejects_unknown_processing_type() -> None:
     with pytest.raises(ValueError, match="unsupported PageSpec processing type"):
         render_agent_prompt(

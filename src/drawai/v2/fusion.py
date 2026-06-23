@@ -238,12 +238,10 @@ def _plan_confidence(confidence: float) -> str:
 
 
 def _processing_intent(element_type: str) -> ProcessingIntent:
-    if element_type == "text":
-        processing_type = "svg_self_draw"
-    elif element_type == "chart":
-        processing_type = "chart_rebuild_reserved"
-    elif element_type in {"icon", "symbol", "arrow"}:
+    if element_type in {"icon", "symbol", "arrow"}:
         processing_type = "crop_nobg"
-    else:
+    elif element_type in {"picture", "image"}:
         processing_type = "crop"
+    else:
+        processing_type = "no_process"
     return ProcessingIntent(object_type=element_type, processing_type=processing_type)

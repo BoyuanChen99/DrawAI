@@ -252,7 +252,41 @@ def test_fusion_keeps_text_and_visual_candidates_separate() -> None:
         FusionConfig.default().duplicate_iou_threshold
     )
     assert [plan.element_type for plan in result.elements] == ["picture", "text"]
+    assert [plan.processing_intent.processing_type for plan in result.elements] == [
+        "crop",
+        "no_process",
+    ]
     assert [item["action"] for item in result.trace["decisions"]] == ["kept", "kept"]
+
+
+def test_fusion_defaults_structural_elements_to_no_process() -> None:
+    candidates = [
+        _candidate(candidate_id="sam3:B001", element_type="chart", confidence=0.8, parser_priority=10),
+        _candidate(
+            candidate_id="sam3:B002",
+            element_type="diagram",
+            bbox=(50.0, 10.0, 30.0, 20.0),
+            confidence=0.8,
+            parser_priority=10,
+        ),
+        _candidate(
+            candidate_id="sam3:B003",
+            element_type="icon",
+            bbox=(90.0, 10.0, 20.0, 20.0),
+            confidence=0.8,
+            parser_priority=10,
+        ),
+    ]
+
+    result = fuse_candidates(candidates, config=FusionConfig.default())
+
+    processing_by_type = {
+        plan.element_type: plan.processing_intent.processing_type
+        for plan in result.elements
+    }
+    assert processing_by_type["chart"] == "no_process"
+    assert processing_by_type["diagram"] == "no_process"
+    assert processing_by_type["icon"] == "crop_nobg"
 
 
 def test_fusion_suppresses_lower_priority_duplicate_same_type() -> None:

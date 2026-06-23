@@ -189,7 +189,6 @@ DEFAULT_PAGE_SPEC_REFINE_PROCESSING_TYPES = (
     "no_process",
     "crop",
     "crop_nobg",
-    "chart_rebuild_reserved",
 )
 
 
