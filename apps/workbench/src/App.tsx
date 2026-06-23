@@ -2695,7 +2695,7 @@ function WorkflowNodeArtifactWorkspace({
       : summaryLogItem
         ? [summaryLogItem]
         : fallbackLogItems
-  ).slice(-16);
+  );
   const agentLogCount = agentLogItems.length;
 
   const changeZoom = useCallback((delta: number) => {

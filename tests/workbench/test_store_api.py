@@ -1464,6 +1464,28 @@ def test_api_workflow_node_viewer_summarizes_agent_logs_without_runtime_deltas(t
     assert [item["event_type"] for item in logs["runtime_log_tail"]] == ["response.output_item.done"]
 
 
+def test_agent_session_events_reads_full_history(tmp_path: Path) -> None:
+    path = tmp_path / "codex_session_events.jsonl"
+    _write_jsonl(
+        path,
+        [
+            {
+                "index": index,
+                "item": {"type": "agentMessage", "phase": "commentary", "text": f"event {index}"},
+            }
+            for index in range(1, 151)
+        ],
+    )
+
+    events = workbench_api._agent_session_events(path)
+
+    assert len(events) == 150
+    assert events[0]["index"] == 1
+    assert events[0]["summary"] == "commentary: event 1"
+    assert events[-1]["index"] == 150
+    assert events[-1]["summary"] == "commentary: event 150"
+
+
 def test_api_workflow_node_viewer_reports_unavailable_node_output(tmp_path: Path) -> None:
     store = WorkbenchStore(tmp_path / "workspace")
     base_config = _base_config(tmp_path)

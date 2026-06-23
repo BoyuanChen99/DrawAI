@@ -2941,7 +2941,7 @@ def _agent_trace_events(run_dir: Path) -> list[dict[str, Any]]:
 
 def _agent_session_events(path: Path) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    for item in _read_jsonl_tail(path, limit=120):
+    for item in _read_jsonl(path):
         if not isinstance(item, dict):
             continue
         event_item = item.get("item")
@@ -3108,8 +3108,22 @@ def _read_jsonl_tail(path: Path, *, limit: int) -> list[Any]:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
         return []
+    return _jsonl_items_from_lines(lines[-limit:])
+
+
+def _read_jsonl(path: Path) -> list[Any]:
+    if not path.is_file():
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    return _jsonl_items_from_lines(lines)
+
+
+def _jsonl_items_from_lines(lines: Sequence[str]) -> list[Any]:
     items: list[Any] = []
-    for line in lines[-limit:]:
+    for line in lines:
         if not line.strip():
             continue
         try:
