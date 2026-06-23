@@ -4002,7 +4002,8 @@ button.asset-status-unsupported {
   font-weight: 640;
 }
 
-.upload-runtime-toggle button + button {
+.upload-runtime-toggle button + button,
+.upload-runtime-disabled-option {
   border-left: 1px solid var(--line);
 }
 
@@ -4013,6 +4014,24 @@ button.asset-status-unsupported {
 .upload-runtime-toggle button.active {
   background: var(--teal);
   color: #ffffff;
+}
+
+.upload-runtime-disabled-option {
+  min-width: 0;
+  display: block;
+  cursor: not-allowed;
+}
+
+.upload-runtime-disabled-option button {
+  width: 100%;
+  height: 100%;
+  color: rgba(100, 116, 139, 0.62);
+  background: #f1f5f3;
+  cursor: not-allowed;
+}
+
+.upload-runtime-disabled-option button:disabled {
+  opacity: 1;
 }
 
 .upload-review-toggle {

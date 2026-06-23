@@ -4743,13 +4743,14 @@ function NewBatchForm({
     try {
       setSubmitting(true);
       setUploadError("");
+      const executionMode: BatchExecutionMode = selectedExecutionMode === "llm" ? "default" : selectedExecutionMode;
       const form = new FormData();
       form.set("name", pendingUpload.title);
       form.set("input_mode", "upload");
       form.set("max_concurrent_cases", "10");
       form.set("auto_run_svg_after_analysis", manualAssetReview ? "false" : "true");
       form.set("workflow_template_id", selectedWorkflowTemplateId);
-      form.set("execution_mode", selectedExecutionMode);
+      form.set("execution_mode", executionMode);
       pendingUpload.files.forEach((item) => form.append("files", item.file, item.relativePath));
       const detail = await createUploadBatch(form);
       await onCreated(detail);
@@ -4825,16 +4826,18 @@ function NewBatchForm({
                 >
                   Agent
                 </button>
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={selectedExecutionMode === "llm"}
-                  className={selectedExecutionMode === "llm" ? "active" : ""}
-                  disabled={submitting}
-                  onClick={() => setSelectedExecutionMode("llm")}
-                >
-                  LLM
-                </button>
+                <span className="upload-runtime-disabled-option" title="暂不支持">
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={selectedExecutionMode === "llm"}
+                    className={selectedExecutionMode === "llm" ? "active" : ""}
+                    disabled
+                    aria-disabled="true"
+                  >
+                    LLM
+                  </button>
+                </span>
               </div>
             </div>
             <label className="upload-review-toggle">
