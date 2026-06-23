@@ -115,11 +115,13 @@ def test_default_template_routes_svg_and_pptx_into_output() -> None:
 
 def test_default_template_routes_page_spec_through_assets_and_svg() -> None:
     template = default_drawai_workflow_template()
+    nodes = {node.node_id: node for node in template.nodes}
     edges = {
         (edge.source_node_id, edge.source_port_id, edge.target_node_id, edge.target_port_id)
         for edge in template.edges
     }
 
+    assert "page-spec-svg-draft" in nodes["svg_compose"].config["drawai_tools"]
     assert ("input", "image", "sam_parse", "image") in edges
     assert ("input", "image", "ocr_parse", "image") in edges
     assert ("input", "image", "asset_prepare", "image") in edges

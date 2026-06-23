@@ -7,7 +7,11 @@ from pathlib import Path
 from posixpath import normpath
 from typing import Any, Literal
 
-from drawai.tool_agent_runtime import DRAWAI_TOOL_AGENT_PROVIDER
+from drawai.tool_agent_runtime import (
+    DRAWAI_TOOL_AGENT_PROVIDER,
+    MAX_APPEND_WRITE_CHARS,
+    MAX_SINGLE_WRITE_CHARS,
+)
 from .agent_prompt_defaults import (
     CUSTOM_AGENT_CONSTRAINTS,
     CUSTOM_AGENT_TASK,
@@ -460,6 +464,50 @@ def _render_prompt_text(
             ),
         ]
     )
+    if provider_id == DRAWAI_TOOL_AGENT_PROVIDER:
+        semantic_svg_output = _first_output_by_type(outputs, "semantic_svg")
+        page_spec_input = _first_input_by_type(inputs, "page_spec")
+        page_spec_output = _first_output_by_type(outputs, "page_spec")
+        lines.extend(
+            [
+                (
+                    "For this provider, when a declared output is a refined version of a connected input file, use "
+                    "`copy_file` from the connected run-root path to the declared output path first, then apply small "
+                    "targeted `edit_file` changes only when you already know the exact old text. After `copy_file`, "
+                    "validate immediately and finalize if validation is ok; do not spend another turn rewriting the "
+                    "whole copied file. A validated copy is an acceptable completion when a full rewrite would delay "
+                    "or risk the run. Create short new files with `write_file`. For any declared JSON, SVG, or log "
+                    f"larger than {MAX_SINGLE_WRITE_CHARS} characters, call `write_file` with `content` set to an "
+                    f"empty string first, then use `append_file` with chunks no larger than {MAX_APPEND_WRITE_CHARS} "
+                    "characters."
+                ),
+            ]
+        )
+        if page_spec_output is not None and page_spec_input is not None:
+            page_spec_input_path = str(page_spec_input["path"])
+            page_spec_output_path = _output_path_from_run_root(node_id, page_spec_output["path"], runtime_context)
+            lines.append(
+                "For PageSpec refine with this provider, the first file-producing action MUST be "
+                f"`copy_file` from `{page_spec_input_path}` to `{page_spec_output_path}`. Do not read the full "
+                "connected PageSpec just to rewrite it. After `copy_file`, the runtime validates "
+                "drawai.page_spec.v1 automatically; if validation is ok and you do not already know one exact small "
+                "edit, finalize immediately. Only call `open_file` for small targeted offsets after the copied output "
+                "exists."
+            )
+        if semantic_svg_output is not None and page_spec_input is not None:
+            semantic_svg_path = _output_path_from_run_root(node_id, semantic_svg_output["path"], runtime_context)
+            page_spec_path = str(page_spec_input["path"])
+            output_dir = semantic_svg_path.rsplit("/", 1)[0]
+            lines.append(
+                "For PageSpec-connected SVG generation with this provider, do not hand-write a complete SVG through "
+                "`write_file` or `append_file`. First call `run_drawai_tool` with `tool_id: \"page-spec-svg-draft\"` "
+                "to write the declared final SVG from the materialized PageSpec and allowed asset hrefs, then only use "
+                "`edit_file` for exact small refinements if validation exposes a clear issue. Use this draft command shape: "
+                f"`page-spec-svg-draft --page-spec {page_spec_path} --svg {semantic_svg_path} --href-base-dir svg "
+                f"--rendered {output_dir}/rendered.png --report {output_dir}/validation_report_final.json "
+                f"--iteration-log-md {output_dir}/iteration_log.md --iteration-log-jsonl {output_dir}/iteration_log.jsonl`. "
+                "If the validation status is ok, finalize immediately."
+            )
     for output in outputs:
         final_run_root_path = _output_path_from_run_root(node_id, output["path"], runtime_context)
         lines.extend(
@@ -633,6 +681,20 @@ def _ordered_unique(values: Sequence[str]) -> tuple[str, ...]:
         ordered.append(clean)
         seen.add(clean)
     return tuple(ordered)
+
+
+def _first_input_by_type(inputs: Sequence[Mapping[str, Any]], type_name: str) -> Mapping[str, Any] | None:
+    for item in inputs:
+        if str(item.get("type") or "") == type_name:
+            return item
+    return None
+
+
+def _first_output_by_type(outputs: Sequence[Mapping[str, Any]], type_name: str) -> Mapping[str, Any] | None:
+    for item in outputs:
+        if str(item.get("type") or "") == type_name:
+            return item
+    return None
 
 
 def _selected_inputs(
@@ -868,7 +930,7 @@ def _configured_drawai_tools(config: Mapping[str, Any]) -> tuple[str, ...]:
     return _ordered_unique(tool_ids)
 
 
-PAGE_SPEC_ONLY_DRAWAI_TOOLS = frozenset({"page-spec-assets", "svg-validate"})
+PAGE_SPEC_ONLY_DRAWAI_TOOLS = frozenset({"page-spec-assets", "page-spec-svg-draft", "svg-validate"})
 
 
 def _drawai_tools_for_inputs(

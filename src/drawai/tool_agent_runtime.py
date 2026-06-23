@@ -6,6 +6,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -23,6 +24,8 @@ DEFAULT_TOOL_AGENT_MAX_ITERATIONS = 24
 DEFAULT_TOOL_AGENT_MAX_OUTPUT_TOKENS = 8192
 DEFAULT_FILE_READ_LIMIT_CHARS = 20000
 MAX_FILE_READ_LIMIT_CHARS = 50000
+MAX_SINGLE_WRITE_CHARS = 12000
+MAX_APPEND_WRITE_CHARS = 8000
 MODEL_INPUT_JPEG_THRESHOLD_BYTES = 1_000_000
 MODEL_INPUT_JPEG_QUALITY = 90
 
@@ -196,6 +199,13 @@ async def _invoke_drawai_tool_agent_async(
                 tool_name = str(function.get("name") if isinstance(function, Mapping) else "")
                 if tool_name == "finalize" and result.payload.get("ok") is True:
                     finalize_text = str(result.payload.get("summary") or "")
+                auto_finalize_text = _auto_finalize_after_validation(
+                    task_name=task_name,
+                    tool_name=tool_name,
+                    payload=result.payload,
+                )
+                if auto_finalize_text is not None:
+                    finalize_text = auto_finalize_text
             if finalize_text is not None:
                 final_text = finalize_text
                 break
@@ -259,8 +269,14 @@ class _ToolRuntime:
             elif name == "list_files":
                 result = self._list_files(arguments)
                 followup = None
+            elif name == "copy_file":
+                result = self._copy_file(arguments)
+                followup = None
             elif name == "write_file":
                 result = self._write_file(arguments)
+                followup = None
+            elif name == "append_file":
+                result = self._append_file(arguments)
                 followup = None
             elif name == "edit_file":
                 result = self._edit_file(arguments)
@@ -351,9 +367,57 @@ class _ToolRuntime:
                 break
         return {"ok": True, "path": self._workspace_relative(path), "glob": pattern, "entries": entries}
 
+    def _copy_file(self, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        source = self._resolve_workspace_path(arguments.get("source"))
+        path = self._resolve_workspace_path(arguments.get("path"))
+        if not source.is_file():
+            raise ValueError(f"source is not a file: {self._workspace_relative(source)}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, path)
+        data = path.read_bytes()
+        result: dict[str, Any] = {
+            "ok": True,
+            "source": self._workspace_relative(source),
+            "path": self._workspace_relative(path),
+            "bytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "next_steps": (
+                "The declared output file now exists. If you do not have an exact small old_text/new_text edit ready, "
+                "run the required DrawAI validation tool on this output path now, then call finalize after validation is ok. "
+                "Do not spend another turn rewriting the whole copied file."
+            ),
+        }
+        if "page_spec_refine" in self.task_name and path.name == "page_spec.json":
+            result["auto_validation"] = self._run_drawai_tool(
+                {
+                    "tool_id": "format",
+                    "args": [
+                        "validate",
+                        "--format-id",
+                        "drawai.page_spec.v1",
+                        "--path",
+                        self._workspace_relative(path),
+                    ],
+                }
+            )
+        return result
+
     def _write_file(self, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
         path = self._resolve_workspace_path(arguments.get("path"))
         content = str(arguments.get("content") or "")
+        if len(content) > MAX_SINGLE_WRITE_CHARS:
+            return {
+                "ok": False,
+                "path": self._workspace_relative(path),
+                "error": (
+                    f"write_file content is {len(content)} chars, above the {MAX_SINGLE_WRITE_CHARS} char "
+                    "single-call limit. Create or truncate the file with write_file content='', then use "
+                    f"append_file chunks of at most {MAX_APPEND_WRITE_CHARS} chars."
+                ),
+                "error_type": "ContentTooLarge",
+                "chars": len(content),
+                "max_chars": MAX_SINGLE_WRITE_CHARS,
+            }
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
         return {
@@ -361,6 +425,33 @@ class _ToolRuntime:
             "path": self._workspace_relative(path),
             "chars": len(content),
             "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        }
+
+    def _append_file(self, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
+        path = self._resolve_workspace_path(arguments.get("path"))
+        content = str(arguments.get("content") or "")
+        if len(content) > MAX_APPEND_WRITE_CHARS:
+            return {
+                "ok": False,
+                "path": self._workspace_relative(path),
+                "error": (
+                    f"append_file content is {len(content)} chars, above the {MAX_APPEND_WRITE_CHARS} char "
+                    "chunk limit. Split the content into smaller append_file calls."
+                ),
+                "error_type": "ContentTooLarge",
+                "chars": len(content),
+                "max_chars": MAX_APPEND_WRITE_CHARS,
+            }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(content)
+        total = path.read_text(encoding="utf-8")
+        return {
+            "ok": True,
+            "path": self._workspace_relative(path),
+            "appended_chars": len(content),
+            "chars": len(total),
+            "sha256": hashlib.sha256(total.encode("utf-8")).hexdigest(),
         }
 
     def _edit_file(self, arguments: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -410,6 +501,8 @@ class _ToolRuntime:
         return {
             "ok": completed.returncode == 0,
             "command": _redact_command(command),
+            "tool_id": tool_id,
+            "args": args,
             "returncode": completed.returncode,
             "stdout": completed.stdout[-12000:],
             "stderr": completed.stderr[-8000:],
@@ -476,8 +569,37 @@ def _tool_schemas() -> list[dict[str, Any]]:
             ["path"],
         ),
         _function_tool(
+            "copy_file",
+            (
+                "Copy an existing workspace file to another workspace path. Use this for outputs derived from an "
+                "input file, especially large PageSpec JSON files: copy the connected input to the declared output, "
+                "then use edit_file for small targeted changes and run validation."
+            ),
+            {
+                "source": {"type": "string"},
+                "path": {"type": "string"},
+            },
+            ["source", "path"],
+        ),
+        _function_tool(
             "write_file",
-            "Write a UTF-8 text file inside the workflow workspace. Use this for declared outputs.",
+            (
+                "Write or truncate a short UTF-8 text file inside the workflow workspace. "
+                f"Use this for declared outputs up to {MAX_SINGLE_WRITE_CHARS} chars. "
+                "For larger JSON/SVG/log artifacts, first call write_file with content='' and then append_file in chunks."
+            ),
+            {
+                "path": {"type": "string"},
+                "content": {"type": "string"},
+            },
+            ["path", "content"],
+        ),
+        _function_tool(
+            "append_file",
+            (
+                "Append one UTF-8 text chunk to a workspace file. Use this for large declared outputs after "
+                f"truncating the file with write_file content=''. Keep each chunk at or below {MAX_APPEND_WRITE_CHARS} chars."
+            ),
             {
                 "path": {"type": "string"},
                 "content": {"type": "string"},
@@ -541,6 +663,13 @@ def _initial_messages(*, prompt: str, image_paths: Sequence[Path]) -> list[dict[
         "inspect files and images with tools, write or edit the declared output files with tools, "
         "and run DrawAI tools when validation or format contracts are needed. "
         "Do not put final SVG/JSON artifacts only in your assistant message. The harness consumes files, not prose. "
+        "When an output is a refined version of a connected input file, prefer copy_file to create the output first, "
+        "then use edit_file only for exact small targeted changes and validate it immediately. A validated copy is an "
+        "acceptable completion when a full rewrite would delay or risk the run. "
+        "For PageSpec refine tasks, copy the connected PageSpec to the declared output before reading the full file; "
+        "only inspect chunks later if you already know a targeted edit is needed. "
+        f"For large JSON, SVG, or logs, do not put the whole artifact in one write_file call. Use write_file with content='' "
+        f"to create/truncate the file, then append_file chunks no larger than {MAX_APPEND_WRITE_CHARS} chars until complete. "
         "Use final text only for a short completion summary after all declared outputs exist."
     )
     content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
@@ -580,6 +709,105 @@ def _json_object(raw: Any) -> Mapping[str, Any]:
     if not isinstance(parsed, Mapping):
         raise ValueError("tool arguments must decode to a JSON object")
     return parsed
+
+
+def _auto_finalize_after_validation(
+    *,
+    task_name: str,
+    tool_name: str,
+    payload: Mapping[str, Any],
+) -> str | None:
+    if "page_spec_refine" in task_name:
+        if tool_name == "copy_file" and payload.get("ok") is True:
+            validation = payload.get("auto_validation")
+            if isinstance(validation, Mapping) and _format_validation_ok(validation, "drawai.page_spec.v1"):
+                return "validated copied drawai.page_spec.v1 output"
+            return None
+        if tool_name != "run_drawai_tool" or payload.get("ok") is not True:
+            return None
+        if payload.get("tool_id") != "format":
+            return None
+        args = [str(item) for item in payload.get("args") or ()]
+        if "validate" not in args or "drawai.page_spec.v1" not in args:
+            return None
+        if _format_validation_ok(payload, "drawai.page_spec.v1"):
+            return "validated drawai.page_spec.v1 output"
+        return None
+    if tool_name != "run_drawai_tool" or payload.get("ok") is not True:
+        return None
+    if "svg" not in task_name:
+        return None
+    args = [str(item) for item in payload.get("args") or ()]
+    if payload.get("tool_id") == "page-spec-svg-draft" and _page_spec_svg_draft_validation_ok(payload):
+        if _targets_final_semantic_svg(args) or _page_spec_svg_draft_finalized_output(payload):
+            return "validated page-spec semantic SVG draft output"
+        return None
+    if not _targets_final_semantic_svg(args):
+        return None
+    if payload.get("tool_id") == "svg-validate" and _svg_validation_ok(payload):
+        return "validated semantic SVG output"
+    return None
+
+
+def _format_validation_ok(payload: Mapping[str, Any], format_id: str) -> bool:
+    args = [str(item) for item in payload.get("args") or ()]
+    if "validate" not in args or format_id not in args:
+        return False
+    try:
+        validation = json.loads(str(payload.get("stdout") or "{}"))
+    except json.JSONDecodeError:
+        return False
+    return isinstance(validation, Mapping) and validation.get("ok") is True
+
+
+def _page_spec_svg_draft_validation_ok(payload: Mapping[str, Any]) -> bool:
+    draft = _json_stdout_object(payload)
+    if draft is None:
+        return False
+    validation = draft.get("validation")
+    return isinstance(validation, Mapping) and validation.get("status") == "ok"
+
+
+def _page_spec_svg_draft_finalized_output(payload: Mapping[str, Any]) -> bool:
+    draft = _json_stdout_object(payload)
+    if draft is None:
+        return False
+    outputs = draft.get("finalized_outputs")
+    if not isinstance(outputs, Mapping):
+        return False
+    for key in ("semantic_svg", "declared_semantic_svg"):
+        semantic_svg = str(outputs.get(key) or "").replace("\\", "/")
+        if _is_final_semantic_svg_path(semantic_svg):
+            return True
+    return False
+
+
+def _svg_validation_ok(payload: Mapping[str, Any]) -> bool:
+    validation = _json_stdout_object(payload)
+    return isinstance(validation, Mapping) and validation.get("status") == "ok"
+
+
+def _json_stdout_object(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    try:
+        parsed = json.loads(str(payload.get("stdout") or "{}"))
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, Mapping) else None
+
+
+def _targets_final_semantic_svg(args: Sequence[str]) -> bool:
+    for index, arg in enumerate(args):
+        if arg != "--svg" or index + 1 >= len(args):
+            continue
+        target = args[index + 1].replace("\\", "/")
+        return _is_final_semantic_svg_path(target)
+    return False
+
+
+def _is_final_semantic_svg_path(path: str) -> bool:
+    return path.endswith("/output/semantic.svg") or path == "output/semantic.svg" or path.endswith(
+        "/output/semantic_svg.svg"
+    ) or path == "output/semantic_svg.svg"
 
 
 def _normalize_image_paths(image_paths: str | Path | Sequence[str | Path]) -> tuple[Path, ...]:

@@ -151,13 +151,14 @@ def test_svg_agent_prompt_filters_pagespec_tools_for_image_only_inputs() -> None
         ),
         node_config={
             "node_id": "svg_agent",
-            "drawai_tools": ["format", "page-spec-assets", "svg-validate"],
+            "drawai_tools": ["format", "page-spec-assets", "page-spec-svg-draft", "svg-validate"],
         },
     )
 
     assert "If the connected input list includes no PageSpec" in prompt.text
     assert "Tool `format`" in prompt.text
     assert "Tool `page-spec-assets`" not in prompt.text
+    assert "Tool `page-spec-svg-draft`" not in prompt.text
     assert "Tool `svg-validate`" not in prompt.text
     assert "Rendered PNGs and per-round validation reports are optional in image-only runs" in prompt.text
 
@@ -183,7 +184,7 @@ def test_drawai_tool_agent_prompt_uses_same_agent_contract_with_tool_call_invoca
             "node_id": "svg_agent",
             "provider_id": "drawai_tool_agent",
             "model": "qwen3.7-plus",
-            "drawai_tools": ["format", "page-spec-assets", "svg-validate"],
+            "drawai_tools": ["format", "page-spec-assets", "page-spec-svg-draft", "svg-validate"],
         },
     )
 
@@ -194,6 +195,8 @@ def test_drawai_tool_agent_prompt_uses_same_agent_contract_with_tool_call_invoca
     assert "Use only the DrawAI tools listed here." in prompt.text
     assert "run_drawai_tool" in prompt.text
     assert 'run_drawai_tool({"tool_id": "page-spec-assets"' in prompt.text
+    assert 'run_drawai_tool({"tool_id": "page-spec-svg-draft"' in prompt.text
+    assert "do not hand-write a complete SVG" in prompt.text
     assert "Exact command prefix" not in prompt.text
     assert "Tool Runtime Contract" not in prompt.text
     assert "Direct Output Runtime Override" not in prompt.text
@@ -227,6 +230,35 @@ def test_page_spec_refine_prompt_defines_id_changes_and_validation() -> None:
     assert "Do not embed any other full schema" in prompt.text
     assert "element candidates" not in prompt.text
     assert "element plans" not in prompt.text
+
+
+def test_page_spec_refine_drawai_tool_agent_prompt_requires_copy_file_first() -> None:
+    prompt = render_agent_prompt(
+        agent_preset_by_id("page_spec_refine"),
+        inputs=(
+            {
+                "path": "nodes/input/runs/001/output/image.png",
+                "format_id": "drawai.image.v1",
+                "type": "image",
+                "description": "Original page image.",
+            },
+            {
+                "path": "nodes/page_spec_fuse/runs/001/output/page_spec.json",
+                "format_id": "drawai.page_spec.v1",
+                "type": "page_spec",
+                "description": "Fused PageSpec evidence.",
+            },
+        ),
+        node_config={
+            "node_id": "page_spec_refine",
+            "provider_id": "drawai_tool_agent",
+        },
+    )
+
+    assert "the first file-producing action MUST be `copy_file`" in prompt.text
+    assert "nodes/page_spec_fuse/runs/001/output/page_spec.json" in prompt.text
+    assert "nodes/page_spec_refine/runs/<attempt_id>/output/page_spec.json" in prompt.text
+    assert "Do not read the full connected PageSpec just to rewrite it" in prompt.text
 
 
 def test_custom_agent_prompt_uses_configured_output_formats() -> None:

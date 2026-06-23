@@ -4,7 +4,7 @@ import json
 import re
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Any, Mapping
 
 from ..prompt_plan import DEFAULT_SAM3_PROMPTS
 from .agent_prompt_defaults import (
@@ -254,7 +254,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                     "timeout_seconds": SVG_AGENT_TIMEOUT_SECONDS,
                     "task": SVG_GENERATION_TASK,
                     "constraints": list(SVG_GENERATION_CONSTRAINTS),
-                    "drawai_tools": ["format", "page-spec-assets", "svg-validate"],
+                    "drawai_tools": ["format", "page-spec-assets", "page-spec-svg-draft", "svg-validate"],
                     "outputs": [
                         {
                             "port_id": "semantic_svg",
