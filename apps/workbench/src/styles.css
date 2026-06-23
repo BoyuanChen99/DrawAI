@@ -877,29 +877,6 @@ select:focus {
   white-space: nowrap;
 }
 
-.task-submit-button {
-  width: 32px;
-  min-width: 32px;
-  height: 32px;
-  min-height: 32px;
-  display: inline-grid;
-  place-items: center;
-  border-color: rgba(18, 168, 117, 0.28);
-  border-radius: 999px;
-  background: #22b985;
-  color: #ffffff;
-  padding: 0;
-  box-shadow: none;
-  transition: background-color 140ms ease, border-color 140ms ease, transform 140ms ease;
-}
-
-.task-submit-button:hover {
-  border-color: rgba(15, 150, 103, 0.42);
-  background: #16a875;
-  box-shadow: none;
-  transform: translateY(-1px);
-}
-
 .plus-icon {
   width: 23px;
   height: 23px;
@@ -921,13 +898,13 @@ select:focus {
 
 .task-list {
   grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
-  padding-bottom: 82px;
+  padding-bottom: 140px;
 }
 
-.batch-download-floating {
+.batch-download-floating,
+.task-create-floating {
   position: absolute;
   right: 20px;
-  bottom: 20px;
   z-index: 24;
   width: 46px;
   min-width: 46px;
@@ -943,6 +920,24 @@ select:focus {
   box-shadow: 0 12px 30px rgba(16, 32, 24, 0.14);
   backdrop-filter: blur(10px);
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+}
+
+.batch-download-floating {
+  bottom: 78px;
+}
+
+.task-create-floating {
+  bottom: 20px;
+  border-color: rgba(15, 150, 103, 0.38);
+  background: #16a875;
+  color: #ffffff;
+  box-shadow: 0 14px 32px rgba(15, 150, 103, 0.28);
+}
+
+.task-create-floating:hover {
+  background: #0f9667;
+  transform: translateY(-1px);
+  box-shadow: 0 18px 38px rgba(15, 150, 103, 0.32);
 }
 
 .batch-download-floating.ready {
@@ -971,6 +966,11 @@ select:focus {
 .batch-download-floating .button-spinner {
   width: 18px;
   height: 18px;
+}
+
+.task-create-floating .plus-icon {
+  width: 24px;
+  height: 24px;
 }
 
 .batch-list-modern {

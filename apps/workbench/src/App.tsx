@@ -1577,7 +1577,7 @@ function WorkbenchSettingsCenter({
                 onClick={() => setSettingsCategory("api")}
               >
                 <span className="settings-nav-marker" aria-hidden="true" />
-                <span>API Presets</span>
+                <span>API 预设</span>
               </button>
               <button
                 type="button"
@@ -1609,11 +1609,7 @@ function WorkbenchSettingsCenter({
             </nav>
             {settingsCategory === "api" && (
               <div className="agent-settings-list-panel">
-                <div className="agent-settings-list-head">
-                  <span>API Presets</span>
-                  <strong>{apiDrafts.length}</strong>
-                </div>
-                <div className="agent-settings-list" aria-label="API Presets">
+                <div className="agent-settings-list" aria-label="API 预设">
                   {apiDrafts.map((preset) => (
                     <button
                       type="button"
@@ -1629,7 +1625,7 @@ function WorkbenchSettingsCenter({
                       <span className="agent-option-meta">{preset.model || "未设置模型"}</span>
                     </button>
                   ))}
-                  {apiDrafts.length === 0 && <div className="agent-settings-empty">还没有 API Preset</div>}
+                  {apiDrafts.length === 0 && <div className="agent-settings-empty">还没有 API 预设</div>}
                 </div>
                 <button
                   type="button"
@@ -1640,16 +1636,12 @@ function WorkbenchSettingsCenter({
                     setSelectedApiPresetId(nextPreset.id);
                   }}
                 >
-                  新建 Preset
+                  新建预设
                 </button>
               </div>
             )}
             {settingsCategory === "agent" && (
               <div className="agent-settings-list-panel">
-                <div className="agent-settings-list-head">
-                  <span>本地 Agent</span>
-                  <strong>{loading ? "..." : agents.length}</strong>
-                </div>
                 <div className="agent-settings-list" aria-label="本地 Agent">
                   {loading && <div className="agent-settings-empty">加载中</div>}
                   {!loading && agents.length === 0 && <div className="agent-settings-empty">未发现 Agent</div>}
@@ -1674,10 +1666,6 @@ function WorkbenchSettingsCenter({
             )}
             {settingsCategory === "processor" && (
               <div className="agent-settings-list-panel">
-                <div className="agent-settings-list-head">
-                  <span>Processor</span>
-                  <strong>{processorIds.length}</strong>
-                </div>
                 <div className="agent-settings-list" aria-label="Processors">
                   {processorIds.map((processorId) => {
                     const definition = processorDefinitions[processorId];
@@ -1708,7 +1696,7 @@ function WorkbenchSettingsCenter({
               {settingsCategory === "api" && (
                 <div className="agent-settings-section">
                   <div className="agent-settings-section-title">
-                    <span>API Preset</span>
+                    <span>API 预设</span>
                     {selectedApiPreset && (
                       <button
                         type="button"
@@ -1796,7 +1784,7 @@ function WorkbenchSettingsCenter({
                       </div>
                     </>
                   ) : (
-                    <EmptyState label="选择或新建一个 API Preset" />
+                    <EmptyState label="选择或新建一个 API 预设" />
                   )}
                 </div>
               )}
@@ -1868,7 +1856,7 @@ function WorkbenchSettingsCenter({
                     <span>LLM</span>
                   </div>
                   <label className="settings-field">
-                    <span>默认 LLM API Preset</span>
+                    <span>默认 LLM API 预设</span>
                     <select
                       value={selectedLlmPresetId}
                       onChange={(event) => setSelectedLlmPresetId(event.target.value)}
@@ -1959,7 +1947,7 @@ function WorkbenchSettingsCenter({
                       </label>
                       {processorDrivers[selectedProcessorSetting.driver_id]?.required_api_preset_type && (
                         <label className="settings-field">
-                          <span>API Preset</span>
+                          <span>API 预设</span>
                           <select
                             value={selectedProcessorSetting.api_preset_id}
                             onChange={(event) =>
@@ -2106,7 +2094,7 @@ function normalizeApiPresetDrafts(presets: ApiPreset[]): ApiPreset[] {
 function newApiPresetDraft(existing: ApiPreset[]): ApiPreset {
   return {
     id: uniqueApiPresetId(existing, "api_preset"),
-    label: "New API Preset",
+    label: "新建 API 预设",
     type: "images_api",
     base_url: "https://api.openai.com",
     model: "gpt-image-2",
@@ -4500,9 +4488,6 @@ function TaskSelectionWorkspace({
             <span>任务</span>
             <strong>{batches.length} 个任务</strong>
           </div>
-          <button className="task-submit-button" title="提交任务" aria-label="提交任务" onClick={onOpenSubmit}>
-            <PlusIcon />
-          </button>
         </div>
         <div className="batch-list-modern">
           {batches.map((batch) => {
@@ -4687,6 +4672,15 @@ function TaskSelectionWorkspace({
           }}
         >
           {batchDownloadPending ? <ButtonSpinner /> : <DownloadIcon />}
+        </button>
+        <button
+          type="button"
+          className="task-create-floating"
+          title="提交任务"
+          aria-label="提交任务"
+          onClick={onOpenSubmit}
+        >
+          <PlusIcon />
         </button>
       </section>
       {batchContextMenu && (
