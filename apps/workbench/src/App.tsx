@@ -97,6 +97,7 @@ type AppView = "board" | "editor" | "svg" | "nodeArtifact";
 type BoardMode = "generate" | "process" | "workflow";
 type CanvasMode = "select" | "add" | "polygon";
 type AssetEditorView = "extraction" | "processing";
+type WorkbenchSettingsCategory = "api" | "agent" | "llm" | "processor";
 type PipelineNodeState = DagRunNodeState;
 type AssetPlanChangeOptions = { track?: boolean };
 type V2FilterDropdownId = "elementTypes" | "processingTypes" | "statuses";
@@ -116,6 +117,7 @@ type SvgSelectionOverlay = { left: number; top: number; width: number; height: n
 type TaskContextMenuState = { caseId: string; caseName: string; x: number; y: number };
 type BatchContextMenuState = { batchId: string; batchName: string; caseCount: number; running: boolean; x: number; y: number };
 type TaskDialogTarget = { batchId: string; name: string };
+type WorkbenchSettingsNavItem = { id: WorkbenchSettingsCategory; label: string; icon: WorkbenchSettingsCategory };
 type DragState =
   | { kind: "move"; id: string; startX: number; startY: number; bbox: [number, number, number, number]; geometry?: AssetGeometry }
   | { kind: "resize"; id: string; handle: string; startX: number; startY: number; bbox: [number, number, number, number]; geometry?: AssetGeometry }
@@ -131,6 +133,20 @@ type RuntimeStatusRow = {
 const IMAGEGEN_SETTINGS_STORAGE_KEY = "drawai.imagegen.connection";
 const PPTX_EXPORT_POLL_INTERVAL_MS = 1000;
 const PPTX_EXPORT_TIMEOUT_MS = 180_000;
+const WORKBENCH_SETTINGS_NAV_SECTIONS: { label: string; items: WorkbenchSettingsNavItem[] }[] = [
+  {
+    label: "工作空间",
+    items: [
+      { id: "api", label: "模型供应商", icon: "api" },
+      { id: "agent", label: "Agent", icon: "agent" },
+      { id: "llm", label: "默认 LLM", icon: "llm" }
+    ]
+  },
+  {
+    label: "运行",
+    items: [{ id: "processor", label: "处理器", icon: "processor" }]
+  }
+];
 const DEFAULT_IMAGEGEN_CONNECTION: ImageGenConnectionSettings = {
   provider: "codex",
   baseUrl: "",
@@ -1453,7 +1469,7 @@ function WorkbenchSettingsCenter({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState("");
-  const [settingsCategory, setSettingsCategory] = useState<"api" | "agent" | "llm" | "processor">("api");
+  const [settingsCategory, setSettingsCategory] = useState<WorkbenchSettingsCategory>("api");
   const [selectedApiPresetId, setSelectedApiPresetId] = useState("");
   const [selectedLlmPresetId, setSelectedLlmPresetId] = useState("");
   const [selectedProcessorId, setSelectedProcessorId] = useState("");
@@ -1570,42 +1586,27 @@ function WorkbenchSettingsCenter({
           {localError && <div className="agent-settings-error">{localError}</div>}
           <div className={`agent-settings-shell category-${settingsCategory}`}>
             <nav className="settings-nav" aria-label="设置导航">
-              <button
-                type="button"
-                className={`settings-nav-item${settingsCategory === "api" ? " active" : ""}`}
-                aria-current={settingsCategory === "api" ? "page" : undefined}
-                onClick={() => setSettingsCategory("api")}
-              >
-                <span className="settings-nav-marker" aria-hidden="true" />
-                <span>API 预设</span>
-              </button>
-              <button
-                type="button"
-                className={`settings-nav-item${settingsCategory === "agent" ? " active" : ""}`}
-                aria-current={settingsCategory === "agent" ? "page" : undefined}
-                onClick={() => setSettingsCategory("agent")}
-              >
-                <span className="settings-nav-marker" aria-hidden="true" />
-                <span>Agent</span>
-              </button>
-              <button
-                type="button"
-                className={`settings-nav-item${settingsCategory === "llm" ? " active" : ""}`}
-                aria-current={settingsCategory === "llm" ? "page" : undefined}
-                onClick={() => setSettingsCategory("llm")}
-              >
-                <span className="settings-nav-marker" aria-hidden="true" />
-                <span>LLM</span>
-              </button>
-              <button
-                type="button"
-                className={`settings-nav-item${settingsCategory === "processor" ? " active" : ""}`}
-                aria-current={settingsCategory === "processor" ? "page" : undefined}
-                onClick={() => setSettingsCategory("processor")}
-              >
-                <span className="settings-nav-marker" aria-hidden="true" />
-                <span>Processor</span>
-              </button>
+              {WORKBENCH_SETTINGS_NAV_SECTIONS.map((section) => (
+                <div className="settings-nav-section" key={section.label}>
+                  <div className="settings-nav-heading">{section.label}</div>
+                  <div className="settings-nav-group">
+                    {section.items.map((item) => (
+                      <button
+                        type="button"
+                        key={item.id}
+                        className={`settings-nav-item${settingsCategory === item.id ? " active" : ""}`}
+                        aria-current={settingsCategory === item.id ? "page" : undefined}
+                        onClick={() => setSettingsCategory(item.id)}
+                      >
+                        <span className="settings-nav-icon" aria-hidden="true">
+                          <SettingsNavIcon icon={item.icon} />
+                        </span>
+                        <span className="settings-nav-label">{item.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </nav>
             {settingsCategory === "api" && (
               <div className="agent-settings-list-panel">
@@ -6073,6 +6074,44 @@ function AssetTooltip({ element, naturalSize }: { element: AssetElement; natural
 
 function DraftBox({ bbox, naturalSize }: { bbox: [number, number, number, number]; naturalSize: { width: number; height: number } }) {
   return <div className="draft-box" style={{ ...bboxStyle(bbox, naturalSize), zIndex: 1_000_000 }} />;
+}
+
+function SettingsNavIcon({ icon }: { icon: WorkbenchSettingsCategory }) {
+  if (icon === "api") {
+    return (
+      <svg className="settings-nav-svg" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M9.3 4.8c-1.7 0-3 1.3-3 3 0 .3 0 .6.1.9a3.5 3.5 0 0 0-.2 6.5 3 3 0 0 0 5.8.8V6.2a2.7 2.7 0 0 0-2.7-1.4Z" />
+        <path d="M14.7 4.8c1.7 0 3 1.3 3 3 0 .3 0 .6-.1.9a3.5 3.5 0 0 1 .2 6.5 3 3 0 0 1-5.8.8V6.2a2.7 2.7 0 0 1 2.7-1.4Z" />
+        <path d="M8.2 9.1h3.8M12 12.4H7.5M12 15.7H9" />
+        <path d="M15.8 9.1H12M12 12.4h4.5M12 15.7h3" />
+      </svg>
+    );
+  }
+  if (icon === "agent") {
+    return (
+      <svg className="settings-nav-svg" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="7" r="3.2" />
+        <circle cx="7.2" cy="16.5" r="3.2" />
+        <circle cx="16.8" cy="16.5" r="3.2" />
+        <path d="M10.6 9.8 8.6 13.7M13.4 9.8l2 3.9M10.4 16.5h3.2" />
+      </svg>
+    );
+  }
+  if (icon === "llm") {
+    return (
+      <svg className="settings-nav-svg" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="m4.5 18 4.2-12 4.2 12M6 14h5.4" />
+        <path d="M14.7 7.2h4.8M17.1 5v14M14.5 18h5" />
+      </svg>
+    );
+  }
+  return (
+    <svg className="settings-nav-svg" viewBox="0 0 24 24" aria-hidden="true">
+      <ellipse cx="12" cy="6.5" rx="7" ry="3.2" />
+      <path d="M5 6.5v5c0 1.8 3.1 3.2 7 3.2s7-1.4 7-3.2v-5" />
+      <path d="M5 11.5v5c0 1.8 3.1 3.2 7 3.2s7-1.4 7-3.2v-5" />
+    </svg>
+  );
 }
 
 function SelectToolIcon() {
