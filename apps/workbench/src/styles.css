@@ -3446,12 +3446,12 @@ button.asset-status-unsupported {
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
-  grid-template-columns: 192px minmax(230px, 280px) minmax(320px, 1fr);
+  grid-template-columns: 176px minmax(230px, 280px) minmax(320px, 1fr);
   gap: 18px;
 }
 
 .agent-settings-shell.category-llm {
-  grid-template-columns: 192px minmax(360px, 1fr);
+  grid-template-columns: 176px minmax(360px, 1fr);
 }
 
 .agent-settings-shell.category-llm .agent-settings-panel {
@@ -3469,11 +3469,11 @@ button.asset-status-unsupported {
 .settings-nav {
   display: flex;
   flex-direction: column;
-  gap: 28px;
+  gap: 24px;
   overflow-y: auto;
   overscroll-behavior: contain;
   border-right: 1px solid rgba(220, 228, 222, 0.86);
-  padding: 6px 18px 6px 0;
+  padding: 6px 14px 6px 0;
   scrollbar-gutter: stable;
 }
 
@@ -3492,38 +3492,38 @@ button.asset-status-unsupported {
 
 .settings-nav-section {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .settings-nav-heading {
   color: #6d788b;
-  padding-left: 27px;
-  font-size: 13px;
-  font-weight: 720;
+  padding-left: 23px;
+  font-size: 12px;
+  font-weight: 680;
   line-height: 1.2;
 }
 
 .settings-nav-group {
   display: grid;
-  gap: 7px;
+  gap: 5px;
 }
 
 .settings-nav-item {
   width: 100%;
-  min-height: 54px;
+  min-height: 46px;
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
+  grid-template-columns: 23px minmax(0, 1fr);
   align-items: center;
   justify-content: flex-start;
-  gap: 12px;
-  border: 3px solid transparent;
-  border-radius: 13px;
+  gap: 10px;
+  border: 2px solid transparent;
+  border-radius: 11px;
   background: transparent;
   box-shadow: none;
-  padding: 10px 13px;
+  padding: 8px 12px;
   color: #566174;
-  font-size: 16px;
-  font-weight: 720;
+  font-size: 14px;
+  font-weight: 680;
   line-height: 1.1;
   text-align: left;
   white-space: nowrap;
@@ -3548,20 +3548,20 @@ button.asset-status-unsupported {
 }
 
 .settings-nav-icon {
-  width: 28px;
-  height: 28px;
+  width: 23px;
+  height: 23px;
   display: inline-grid;
   place-items: center;
 }
 
 .settings-nav-svg {
-  width: 27px;
-  height: 27px;
+  width: 22px;
+  height: 22px;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 2;
+  stroke-width: 1.9;
 }
 
 .settings-nav-label {
@@ -5872,38 +5872,38 @@ button.asset-status-unsupported {
   }
 
   .agent-settings-shell {
-    grid-template-columns: 180px minmax(0, 1fr);
+    grid-template-columns: 164px minmax(0, 1fr);
     overflow: auto;
   }
 
   .agent-settings-shell.category-llm {
-    grid-template-columns: 180px minmax(0, 1fr);
+    grid-template-columns: 164px minmax(0, 1fr);
   }
 
   .settings-nav {
-    padding-right: 14px;
+    padding-right: 12px;
   }
 
   .settings-nav-heading {
-    padding-left: 24px;
+    padding-left: 21px;
   }
 
   .settings-nav-item {
-    min-height: 50px;
-    grid-template-columns: 25px minmax(0, 1fr);
-    gap: 10px;
-    padding: 9px 11px;
-    font-size: 15px;
+    min-height: 44px;
+    grid-template-columns: 21px minmax(0, 1fr);
+    gap: 9px;
+    padding: 8px 10px;
+    font-size: 13px;
   }
 
   .settings-nav-icon {
-    width: 25px;
-    height: 25px;
+    width: 21px;
+    height: 21px;
   }
 
   .settings-nav-svg {
-    width: 24px;
-    height: 24px;
+    width: 20px;
+    height: 20px;
   }
 
   .agent-settings-list-panel {
@@ -5964,7 +5964,7 @@ button.asset-status-unsupported {
   .settings-nav {
     width: 100%;
     display: grid;
-    gap: 14px;
+    gap: 12px;
     align-self: start;
     min-height: max-content;
     overflow: visible;
@@ -5986,14 +5986,14 @@ button.asset-status-unsupported {
   .settings-nav-group {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
-    gap: 8px;
+    gap: 6px;
   }
 
   .settings-nav-item {
     width: 100%;
     min-width: 0;
-    min-height: 48px;
-    padding: 8px 10px;
+    min-height: 42px;
+    padding: 7px 10px;
   }
 
   .agent-settings-panel {
