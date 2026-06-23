@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
+
 RUN0_ELEMENT_REFINE_TASK = """DrawAI asset post-processing and element-plans task.
 
 We are performing an image vectorization task: a bitmap image will eventually be transformed into an editable representation. The whole process has three parts:
@@ -79,35 +82,296 @@ RUN0_ELEMENT_REFINE_CONSTRAINTS = (
     "Write the declared output files exactly, in UTF-8 JSON or markdown according to the output declaration.",
 )
 
-PAGE_SPEC_REFINE_TASK = """DrawAI PageSpec refinement task.
+
+@dataclass(frozen=True)
+class PageSpecProcessingOperation:
+    processing_type: str
+    meaning: str
+    choose_when: str
+    avoid_when: str
+
+
+PAGE_SPEC_PROCESSING_OPERATIONS = {
+    "no_process": PageSpecProcessingOperation(
+        processing_type="no_process",
+        meaning=(
+            "Do not materialize this element in the processing stage. Keep it as PageSpec structure for "
+            "downstream SVG Compose to draw from its text, style, geometry, coordinates, and semantics."
+        ),
+        choose_when=(
+            "Choose for text, lines, arrows, shapes, tables, ordinary chart structure, simple icons, "
+            "background panels, diagrams that should remain structural, and any element that does not need "
+            "an independent processed asset."
+        ),
+        avoid_when=(
+            "Do not choose for photos, screenshots, textures, complex raster regions, foreground objects that "
+            "need background removal, or elements that require a dedicated processor before SVG Compose."
+        ),
+    ),
+    "crop": PageSpecProcessingOperation(
+        processing_type="crop",
+        meaning=(
+            "Crop the element region from the original image and preserve source pixels, local background, "
+            "and raster detail as an independent asset."
+        ),
+        choose_when=(
+            "Choose for photos, screenshots, heatmaps, complex textures, dense raster tiles, small complex "
+            "raster icons, and regions whose subject is visually coupled to its local background."
+        ),
+        avoid_when=(
+            "Do not choose for editable text, lines, arrows, simple shapes, ordinary table structure, "
+            "transparent foreground objects, or elements that SVG Compose can draw directly."
+        ),
+    ),
+    "crop_nobg": PageSpecProcessingOperation(
+        processing_type="crop_nobg",
+        meaning=(
+            "Crop the element region and remove its background, producing a transparent foreground asset."
+        ),
+        choose_when=(
+            "Choose for logos, products, people, standalone objects, foreground illustrations, transparent "
+            "icons, and visually separable subjects with clear boundaries."
+        ),
+        avoid_when=(
+            "Do not choose for screenshots, heatmaps, textures, software UI, photos whose background must "
+            "remain attached, editable structures, or objects whose boundary is too ambiguous for background removal."
+        ),
+    ),
+    "chart_rebuild_reserved": PageSpecProcessingOperation(
+        processing_type="chart_rebuild_reserved",
+        meaning=(
+            "Reserve the element as a future structured chart-rebuild target. It does not produce an asset in "
+            "the current processing stage."
+        ),
+        choose_when="Choose only for chart elements that clearly need future structured chart reconstruction.",
+        avoid_when=(
+            "Do not choose for non-chart elements, ordinary chart structures that SVG Compose can draw, or "
+            "chart screenshots that should be preserved with a crop."
+        ),
+    ),
+    "svg_self_draw": PageSpecProcessingOperation(
+        processing_type="svg_self_draw",
+        meaning=(
+            "Use an SVG processor to generate an independent SVG asset for this element during the processing stage."
+        ),
+        choose_when=(
+            "Choose for complex vector elements that must be generated as standalone SVG assets before final composition."
+        ),
+        avoid_when=(
+            "Do not choose for ordinary text, lines, shapes, tables, or elements that can be drawn by downstream "
+            "SVG Compose without an independent asset."
+        ),
+    ),
+    "image_generate": PageSpecProcessingOperation(
+        processing_type="image_generate",
+        meaning="Generate a new image asset from the element semantics, description, and context.",
+        choose_when="Choose for image-like assets that must be generated rather than copied from the source image.",
+        avoid_when=(
+            "Do not choose for source content that can be cropped, foreground objects that only need background "
+            "removal, or structures that SVG Compose can draw."
+        ),
+    ),
+    "image_edit": PageSpecProcessingOperation(
+        processing_type="image_edit",
+        meaning="Edit a source crop or existing image asset to produce a new image asset.",
+        choose_when=(
+            "Choose for image-like assets that need localized repair, style adjustment, background adjustment, "
+            "or content editing based on the source image."
+        ),
+        avoid_when=(
+            "Do not choose for regions that can be used as direct crops, foreground objects that only need "
+            "background removal, or structures that SVG Compose can draw."
+        ),
+    ),
+}
+
+DEFAULT_PAGE_SPEC_REFINE_PROCESSING_TYPES = (
+    "no_process",
+    "crop",
+    "crop_nobg",
+    "chart_rebuild_reserved",
+)
+
+
+def normalize_page_spec_processing_types(
+    processing_types: Sequence[str] | None = None,
+) -> tuple[str, ...]:
+    raw_types = (
+        DEFAULT_PAGE_SPEC_REFINE_PROCESSING_TYPES
+        if processing_types is None
+        else processing_types
+    )
+    if isinstance(raw_types, str):
+        raise ValueError("PageSpec processing types must be an array of strings")
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for index, raw_type in enumerate(raw_types):
+        if not isinstance(raw_type, str):
+            raise ValueError(f"page_spec_processing_types[{index}] must be a string")
+        processing_type = raw_type.strip()
+        if not processing_type:
+            continue
+        if processing_type not in PAGE_SPEC_PROCESSING_OPERATIONS:
+            raise ValueError(f"unsupported PageSpec processing type: {processing_type}")
+        if processing_type in seen:
+            continue
+        normalized.append(processing_type)
+        seen.add(processing_type)
+    if not normalized:
+        raise ValueError("at least one PageSpec processing type must be enabled")
+    return tuple(normalized)
+
+
+def render_page_spec_processing_operations(processing_types: Sequence[str] | None = None) -> str:
+    sections: list[str] = ["## Available Processing Operations"]
+    for processing_type in normalize_page_spec_processing_types(processing_types):
+        operation = PAGE_SPEC_PROCESSING_OPERATIONS[processing_type]
+        sections.append(
+            "\n".join(
+                (
+                    f"### {operation.processing_type}",
+                    "",
+                    f"Meaning: {operation.meaning}",
+                    "",
+                    f"Choose when: {operation.choose_when}",
+                    "",
+                    f"Do not choose when: {operation.avoid_when}",
+                )
+            )
+        )
+    return "\n\n".join(sections)
+
+
+PAGE_SPEC_REFINE_TASK_PREFIX = """DrawAI PageSpec refinement task.
 
 You are operating on one page. The connected PageSpec is the only structured page model for this node. The refined PageSpec elements array is the handoff to every downstream node.
 
-Goal: read the original page image and the connected drawai.page_spec.v1 file, then write a refined drawai.page_spec.v1 file to the declared output path.
+DrawAI's overall task is to vectorize an input image. This node is in the visual element parsing and correction stage. Your job is to refine the previous PageSpec result against the original page image.
+
+Goal: read the original page image and the connected drawai.page_spec.v1 file, then write the refined drawai.page_spec.v1 file to the declared output path. The refinement must correct all page elements: add missing elements, delete redundant elements, split or merge elements, adjust kind, role, coordinates, z-order, text, style, and processing operation.
 
 Required operations:
 - Treat the original image as visual truth and the connected PageSpec as evidence.
 - Do not inspect DrawAI repository source code, import internal DrawAI modules, or call internal Python APIs to learn schema behavior. Use the declared DrawAI CLI tools, especially `format describe` and `format validate`, for format contracts and validation.
 - Keep the PageSpec top-level model page-level only: schema, page_id, source, canvas, background, elements, and metadata.
-- Refine elements directly in PageSpec: adjust bbox, kind, role, z_index, text, style, measurement, build.mode, build.processing_type, build.asset_id, grouping, and source_refs when the visual evidence requires it.
-- Split an element when one box contains multiple independent visual parts. Add elements that are visible in the page but missing from the input PageSpec. Remove elements that are duplicate, noise, or fully represented by another retained element.
+- Check for redundant and missing elements. Add elements that are visible in the page but missing from the input PageSpec. Remove elements that are duplicate, noise, false positives, or fully represented by another retained element.
 - Deletions must be actual deletions from elements. Do not keep deleted elements with a removed flag.
-- For every retained or new element, set build.processing_type to one of svg_self_draw, crop, crop_nobg, or chart_rebuild_reserved. Use svg_self_draw for editable text, shapes, arrows, tables, charts, simple icons, and normal vector structure. Use crop/crop_nobg only for raster material that should become an asset package.
-- Choose crop when the raster region is rectangular source material whose original background must stay attached: screenshots, photos, heatmaps, dense texture, complex image tiles, or small details coupled to their local background.
-- Choose crop_nobg when the visible object is a separable foreground subject that should sit on reconstructed SVG background after background removal: logos, product/object cutouts, foreground illustrations, portrait/object silhouettes, or icons whose surrounding background should become transparent. Do not default every raster element to crop; decide crop vs crop_nobg element by element.
+- Check for elements that should be split or merged. Split an element when one box contains multiple independent visual parts that should not share one processing operation. Keep the original id for one dominant split child when appropriate, and create new ids for split-out parts.
+- Merge elements when multiple boxes describe the same visual object. Keep the clearest existing id, delete redundant boxes, and adjust the kept element's type, bbox, and processing operation.
+- Do not merge elements that require different processing operations. If one element contains parts that require different operations, split it.
+- For every retained or new element, set build.processing_type. Use only the processing operations provided in this task prompt. Do not invent or use unavailable operations.
+- If an element does not need an independent processed asset, use the processing operation that means no processing/materialization.
 - Preserve useful source_refs from upstream PageSpec evidence. For adjusted/new/split/merged elements, add element metadata.refine_action with one of adjusted, added, split_child, or merged_result; add metadata.refine_reason as a short reason; and add metadata.refine_source_ids when the element came from previous element ids.
-- Preserve stable ids. Keep the original id for retained or adjusted elements. Do not globally renumber. For added visual elements, continue the existing id style with the next unused E### when possible; use G### for group elements. For splits, keep the source id on the dominant child if it still represents that child, and create new ids only for the additional children. For merges, keep the clearest existing source id.
+- Preserve stable ids. Keep the original id for retained or adjusted elements. Do not globally renumber. For added visual elements, continue the existing id style with the next unused E### when possible. For splits, keep the source id on the dominant child if it still represents that child, and create new ids only for the additional children. For merges, keep the clearest existing source id.
 - Record a compact top-level metadata.refine_changes object with this shape:
   {"adjusted":[{"id":"E001","fields":["box_px"],"reason":"..."}],"added":[{"id":"E200","reason":"..."}],"split":[{"source_id":"E010","new_ids":["E010","E201"],"reason":"..."}],"merged":[{"source_ids":["E011","E012"],"kept_id":"E011","reason":"..."}],"deleted":[{"id":"E013","reason":"..."}]}
   Use empty arrays when a category has no changes. This is an audit trail only; the refined elements array is the source of truth.
-- If the page contains nested semantic structure, represent it with kind="group" elements using parent_id/children. Groups do not need asset packages and should use build.processing_type="svg_self_draw".
 
-Output requirements:
+Element field guide:
+- id: stable unique element id.
+- kind: one of text, shape, image, diagram, connector, table, chart, formula, or unknown.
+- role: a more specific semantic role such as title, body_text, logo, photo, icon, axis, legend, diagram, or background_panel.
+- box_px: [x, y, width, height] in source image pixels. Width and height must be positive.
+- points_px: key points for lines, arrows, or connectors when useful.
+- polygon_px: polygon points for non-rectangular regions when useful.
+- z_index: visual layer; larger values appear above smaller values.
+- text: visible text for text elements only.
+- geometry: more precise geometry such as bbox, mask, polygon, or connector endpoints.
+- style: visual style such as color, font, size, stroke, fill, opacity, and alignment when known.
+- measurement: OCR confidence, text measurement, size estimates, and compact visual evidence.
+- source_refs: upstream evidence references. Preserve useful references.
+- build.mode: construction mode, such as editable_text, vector, asset_ref, or structured.
+- build.processing_type: processing operation. It must be one of the available operations in this prompt.
+- build.asset_id: required when the selected processing operation produces an independent asset.
+- materialization: generated by a later processing node. Do not write or fake it in this refine node.
+- metadata: compact refinement audit fields such as refine_action, refine_reason, and refine_source_ids.
+
+Field updates:
+- When adjusting an element, update only fields supported by visual evidence: box_px, geometry, points_px, polygon_px, kind, role, text, z_index, build.mode, build.processing_type, build.asset_id, style, measurement, source_refs, and metadata.
+- When adding an element, include id, kind, role, box_px, z_index, source_refs, build.mode, build.processing_type, metadata.refine_action="added", and metadata.refine_reason. Include text for text elements. Include build.asset_id when the operation produces an independent asset.
+- When deleting an element, remove it from elements and record the deletion in metadata.refine_changes.deleted.
+- When splitting an element, every split child must have its own box_px, kind, role, and build.processing_type. Each split child should preserve source_refs to the source element or source evidence.
+- When merging elements, keep one stable id, expand box_px to cover the complete object, merge source_refs without duplicates, delete the redundant elements, and record metadata.refine_action="merged_result".
+
+JSON examples:
+
+Adjusted element:
+```json
+{
+  "id": "E001",
+  "kind": "image",
+  "role": "logo",
+  "box_px": [120, 40, 88, 32],
+  "z_index": 20,
+  "source_refs": [{"kind": "page_spec_element", "id": "E001"}],
+  "build": {"mode": "asset_ref", "processing_type": "crop_nobg", "asset_id": "A001"},
+  "metadata": {
+    "refine_action": "adjusted",
+    "refine_reason": "original bbox missed the right edge of the logo",
+    "refine_source_ids": ["E001"]
+  }
+}
+```
+
+Added text element:
+```json
+{
+  "id": "E203",
+  "kind": "text",
+  "role": "axis_label",
+  "box_px": [88, 512, 140, 24],
+  "z_index": 15,
+  "text": "Accuracy",
+  "source_refs": [],
+  "build": {"mode": "editable_text", "processing_type": "no_process"},
+  "measurement": {"text": "Accuracy", "confidence": "medium"},
+  "metadata": {
+    "refine_action": "added",
+    "refine_reason": "visible axis label was missing from the input PageSpec"
+  }
+}
+```
+
+Top-level audit shape:
+```json
+{
+  "metadata": {
+    "refine_changes": {
+      "adjusted": [{"id": "E001", "fields": ["box_px", "build.processing_type"], "reason": "..."}],
+      "added": [{"id": "E203", "reason": "..."}],
+      "split": [{"source_id": "E010", "new_ids": ["E010", "E201"], "reason": "..."}],
+      "merged": [{"source_ids": ["E011", "E012"], "kept_id": "E011", "reason": "..."}],
+      "deleted": [{"id": "E013", "reason": "..."}]
+    }
+  }
+}
+```
+
+"""
+
+PAGE_SPEC_REFINE_TASK_SUFFIX = """Output requirements:
+
 - Write exactly one JSON object with schema drawai.page_spec.v1.
 - The output PageSpec must validate under drawai.page_spec.v1.
 - Before finishing, run the DrawAI format tool against the declared output path: format validate --format-id drawai.page_spec.v1 --path <declared PageSpec output path>. Finish only after validation reports ok.
 - Do not write a sidecar planning or analysis file for this node. Put the final decisions directly in PageSpec elements and metadata.
 - Do not embed any other full schema, upstream payload, or compatibility artifact inside metadata; metadata should stay compact and audit-oriented."""
+
+
+def render_page_spec_refine_task(
+    processing_types: Sequence[str] | None = None,
+) -> str:
+    processing_operations = render_page_spec_processing_operations(processing_types)
+    return "\n\n".join(
+        (
+            PAGE_SPEC_REFINE_TASK_PREFIX.strip(),
+            processing_operations,
+            PAGE_SPEC_REFINE_TASK_SUFFIX.strip(),
+        )
+    )
+
+
+PAGE_SPEC_REFINE_TASK = render_page_spec_refine_task()
 
 PAGE_SPEC_REFINE_CONSTRAINTS = (
     "Use only connected input files listed in this prompt and explicitly declared built-in script files.",

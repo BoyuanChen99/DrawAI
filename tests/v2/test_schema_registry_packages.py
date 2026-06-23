@@ -76,6 +76,7 @@ def test_schema_literal_contracts_and_asset_package_default() -> None:
 
     assert package.status == "pending"
     assert package.to_dict()["status"] == "pending"
+    assert default_registry().has_processing_type("no_process")
 
 
 def test_element_package_paths_reject_unsafe_element_ids(tmp_path: Path) -> None:

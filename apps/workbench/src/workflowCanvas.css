@@ -545,6 +545,7 @@
 
 .workflow-section-title button,
 .workflow-agent-output > button,
+.workflow-processing-section > button,
 .workflow-sam-prompt > button,
 .workflow-node-actions button,
 .workflow-edge-inspector > button,
@@ -648,6 +649,57 @@
   overflow-wrap: anywhere;
   color: var(--muted);
   font-size: 13px;
+  line-height: 1.35;
+}
+
+.workflow-processing-options {
+  display: grid;
+  gap: 8px;
+}
+
+.workflow-processing-option {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 128px) minmax(0, 1fr);
+  gap: 8px;
+  align-items: flex-start;
+  padding: 9px 0;
+  border-top: 1px solid rgba(18, 32, 24, 0.08);
+  color: var(--ink);
+}
+
+.workflow-processing-option:first-child {
+  border-top: 0;
+}
+
+.workflow-processing-option input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+}
+
+.workflow-processing-option span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.workflow-processing-option strong {
+  overflow-wrap: anywhere;
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.workflow-processing-option code {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.workflow-processing-option em {
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
   line-height: 1.35;
 }
 

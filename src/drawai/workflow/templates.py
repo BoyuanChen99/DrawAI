@@ -4,18 +4,20 @@ import json
 import re
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Any, Mapping
 
 from ..prompt_plan import DEFAULT_SAM3_PROMPTS
 from .agent_prompt_defaults import (
     CUSTOM_AGENT_CONSTRAINTS,
     CUSTOM_AGENT_TASK,
+    DEFAULT_PAGE_SPEC_REFINE_PROCESSING_TYPES,
     PAGE_SPEC_REFINE_CONSTRAINTS,
     PAGE_SPEC_REFINE_TASK,
     RUN0_ELEMENT_REFINE_CONSTRAINTS,
     RUN0_ELEMENT_REFINE_TASK,
     SVG_GENERATION_CONSTRAINTS,
     SVG_GENERATION_TASK,
+    normalize_page_spec_processing_types,
 )
 from .agents import DEFAULT_AGENT_TIMEOUT_SECONDS, SVG_AGENT_TIMEOUT_SECONDS
 from .schema import (
@@ -170,6 +172,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                     "provider_id": "codex_sdk",
                     "reasoning_effort": "high",
                     "timeout_seconds": DEFAULT_AGENT_TIMEOUT_SECONDS,
+                    "page_spec_processing_types": list(DEFAULT_PAGE_SPEC_REFINE_PROCESSING_TYPES),
                     "task": PAGE_SPEC_REFINE_TASK,
                     "constraints": list(PAGE_SPEC_REFINE_CONSTRAINTS),
                     "drawai_tools": ["format"],
@@ -558,6 +561,12 @@ def _normalized_node_config(node_type: str, config: dict[str, Any]) -> dict[str,
         normalized["constraints"] = list(_AGENT_CONSTRAINT_DEFAULTS[preset_id])
     if preset_id in {"run0_element_refine", "page_spec_refine"}:
         normalized.setdefault("reasoning_effort", "high")
+    if preset_id == "page_spec_refine":
+        normalized["page_spec_processing_types"] = list(
+            normalize_page_spec_processing_types(
+                normalized.get("page_spec_processing_types")
+            )
+        )
     if preset_id in _AGENT_TASK_DEFAULTS:
         default_timeout = (
             SVG_AGENT_TIMEOUT_SECONDS if preset_id == "svg_generation" else DEFAULT_AGENT_TIMEOUT_SECONDS

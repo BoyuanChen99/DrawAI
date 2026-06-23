@@ -181,13 +181,47 @@ def test_page_spec_refine_prompt_defines_id_changes_and_validation() -> None:
     )
 
     assert "The refined PageSpec elements array is the handoff" in prompt.text
-    assert "Choose crop_nobg" in prompt.text
+    assert "no_process" in prompt.text
+    assert "Use only the processing operations provided in this task prompt" in prompt.text
+    assert "diagram" in prompt.text
+    assert "Choose crop_nobg" not in prompt.text
     assert "Preserve stable ids" in prompt.text
     assert "\"adjusted\"" in prompt.text
     assert "format validate --format-id drawai.page_spec.v1" in prompt.text
     assert "Do not embed any other full schema" in prompt.text
+    assert "kind=\"group\"" not in prompt.text
+    assert "parent_id/children" not in prompt.text
     assert "element candidates" not in prompt.text
     assert "element plans" not in prompt.text
+
+
+def test_page_spec_refine_prompt_uses_configured_processing_types() -> None:
+    prompt = render_agent_prompt(
+        agent_preset_by_id("page_spec_refine"),
+        inputs=(),
+        node_config={
+            "node_id": "page_spec_refine",
+            "page_spec_processing_types": ["no_process", "crop"],
+        },
+    )
+
+    assert "### no_process" in prompt.text
+    assert "### crop" in prompt.text
+    assert "### crop_nobg" not in prompt.text
+    assert "### chart_rebuild_reserved" not in prompt.text
+    assert "### svg_self_draw" not in prompt.text
+
+
+def test_page_spec_refine_prompt_rejects_unknown_processing_type() -> None:
+    with pytest.raises(ValueError, match="unsupported PageSpec processing type"):
+        render_agent_prompt(
+            agent_preset_by_id("page_spec_refine"),
+            inputs=(),
+            node_config={
+                "node_id": "page_spec_refine",
+                "page_spec_processing_types": ["no_process", "not_real"],
+            },
+        )
 
 
 def test_custom_agent_prompt_uses_configured_output_formats() -> None:

@@ -14,6 +14,7 @@ PAGE_ELEMENT_KINDS = {
     "text",
     "shape",
     "image",
+    "diagram",
     "connector",
     "table",
     "chart",
@@ -24,7 +25,8 @@ PAGE_ELEMENT_KINDS = {
 
 _ASSET_PROCESSING_TYPES = {"crop", "crop_nobg", "image_generate", "image_edit"}
 _PROCESSING_TO_BUILD_MODE = {
-    "svg_self_draw": "vector",
+    "no_process": "vector",
+    "svg_self_draw": "asset_ref",
     "crop": "asset_ref",
     "crop_nobg": "asset_ref",
     "image_generate": "asset_ref",
@@ -32,12 +34,12 @@ _PROCESSING_TO_BUILD_MODE = {
     "chart_rebuild_reserved": "structured",
 }
 _BUILD_MODE_TO_PROCESSING = {
-    "vector": "svg_self_draw",
-    "editable_text": "svg_self_draw",
-    "vector_shape": "svg_self_draw",
-    "connector": "svg_self_draw",
-    "group": "svg_self_draw",
-    "structured": "svg_self_draw",
+    "vector": "no_process",
+    "editable_text": "no_process",
+    "vector_shape": "no_process",
+    "connector": "no_process",
+    "group": "no_process",
+    "structured": "no_process",
 }
 
 
@@ -231,14 +233,14 @@ def _page_kind_from_element_type(element_type: str, processing_type: str) -> str
         return "text"
     if element_type in {"arrow"}:
         return "connector"
+    if element_type == "diagram":
+        return "diagram"
     if element_type in {"table", "chart"}:
         return element_type
     if processing_type in _ASSET_PROCESSING_TYPES or element_type in {"icon", "picture", "symbol"}:
         return "image"
     if element_type in {"frame", "grid", "content_box"}:
         return "shape"
-    if element_type == "diagram":
-        return "group"
     return "unknown"
 
 
@@ -253,17 +255,17 @@ def _candidate_payload(candidate: ElementCandidate | Mapping[str, Any]) -> dict[
 def _candidate_build_mode(kind: str, element_type: str) -> str:
     if kind == "text":
         return "editable_text"
-    if kind in {"shape", "connector", "table", "chart", "formula"}:
+    if kind in {"shape", "diagram", "connector", "table", "chart", "formula"}:
         return "vector"
-    if element_type in {"picture", "icon", "symbol", "diagram", "unknown"}:
+    if element_type in {"picture", "icon", "symbol", "unknown"}:
         return "asset_ref"
     return "vector"
 
 
 def _candidate_processing_type(element_type: str) -> str:
-    if element_type in {"picture", "icon", "symbol", "diagram", "unknown"}:
+    if element_type in {"picture", "icon", "symbol", "unknown"}:
         return "crop"
-    return "svg_self_draw"
+    return "no_process"
 
 
 def _element_id_from_candidate_id(candidate_id: str) -> str:
@@ -353,7 +355,7 @@ def _normalized_build(build: Mapping[str, Any], element_id: str) -> dict[str, An
     if not mode:
         mode = _PROCESSING_TO_BUILD_MODE.get(processing_type, "vector")
     if not processing_type:
-        processing_type = "crop" if mode == "asset_ref" else _BUILD_MODE_TO_PROCESSING.get(mode, "svg_self_draw")
+        processing_type = "crop" if mode == "asset_ref" else _BUILD_MODE_TO_PROCESSING.get(mode, "no_process")
     normalized = dict(build)
     normalized["mode"] = mode
     normalized["processing_type"] = processing_type

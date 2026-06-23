@@ -16,7 +16,7 @@ from drawai.rmbg_client import RmbgResult
 from drawai.v2.schema import utc_now
 
 _RASTER_PROCESSING_TYPES = {"crop", "crop_nobg"}
-_NON_MATERIALIZED_PROCESSING_TYPES = {"svg_self_draw", "chart_rebuild_reserved"}
+_NON_MATERIALIZED_PROCESSING_TYPES = {"no_process", "svg_self_draw", "chart_rebuild_reserved"}
 _UNSUPPORTED_PROCESSING_TYPES = {"image_generate", "image_edit"}
 
 
@@ -297,14 +297,14 @@ def _image_output_record(path: Path, output_dir: Path) -> dict[str, Any]:
 def _processing_type(element: Mapping[str, Any]) -> str:
     build = element.get("build")
     if not isinstance(build, Mapping):
-        return "svg_self_draw"
+        return "no_process"
     processing_type = build.get("processing_type")
     if isinstance(processing_type, str) and processing_type:
         return processing_type
     mode = str(build.get("mode") or "")
     if mode == "asset_ref":
         return "crop"
-    return "svg_self_draw"
+    return "no_process"
 
 
 def _bbox_xywh(element: Mapping[str, Any]) -> tuple[float, float, float, float]:

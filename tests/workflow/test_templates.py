@@ -65,7 +65,7 @@ def test_default_template_exposes_sam_prompt_configuration_on_sam_parser() -> No
         "text": "arrow",
         "confidence_threshold": 0.3,
     }
-    assert {prompt["id"] for prompt in prompts} >= {"content_box", "icon", "picture"}
+    assert {prompt["id"] for prompt in prompts} >= {"content_box", "diagram", "icon", "picture"}
 
 
 def test_default_template_uses_pagespec_processor_formats() -> None:
@@ -83,6 +83,12 @@ def test_default_template_uses_pagespec_processor_formats() -> None:
     assert nodes["page_spec_refine"].node_type == "agent"
     assert nodes["page_spec_refine"].inputs[1].formats == ("drawai.page_spec.v1",)
     assert nodes["page_spec_refine"].outputs[0].formats == ("drawai.page_spec.v1",)
+    assert nodes["page_spec_refine"].config["page_spec_processing_types"] == [
+        "no_process",
+        "crop",
+        "crop_nobg",
+        "chart_rebuild_reserved",
+    ]
     assert nodes["asset_prepare"].inputs[1].types == ("page_spec",)
     assert nodes["asset_prepare"].outputs[0].types == ("page_spec",)
     assert nodes["svg_compose"].node_type == "agent"

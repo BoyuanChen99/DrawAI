@@ -2532,6 +2532,10 @@ function V2AssetPackagePanel({
                           {rowPending && <ButtonSpinner />}
                           处理
                         </button>
+                      ) : element.processing_intent.processing_type === "no_process" ? (
+                        <button type="button" disabled title="非物化元素，不需要单独处理">
+                          不处理
+                        </button>
                       ) : element.processing_intent.processing_type === "chart_rebuild_reserved" ? (
                         <button type="button" disabled title="图表 Agent 接口已预留，当前版本不执行">
                           预留
@@ -6307,6 +6311,7 @@ function humanize(value: string): string {
     export: "导出",
     crop: "裁剪",
     crop_nobg: "去背景",
+    no_process: "不处理",
     svg_self_draw: "SVG 自绘",
     image_generate: "生成图",
     image_edit: "编辑图",
@@ -6314,6 +6319,7 @@ function humanize(value: string): string {
     picture: "图片",
     icon: "图标",
     chart: "图表",
+    diagram: "图解",
     table: "表格",
     text: "文本",
     frame: "框架",

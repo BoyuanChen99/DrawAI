@@ -4,7 +4,12 @@ from pathlib import Path
 
 from PIL import Image
 
-from drawai.page_spec import fuse_page_specs, validate_page_spec_payload, write_page_spec
+from drawai.page_spec import (
+    fuse_page_specs,
+    page_spec_from_candidates,
+    validate_page_spec_payload,
+    write_page_spec,
+)
 from drawai.page_spec_assets import materialize_page_spec_assets, materialized_asset_records
 
 
@@ -36,7 +41,7 @@ def test_fuse_page_specs_outputs_page_spec_elements_without_legacy_payloads() ->
                         "box_px": [4, 5, 8, 3],
                         "z_index": 6,
                         "text": "Hello",
-                        "build": {"mode": "editable_text", "processing_type": "svg_self_draw"},
+                        "build": {"mode": "editable_text", "processing_type": "no_process"},
                         "source_refs": [{"kind": "candidate", "id": "ocr:T001"}],
                     }
                 ],
@@ -51,6 +56,58 @@ def test_fuse_page_specs_outputs_page_spec_elements_without_legacy_payloads() ->
     assert fused["elements"][0]["build"]["processing_type"] == "crop"
     assert "candidate_payload" not in fused["elements"][0]["metadata"]
     assert fused["metadata"] == {}
+
+
+def test_page_spec_from_candidates_preserves_diagram_kind_with_no_process_default() -> None:
+    page_spec = page_spec_from_candidates(
+        [
+            {
+                "candidate_id": "sam:B001",
+                "element_type": "diagram",
+                "bbox": [2, 3, 10, 12],
+                "geometry": {"kind": "bbox", "bbox": [2, 3, 12, 15]},
+                "confidence": 0.92,
+                "source_parser": "sam3_structure_parser",
+            }
+        ],
+        page_id="page-1",
+        source_image="inputs/source.png",
+        canvas={"width_px": 24, "height_px": 24},
+        producer="sam_parse",
+    )
+
+    element = page_spec["elements"][0]
+    assert element["kind"] == "diagram"
+    assert element["role"] == "diagram"
+    assert element["build"] == {"mode": "vector", "processing_type": "no_process"}
+
+
+def test_fuse_page_specs_defaults_non_asset_build_to_no_process() -> None:
+    fused = fuse_page_specs(
+        (
+            _page_spec(
+                "ocr",
+                [
+                    {
+                        "id": "T001",
+                        "kind": "text",
+                        "role": "text",
+                        "box_px": [4, 5, 8, 3],
+                        "z_index": 6,
+                        "text": "Hello",
+                        "build": {"mode": "editable_text"},
+                    }
+                ],
+            ),
+        ),
+        page_id="page-1",
+        source_image="inputs/source.png",
+    )
+
+    assert fused["elements"][0]["build"] == {
+        "mode": "editable_text",
+        "processing_type": "no_process",
+    }
 
 
 def test_materialize_page_spec_assets_writes_bundle_relative_paths(tmp_path: Path) -> None:
@@ -74,7 +131,7 @@ def test_materialize_page_spec_assets_writes_bundle_relative_paths(tmp_path: Pat
                 "kind": "text",
                 "role": "text",
                 "box_px": [1, 1, 4, 4],
-                "build": {"mode": "editable_text", "processing_type": "svg_self_draw"},
+                "build": {"mode": "editable_text", "processing_type": "no_process"},
             },
         ],
     )

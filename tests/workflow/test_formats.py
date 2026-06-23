@@ -131,8 +131,16 @@ def test_validate_page_spec_accepts_canonical_page_elements(tmp_path: Path) -> N
                         "z_index": 1,
                         "confidence": "high",
                         "text": "DrawAI",
-                        "build": {"mode": "editable_text", "processing_type": "svg_self_draw"},
+                        "build": {"mode": "editable_text", "processing_type": "no_process"},
                         "source_refs": [{"kind": "candidate", "id": "ocr:T001"}],
+                    },
+                    {
+                        "id": "E002",
+                        "kind": "diagram",
+                        "role": "architecture_diagram",
+                        "box_px": [10, 20, 60, 40],
+                        "z_index": 2,
+                        "build": {"mode": "vector", "processing_type": "no_process"},
                     },
                     {
                         "id": "G001",

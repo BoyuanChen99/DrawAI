@@ -100,7 +100,7 @@ def default_format_registry() -> dict[str, FormatSpec]:
             description=(
                 "UTF-8 JSON object with schema drawai.page_spec.v1. It is the canonical page model used by "
                 "PageSpec-first DAGs: source, canvas, optional background, and elements. Elements use stable id, "
-                "kind text|shape|image|connector|table|chart|formula|group|unknown, source-pixel geometry "
+                "kind text|shape|image|diagram|connector|table|chart|formula|group|unknown, source-pixel geometry "
                 "box_px/points_px/polygon_px, z_index, role, build instructions, style, measurement, source_refs, "
                 "metadata, and optional materialization outputs. Materialization paths are relative to the "
                 "PageSpec JSON bundle directory."

@@ -10,12 +10,15 @@ from typing import Any, Literal
 from .agent_prompt_defaults import (
     CUSTOM_AGENT_CONSTRAINTS,
     CUSTOM_AGENT_TASK,
+    DEFAULT_PAGE_SPEC_REFINE_PROCESSING_TYPES,
     PAGE_SPEC_REFINE_CONSTRAINTS,
     PAGE_SPEC_REFINE_TASK,
     RUN0_ELEMENT_REFINE_CONSTRAINTS,
     RUN0_ELEMENT_REFINE_TASK,
     SVG_GENERATION_CONSTRAINTS,
     SVG_GENERATION_TASK,
+    normalize_page_spec_processing_types,
+    render_page_spec_refine_task,
 )
 from drawai.tooling import render_drawai_tool_prompt_section
 
@@ -48,8 +51,8 @@ TYPE_CONTRACTS = {
     ),
     "page_spec": (
         "Canonical one-page composition model. JSON contains schema drawai.page_spec.v1, page_id, source, canvas, "
-        "optional background, and elements with id, kind, box_px, z_index, role, build instructions, style, "
-        "measurement, source_refs, metadata, and optional group parent/children links."
+        "optional background, and elements with id, kind, box_px, z_index, role, build instructions including "
+        "processing_type, style, measurement, source_refs, metadata, and optional materialization outputs."
     ),
     "element_analysis": (
         "Legacy Run0 asset/source analysis JSON. JSON contains schema drawai.codex_element_analysis.v1, case_dir, "
@@ -801,6 +804,10 @@ def _validate_agent_config(config: Mapping[str, Any]) -> None:
             raise ValueError(f"{field_name} must be a string")
     if "drawai_tools" in config and not isinstance(config["drawai_tools"], list | tuple):
         raise ValueError("drawai_tools must be an array of tool ids")
+    if "page_spec_task_customized" in config and not isinstance(config["page_spec_task_customized"], bool):
+        raise ValueError("page_spec_task_customized must be a boolean")
+    if "page_spec_processing_types" in config:
+        _page_spec_processing_types(config)
 
 
 def _agent_options(config: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -852,7 +859,31 @@ def _agent_task(preset: AgentPreset, config: Mapping[str, Any]) -> str:
     task = raw.strip()
     if not task:
         raise ValueError("Agent task must be non-empty")
+    if (
+        preset.preset_id == "page_spec_refine"
+        and config.get("page_spec_task_customized") is not True
+        and _is_default_page_spec_refine_task(task)
+    ):
+        return render_page_spec_refine_task(_page_spec_processing_types(config))
     return task
+
+
+def _is_default_page_spec_refine_task(task: str) -> bool:
+    return task == PAGE_SPEC_REFINE_TASK or (
+        task.startswith("DrawAI PageSpec refinement task.")
+        and "## Available Processing Operations" in task
+        and "build.processing_type" in task
+        and "drawai.page_spec.v1" in task
+    )
+
+
+def _page_spec_processing_types(config: Mapping[str, Any]) -> tuple[str, ...]:
+    raw = config.get("page_spec_processing_types")
+    if raw is None:
+        return DEFAULT_PAGE_SPEC_REFINE_PROCESSING_TYPES
+    if not isinstance(raw, list | tuple):
+        raise ValueError("page_spec_processing_types must be an array of strings")
+    return normalize_page_spec_processing_types(raw)
 
 
 def _agent_constraints(

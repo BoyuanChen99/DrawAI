@@ -116,6 +116,24 @@ class _BaseProcessor:
         raise NotImplementedError
 
 
+class NoProcessProcessor(_BaseProcessor):
+    processor_type = "no_process"
+
+    def _process(
+        self,
+        root: Path,
+        plan: ElementPlan,
+        *,
+        source_image_path: str | Path | None,
+    ) -> _ProcessOutcome:
+        return _ProcessOutcome(
+            status="ok",
+            metadata={
+                "reason": "Element is structural and does not require asset materialization.",
+            },
+        )
+
+
 class CropProcessor(_BaseProcessor):
     processor_type = "crop"
 
@@ -388,6 +406,8 @@ def processor_for_type(
     providers: Mapping[str, Any] | None = None,
 ) -> AssetProcessor:
     providers = providers or {}
+    if processing_type == "no_process":
+        return NoProcessProcessor()
     if processing_type == "crop":
         return CropProcessor()
     if processing_type == "crop_nobg":
@@ -884,6 +904,7 @@ __all__ = [
     "CropProcessor",
     "ImageEditProcessor",
     "ImageGenerateProcessor",
+    "NoProcessProcessor",
     "SvgSelfDrawProcessor",
     "processor_for_type",
 ]

@@ -111,6 +111,13 @@ type SamPromptConfig = {
   text: string;
   confidence_threshold: number;
 };
+type PageSpecProcessingOperationOption = {
+  processing_type: string;
+  label: string;
+  meaning: string;
+  chooseWhen: string;
+  avoidWhen: string;
+};
 type NodePickerItem = {
   preset: NodePreset;
   compatible: boolean;
@@ -143,20 +150,91 @@ const DEFAULT_WORKFLOW_FOLDERS: WorkflowFolder[] = [
   { folder_id: BUILTIN_WORKFLOW_FOLDER_ID, name: "DrawAI默认工作流", builtin: true },
   { folder_id: CUSTOM_WORKFLOW_FOLDER_ID, name: "自定义工作流" }
 ];
+const DEFAULT_PAGE_SPEC_PROCESSING_TYPES = ["no_process", "crop", "crop_nobg", "chart_rebuild_reserved"];
+const PAGE_SPEC_PROCESSING_OPERATION_OPTIONS: PageSpecProcessingOperationOption[] = [
+  {
+    processing_type: "no_process",
+    label: "No process",
+    meaning: "Do not materialize this element in the processing stage; keep it as PageSpec structure for SVG Compose.",
+    chooseWhen: "Use for text, lines, shapes, tables, ordinary charts, structural diagrams, panels, and simple editable marks.",
+    avoidWhen: "Avoid for photos, screenshots, textures, complex raster regions, separable foreground objects, or assets needing a processor."
+  },
+  {
+    processing_type: "crop",
+    label: "Crop",
+    meaning: "Crop source pixels with the local background preserved as an independent asset.",
+    chooseWhen: "Use for photos, screenshots, heatmaps, dense textures, raster tiles, and details coupled to their background.",
+    avoidWhen: "Avoid for editable text, lines, simple shapes, table structure, transparent foreground objects, and SVG-drawable regions."
+  },
+  {
+    processing_type: "crop_nobg",
+    label: "Crop no BG",
+    meaning: "Crop the source region and remove its background to produce a transparent foreground asset.",
+    chooseWhen: "Use for logos, products, people, standalone illustrations, foreground icons, and clear separable subjects.",
+    avoidWhen: "Avoid for screenshots, heatmaps, textures, UI, photos whose background should remain attached, and ambiguous boundaries."
+  },
+  {
+    processing_type: "chart_rebuild_reserved",
+    label: "Chart reserved",
+    meaning: "Reserve the element for a future structured chart rebuild processor; it does not materialize an asset now.",
+    chooseWhen: "Use only for chart elements that clearly need future structured chart reconstruction.",
+    avoidWhen: "Avoid for non-chart elements, ordinary chart structures SVG Compose can draw, and chart screenshots that should be cropped."
+  },
+  {
+    processing_type: "svg_self_draw",
+    label: "SVG processor",
+    meaning: "Generate an independent SVG asset for this element during the processing stage.",
+    chooseWhen: "Use for complex vector elements that must become standalone SVG assets before final composition.",
+    avoidWhen: "Avoid for ordinary text, lines, shapes, tables, and elements SVG Compose can draw directly."
+  },
+  {
+    processing_type: "image_generate",
+    label: "Image generate",
+    meaning: "Generate a new image asset from the element semantics, description, and context.",
+    chooseWhen: "Use for image-like assets that should be generated instead of copied from the source image.",
+    avoidWhen: "Avoid for source content that can be cropped, foreground objects needing only background removal, and SVG-drawable structures."
+  },
+  {
+    processing_type: "image_edit",
+    label: "Image edit",
+    meaning: "Edit a source crop or existing image asset into a new image asset.",
+    chooseWhen: "Use for image-like assets needing localized repair, style adjustment, background adjustment, or content editing.",
+    avoidWhen: "Avoid for direct crops, foreground-only background removal, and SVG-drawable structures."
+  }
+];
 const AGENT_DEFAULT_TASKS: Record<string, string> = {
   page_spec_refine: `DrawAI PageSpec refinement task.
 
 You are operating on one page. The connected PageSpec is the only structured page model for this node. The refined PageSpec elements array is the handoff to every downstream node.
 
-Goal: read the original page image and the connected drawai.page_spec.v1 file, then write a refined drawai.page_spec.v1 file to the declared output path.
+DrawAI's overall task is to vectorize an input image. This node is in the visual element parsing and correction stage. Your job is to refine the previous PageSpec result against the original page image.
 
-Do not inspect DrawAI repository source code, import internal DrawAI modules, or call internal Python APIs to learn schema behavior. Use the declared DrawAI CLI tools, especially format describe and format validate, for format contracts and validation.
+Goal: read the original page image and the connected drawai.page_spec.v1 file, then write the refined drawai.page_spec.v1 file to the declared output path. The refinement must correct all page elements: add missing elements, delete redundant elements, split or merge elements, adjust kind, role, coordinates, z-order, text, style, and processing operation.
 
-Refine elements directly in PageSpec: adjust bbox, kind, role, z_index, text, style, measurement, build.mode, build.processing_type, build.asset_id, grouping, and source_refs when the image requires it. Split combined boxes, add missing visual elements, and delete duplicates/noise by removing them from elements.
+Required operations:
+- Treat the original image as visual truth and the connected PageSpec as evidence.
+- Check for redundant and missing elements. Add visible missing elements and delete duplicate, noisy, false-positive, or fully represented elements from elements.
+- Split an element when one box contains multiple independent visual parts that should not share one processing operation.
+- Merge elements when multiple boxes describe the same visual object. Keep the clearest existing id and delete redundant boxes.
+- Do not merge elements that require different processing operations. If one element contains parts that require different operations, split it.
+- For every retained or new element, set build.processing_type. Use only the processing operations provided in this task prompt. Do not invent or use unavailable operations.
+- If an element does not need an independent processed asset, use the processing operation that means no processing/materialization.
+- Preserve stable ids and record compact changes in metadata.refine_changes.
 
-For retained or new elements, set build.processing_type to svg_self_draw, crop, crop_nobg, or chart_rebuild_reserved. Use crop for rectangular raster material whose background must stay attached. Use crop_nobg for separable foreground objects that should sit on reconstructed SVG background after background removal.
+Element field guide:
+- kind: one of text, shape, image, diagram, connector, table, chart, formula, or unknown.
+- box_px: [x, y, width, height] in source image pixels. Width and height must be positive.
+- build.mode: construction mode, such as editable_text, vector, asset_ref, or structured.
+- build.processing_type: processing operation. It must be one of the available operations in this prompt.
+- build.asset_id: required when the selected processing operation produces an independent asset.
+- materialization: generated by a later processing node. Do not write or fake it in this refine node.
 
-Preserve stable ids: keep retained/adjusted ids, do not globally renumber, use new ids only for added/split children, and record changes in metadata.refine_changes. Before finishing, validate the declared output with the DrawAI format tool.`,
+${pageSpecProcessingOperationsPrompt(DEFAULT_PAGE_SPEC_PROCESSING_TYPES)}
+
+Output requirements:
+- Write exactly one JSON object with schema drawai.page_spec.v1.
+- The output PageSpec must validate under drawai.page_spec.v1.
+- Before finishing, run the DrawAI format tool against the declared output path: format validate --format-id drawai.page_spec.v1 --path <declared PageSpec output path>. Finish only after validation reports ok.`,
   svg_generation: `IMAGE VECTORIZATION TASK
 Goal: convert one bitmap figure into an editable, PPT-stable SVG.
 
@@ -246,7 +324,7 @@ const AGENT_DEFAULT_CONSTRAINTS: Record<string, string[]> = {
 const WORKFLOW_TYPE_CONTRACTS: Record<string, string> = {
   image: "Raster image file. Use it as visual evidence; do not rewrite it unless this node declares an image output.",
   page_spec:
-    "Canonical page composition model. JSON contains schema drawai.page_spec.v1, page_id, source, canvas, optional background, and elements with id, kind, box_px, z_index, role, build instructions, style, measurement, source_refs, metadata, optional group links, and optional materialization outputs.",
+    "Canonical page composition model. JSON contains schema drawai.page_spec.v1, page_id, source, canvas, optional background, and elements with id, kind, box_px, z_index, role, build instructions including processing_type, style, measurement, source_refs, metadata, and optional materialization outputs.",
   semantic_svg: "Editable SVG file with an <svg> root following the DrawAI semantic SVG/PPT profile.",
   pptx: "PowerPoint Open XML .pptx package.",
   final_outputs: "Output-node manifest listing collected deliverables and optional mirrored paths."
@@ -254,7 +332,7 @@ const WORKFLOW_TYPE_CONTRACTS: Record<string, string> = {
 const WORKFLOW_FORMAT_CONTRACTS: Record<string, string> = {
   "drawai.image.v1": "Openable raster image file, usually PNG/JPEG/WebP.",
   "drawai.page_spec.v1":
-    "UTF-8 JSON object with schema drawai.page_spec.v1. It is the PageSpec-first DAG artifact: source, canvas, optional background, canonical page elements, and optional bundle-relative materialization outputs.",
+    "UTF-8 JSON object with schema drawai.page_spec.v1. It is the PageSpec-first DAG artifact: source, canvas, optional background, canonical page elements with kind text|shape|image|diagram|connector|table|chart|formula|group|unknown, and optional bundle-relative materialization outputs.",
   "drawai.semantic_svg.v1": "SVG XML file whose document root is <svg>.",
   "drawai.pptx.v1": "Valid zipped PowerPoint Open XML package containing [Content_Types].xml and ppt/presentation.xml.",
   "drawai.final_outputs.v1": "UTF-8 JSON object with an outputs array generated by an output node."
@@ -263,6 +341,7 @@ const DEFAULT_SAM_PROMPTS: SamPromptConfig[] = [
   { id: "arrow", text: "arrow", confidence_threshold: 0.3 },
   { id: "border", text: "border", confidence_threshold: 0.3 },
   { id: "content_box", text: "content box", confidence_threshold: 0.15 },
+  { id: "diagram", text: "diagram", confidence_threshold: 0.2 },
   { id: "grid", text: "grid", confidence_threshold: 0.3 },
   { id: "icon", text: "icon", confidence_threshold: 0.3 },
   { id: "picture", text: "picture", confidence_threshold: 0.3 }
@@ -407,6 +486,7 @@ const NODE_PRESETS: NodePreset[] = [
       provider_id: "codex_sdk",
       reasoning_effort: "high",
       timeout_seconds: DEFAULT_AGENT_TIMEOUT_SECONDS,
+      page_spec_processing_types: [...DEFAULT_PAGE_SPEC_PROCESSING_TYPES],
       task: AGENT_DEFAULT_TASKS.page_spec_refine,
       constraints: AGENT_DEFAULT_CONSTRAINTS.page_spec_refine,
       drawai_tools: ["format"],
@@ -831,6 +911,29 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
   function updateSelectedNodeConfig(patch: Record<string, unknown>) {
     if (!selectedNode) return;
     updateNode(selectedNode.node_id, (node) => ({ ...node, config: { ...node.config, ...patch } }));
+  }
+
+  function updatePageSpecProcessingType(processingType: string, enabled: boolean) {
+    if (!selectedNode || !isPageSpecRefineAgentNode(selectedNode)) return;
+    const selected = new Set(pageSpecProcessingTypes(selectedNode));
+    if (enabled) selected.add(processingType);
+    else selected.delete(processingType);
+    const next = PAGE_SPEC_PROCESSING_OPERATION_OPTIONS
+      .map((option) => option.processing_type)
+      .filter((item) => selected.has(item));
+    if (next.length === 0) return;
+    updateSelectedNodeConfig({ page_spec_processing_types: next });
+  }
+
+  function resetPageSpecRefineTask() {
+    if (!selectedNode || !isPageSpecRefineAgentNode(selectedNode)) return;
+    updateSelectedNodeConfig({
+      task: AGENT_DEFAULT_TASKS.page_spec_refine,
+      prompt_fragments: "",
+      prompt_role: "",
+      user_prompt: "",
+      page_spec_task_customized: false
+    });
   }
 
   function deleteSelectedNode() {
@@ -1887,6 +1990,44 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                   </div>
                 </div>
 
+                {isPageSpecRefineAgentNode(selectedNode) && (() => {
+                  const selectedProcessingTypes = pageSpecProcessingTypes(selectedNode);
+                  return (
+                    <div className="workflow-inspector-section workflow-processing-section">
+                      <div className="workflow-section-title">
+                        <span>处理操作</span>
+                        <strong>{selectedProcessingTypes.length}</strong>
+                      </div>
+                      <div className="workflow-processing-options">
+                        {PAGE_SPEC_PROCESSING_OPERATION_OPTIONS.map((option) => {
+                          const checked = selectedProcessingTypes.includes(option.processing_type);
+                          const lastChecked = checked && selectedProcessingTypes.length === 1;
+                          return (
+                            <label className="workflow-processing-option" key={option.processing_type}>
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={readOnly || lastChecked}
+                                onChange={(event) => updatePageSpecProcessingType(option.processing_type, event.target.checked)}
+                              />
+                              <span>
+                                <strong>{option.label}</strong>
+                                <code>{option.processing_type}</code>
+                              </span>
+                              <em>{option.meaning}</em>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      {selectedNode.config.page_spec_task_customized === true && (
+                        <button type="button" disabled={readOnly} onClick={resetPageSpecRefineTask}>
+                          恢复默认任务提示词
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()}
+
                 <div className="workflow-inspector-section">
                   <div className="workflow-section-title">
                     <span>输入文件</span>
@@ -1969,7 +2110,15 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                     rows={5}
                     disabled={readOnly}
                     value={agentTaskText(selectedNode)}
-                    onChange={(event) => updateSelectedNodeConfig({ task: event.target.value, prompt_fragments: "", prompt_role: "" })}
+                    onChange={(event) => {
+                      const patch: Record<string, unknown> = {
+                        task: event.target.value,
+                        prompt_fragments: "",
+                        prompt_role: ""
+                      };
+                      if (isPageSpecRefineAgentNode(selectedNode)) patch.page_spec_task_customized = true;
+                      updateSelectedNodeConfig(patch);
+                    }}
                   />
                 </label>
                 <label className="workflow-field">
@@ -2361,7 +2510,62 @@ function agentTaskText(node: WorkflowNode): string {
     || configText(node.config.prompt_role)
     || configText(node.config.prompt_fragments)
     || configText(node.config.user_prompt);
-  return raw || AGENT_DEFAULT_TASKS[agentPresetId(node)] || "";
+  const task = raw || AGENT_DEFAULT_TASKS[agentPresetId(node)] || "";
+  if (isPageSpecRefineAgentNode(node) && node.config.page_spec_task_customized !== true) {
+    return pageSpecRefineTaskTextWithProcessingTypes(task, pageSpecProcessingTypes(node));
+  }
+  return task;
+}
+
+function isPageSpecRefineAgentNode(node: WorkflowNode): boolean {
+  return node.node_type === "agent" && agentPresetId(node) === "page_spec_refine";
+}
+
+function pageSpecProcessingTypes(node: WorkflowNode): string[] {
+  const raw = node.config.page_spec_processing_types;
+  const known = new Set(PAGE_SPEC_PROCESSING_OPERATION_OPTIONS.map((option) => option.processing_type));
+  if (!Array.isArray(raw)) return [...DEFAULT_PAGE_SPEC_PROCESSING_TYPES];
+  const selected: string[] = [];
+  raw.forEach((item) => {
+    if (typeof item !== "string") return;
+    const processingType = item.trim();
+    if (!processingType || !known.has(processingType) || selected.includes(processingType)) return;
+    selected.push(processingType);
+  });
+  return selected.length > 0 ? selected : [...DEFAULT_PAGE_SPEC_PROCESSING_TYPES];
+}
+
+function pageSpecProcessingOperationsPrompt(processingTypes: string[]): string {
+  const selected = new Set(processingTypes);
+  const sections = ["## Available Processing Operations"];
+  PAGE_SPEC_PROCESSING_OPERATION_OPTIONS
+    .filter((option) => selected.has(option.processing_type))
+    .forEach((option) => {
+      sections.push(
+        [
+          `### ${option.processing_type}`,
+          "",
+          `Meaning: ${option.meaning}`,
+          "",
+          `Choose when: ${option.chooseWhen}`,
+          "",
+          `Do not choose when: ${option.avoidWhen}`
+        ].join("\n")
+      );
+    });
+  return sections.join("\n\n");
+}
+
+function pageSpecRefineTaskTextWithProcessingTypes(task: string, processingTypes: string[]): string {
+  const processingBlock = pageSpecProcessingOperationsPrompt(processingTypes);
+  const beforeOutput = "\n\nOutput requirements:";
+  const operationSection = /## Available Processing Operations[\s\S]*?(?=\n\nOutput requirements:)/;
+  if (operationSection.test(task)) return task.replace(operationSection, processingBlock);
+  const outputIndex = task.indexOf(beforeOutput);
+  if (outputIndex >= 0) {
+    return `${task.slice(0, outputIndex).trim()}\n\n${processingBlock}${task.slice(outputIndex)}`;
+  }
+  return `${task.trim()}\n\n${processingBlock}`;
 }
 
 function agentConstraints(node: WorkflowNode): string[] {

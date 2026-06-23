@@ -15,6 +15,7 @@ from drawai.v2.processors import (
     CropProcessor,
     ImageEditProcessor,
     ImageGenerateProcessor,
+    NoProcessProcessor,
     SvgSelfDrawProcessor,
     processor_for_type,
 )
@@ -136,6 +137,18 @@ def test_svg_self_draw_processor_creates_editable_payload(tmp_path: Path) -> Non
     assert package["status"] == "ok"
     assert package["editable_payload"]["kind"] == "svg_self_draw_constraints"
     assert package["editable_payload"]["element_id"] == "E001"
+
+
+def test_no_process_processor_writes_empty_ok_package(tmp_path: Path) -> None:
+    NoProcessProcessor().process(tmp_path, _plan("no_process"))
+
+    package = read_asset_package(tmp_path, "E001")
+    assert package["status"] == "ok"
+    assert package["processor_type"] == "no_process"
+    assert package["files"] == []
+    assert package["active_result"] is None
+    assert "does not require asset materialization" in package["metadata"]["last_run_metadata"]["reason"]
+    assert package["processor_runs"][0]["output_refs"] == {}
 
 
 def test_chart_reserved_processor_is_unsupported(tmp_path: Path) -> None:
@@ -333,6 +346,7 @@ def test_image_edit_processor_rejects_provider_output_in_other_result_dir(tmp_pa
 def test_processor_for_type_uses_provider_dependencies() -> None:
     rmbg_client = FakeRmbgClient()
 
+    assert isinstance(processor_for_type("no_process", {}), NoProcessProcessor)
     assert isinstance(processor_for_type("crop", {}), CropProcessor)
     assert isinstance(
         processor_for_type("crop_nobg", {"rmbg_client": rmbg_client}),

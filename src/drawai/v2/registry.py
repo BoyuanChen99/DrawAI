@@ -44,6 +44,7 @@ class DrawAiRegistry:
                 schema_version=f"drawai.core.element.{element_type}.v1",
             )
         for processing_type in (
+            "no_process",
             "svg_self_draw",
             "crop",
             "crop_nobg",
