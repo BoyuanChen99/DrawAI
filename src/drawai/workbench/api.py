@@ -53,6 +53,7 @@ from ..v2.workbench import (
     fork_v2_case_from_source,
     process_case_asset,
 )
+from .agent_settings import WORKBENCH_SELECTABLE_AGENT_PROVIDER_IDS
 from .models import BatchExecutionMode, CaseRecord, WorkbenchSettings
 from .runner import WorkbenchRunner, create_case_config
 from .store import WorkbenchStore
@@ -221,10 +222,12 @@ def create_app(
 
     @app.get("/api/workflow/providers")
     def list_workflow_agent_providers_api() -> dict[str, Any]:
+        selectable = set(WORKBENCH_SELECTABLE_AGENT_PROVIDER_IDS)
         return {
             "providers": [
                 provider.to_dict()
                 for provider in default_agent_provider_registry().values()
+                if provider.provider_id in selectable
             ]
         }
 

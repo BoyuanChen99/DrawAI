@@ -119,6 +119,7 @@ def test_workbench_workflow_provider_api_lists_provider_scoped_limits(tmp_path: 
     providers = {item["provider_id"]: item for item in response.json()["providers"]}
     assert providers["codex_sdk"]["resource_key"] == "agent_provider:codex_sdk"
     assert providers["kimi_cli"]["resource_key"] == "agent_provider:kimi_cli"
+    assert "drawai_tool_agent" not in providers
 
 
 def test_workbench_agent_settings_api_discovers_validates_and_saves_cli_provider(
@@ -138,6 +139,7 @@ def test_workbench_agent_settings_api_discovers_validates_and_saves_cli_provider
     assert agents["kimi_cli"]["status"] == "ok"
     assert agents["kimi_cli"]["executable_path"] == str(kimi)
     assert agents["kimi_cli"]["version"] == "kimi 1.2.3"
+    assert "drawai_tool_agent" not in agents
 
     save_response = client.put(
         "/api/workbench/agent-settings",
@@ -166,6 +168,33 @@ def test_workbench_agent_settings_api_discovers_validates_and_saves_cli_provider
     assert settings["llm_api_key_env"] == "OPENROUTER_API_KEY"
     assert settings["llm_wire_api"] == "chat_completions"
     assert settings["llm_extra_body"] == {"reasoning": {"enabled": True}}
+
+
+def test_workbench_agent_settings_api_rejects_hidden_drawai_tool_agent(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.put(
+        "/api/workbench/agent-settings",
+        json={"selected_provider_id": "drawai_tool_agent"},
+    )
+
+    assert response.status_code == 400
+    assert "not selectable yet" in response.json()["detail"]
+
+
+def test_workbench_agent_settings_api_falls_back_from_stale_hidden_provider(tmp_path: Path) -> None:
+    settings_path = tmp_path / "workspace" / "settings" / "agent.json"
+    settings_path.parent.mkdir(parents=True)
+    settings_path.write_text(
+        json.dumps({"selected_provider_id": "drawai_tool_agent", "model": "qwen3.7-plus"}),
+        encoding="utf-8",
+    )
+    client = _client(tmp_path)
+
+    response = client.get("/api/workbench/agent-settings")
+
+    assert response.status_code == 200
+    assert response.json()["settings"]["selected_provider_id"] == "codex_sdk"
 
 
 def test_create_batch_applies_saved_workbench_agent_to_case_config(

@@ -116,6 +116,12 @@ AGENT_DEFINITIONS: dict[str, WorkbenchAgentDefinition] = {
     ),
 }
 
+WORKBENCH_SELECTABLE_AGENT_PROVIDER_IDS: tuple[str, ...] = tuple(
+    provider_id
+    for provider_id in AGENT_DEFINITIONS
+    if provider_id != DRAWAI_TOOL_AGENT_PROVIDER
+)
+
 
 def agent_settings_path(workspace: str | Path) -> Path:
     return Path(workspace).expanduser().resolve(strict=False) / "settings" / "agent.json"
@@ -128,7 +134,7 @@ def read_workbench_agent_settings(workspace: str | Path) -> WorkbenchAgentSettin
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, Mapping):
         raise ValueError(f"Workbench agent settings must be a JSON object: {path}")
-    return normalize_workbench_agent_settings(payload)
+    return normalize_workbench_agent_settings(payload, fallback_hidden_provider=True)
 
 
 def write_workbench_agent_settings(
@@ -142,12 +148,22 @@ def write_workbench_agent_settings(
     return settings
 
 
-def normalize_workbench_agent_settings(payload: Mapping[str, Any] | None) -> WorkbenchAgentSettings:
+def normalize_workbench_agent_settings(
+    payload: Mapping[str, Any] | None,
+    *,
+    fallback_hidden_provider: bool = False,
+) -> WorkbenchAgentSettings:
     data = dict(payload or {})
     provider_id = str(data.get("selected_provider_id") or data.get("provider_id") or DEFAULT_AGENT_PROVIDER_ID).strip()
     if provider_id not in AGENT_DEFINITIONS:
-        supported = ", ".join(sorted(AGENT_DEFINITIONS))
+        supported = ", ".join(WORKBENCH_SELECTABLE_AGENT_PROVIDER_IDS)
         raise ValueError(f"unsupported Workbench agent provider: {provider_id!r}. Expected one of: {supported}")
+    if provider_id not in WORKBENCH_SELECTABLE_AGENT_PROVIDER_IDS:
+        if fallback_hidden_provider:
+            provider_id = DEFAULT_AGENT_PROVIDER_ID
+        else:
+            supported = ", ".join(WORKBENCH_SELECTABLE_AGENT_PROVIDER_IDS)
+            raise ValueError(f"Workbench agent provider is not selectable yet: {provider_id!r}. Expected one of: {supported}")
     reasoning_effort = str(data.get("reasoning_effort") or "").strip().lower()
     if reasoning_effort and reasoning_effort not in SUPPORTED_REASONING_EFFORTS:
         supported = ", ".join(SUPPORTED_REASONING_EFFORTS)
@@ -177,7 +193,7 @@ def normalize_workbench_agent_settings(payload: Mapping[str, Any] | None) -> Wor
 
 
 def discover_workbench_agents() -> list[dict[str, Any]]:
-    return [_discover_agent(definition) for definition in AGENT_DEFINITIONS.values()]
+    return [_discover_agent(AGENT_DEFINITIONS[provider_id]) for provider_id in WORKBENCH_SELECTABLE_AGENT_PROVIDER_IDS]
 
 
 def workbench_agent_settings_payload(workspace: str | Path) -> dict[str, Any]:
