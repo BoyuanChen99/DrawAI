@@ -432,6 +432,108 @@ def test_asset_processor_providers_routes_images_api_generation_driver(
     assert provider_result["provider"] == "openai_images"
 
 
+def test_asset_prepare_receives_images_api_generate_and_edit_providers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(tmp_path)
+    preset_response = client.put(
+        "/api/workbench/api-presets",
+        json={
+            "presets": [
+                {
+                    "id": "apimart_images",
+                    "label": "Apimart Images",
+                    "type": "images_api",
+                    "base_url": "https://api.apimart.example",
+                    "model": "gpt-image-2",
+                    "api_key": "plain-test-key",
+                }
+            ]
+        },
+    )
+    assert preset_response.status_code == 200
+    settings_response = client.put(
+        "/api/workbench/processor-settings",
+        json={
+            "processors": {
+                "image_generate": {
+                    "enabled": True,
+                    "driver_id": "openai_images_api",
+                    "api_preset_id": "apimart_images",
+                },
+                "image_edit": {
+                    "enabled": True,
+                    "driver_id": "openai_images_api",
+                    "api_preset_id": "apimart_images",
+                },
+            }
+        },
+    )
+    assert settings_response.status_code == 200
+
+    source = tmp_path / "source.png"
+    Image.new("RGBA", (64, 48), (255, 255, 255, 255)).save(source)
+    page_spec = {
+        "schema": "drawai.page_spec.v1",
+        "page_id": "provider-routing",
+        "source": {"image": str(source), "width_px": 64, "height_px": 48},
+        "canvas": {"width_px": 64, "height_px": 48},
+        "background": {},
+        "elements": [
+            {
+                "id": "E001",
+                "kind": "image",
+                "role": "representation",
+                "box_px": [2, 2, 18, 12],
+                "z_index": 1,
+                "build": {"mode": "asset_ref", "processing_type": "image_generate"},
+            },
+            {
+                "id": "E002",
+                "kind": "image",
+                "role": "representation",
+                "box_px": [24, 2, 18, 12],
+                "z_index": 2,
+                "build": {"mode": "asset_ref", "processing_type": "image_edit"},
+            },
+        ],
+        "metadata": {},
+    }
+    upstream_calls: list[str] = []
+
+    def fake_upstream(
+        payload: Mapping[str, object],
+        *,
+        api_url: str,
+        api_key: str | None = None,
+    ) -> dict[str, object]:
+        upstream_calls.append(api_url)
+        assert api_key == "plain-test-key"
+        buffer = io.BytesIO()
+        Image.new("RGB", (4, 3), "#1f77b4").save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        return {"data": [{"id": f"img_{len(upstream_calls)}", "b64_json": encoded}]}
+
+    from drawai.page_spec_assets import materialize_page_spec_assets
+    from drawai.workbench import image_processor_providers as provider_module
+
+    monkeypatch.setattr(provider_module, "call_image_generation_upstream", fake_upstream)
+    materialized = materialize_page_spec_assets(
+        page_spec,
+        source_image_path=source,
+        output_dir=tmp_path / "bundle",
+        **provider_module.asset_prepare_image_providers(tmp_path / "workspace"),
+    )
+
+    assert upstream_calls == [
+        "https://api.apimart.example/v1/images/generations",
+        "https://api.apimart.example/v1/images/edits",
+    ]
+    assert materialized["elements"][0]["materialization"]["processing_type"] == "image_generate"
+    assert materialized["elements"][1]["materialization"]["processing_type"] == "image_edit"
+
+
 def test_workbench_processor_settings_api_rejects_invalid_processor_settings(tmp_path: Path) -> None:
     client = _client(tmp_path)
 

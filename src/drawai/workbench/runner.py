@@ -70,6 +70,7 @@ from .agent_settings import (
     read_workbench_agent_settings,
     workbench_agent_runtime_options,
 )
+from .image_processor_providers import asset_prepare_image_providers
 from .processor_settings import resolved_processor_operation_config
 from .models import CaseRecord, WorkbenchSettings
 from .store import WorkbenchStore
@@ -746,12 +747,15 @@ class WorkbenchRunner:
             cfg = load_drawai_config(case.config_path, validate_input_exists=False)
             rmbg_config = cfg.asset_materialization.rmbg
             rmbg_client = RemoteRmbgClient(rmbg_config.base_url) if rmbg_config.enabled else None
+            image_providers = asset_prepare_image_providers(self.store.workspace)
             materialized = materialize_page_spec_assets(
                 page_spec,
                 source_image_path=source_image,
                 output_dir=context.output_dir,
                 rmbg_config=rmbg_config,
                 rmbg_client=rmbg_client,
+                image_generate=image_providers.get("image_generate"),
+                image_edit=image_providers.get("image_edit"),
             )
             canonical_path = write_page_spec(Path(case.run_root) / "page_spec.json", materialized)
             output_path = write_page_spec(context.output_dir / "page_spec.json", materialized)

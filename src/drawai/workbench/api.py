@@ -38,6 +38,7 @@ from .api_presets import (
     workbench_api_presets_payload,
     write_workbench_api_presets,
 )
+from .image_processor_providers import images_api_edit_provider as _shared_images_api_edit_provider
 from .processor_settings import (
     ProcessorSetting,
     require_processor_configured,
@@ -1139,6 +1140,13 @@ def _asset_processor_providers(
     ):
         preset = _processor_api_preset(settings.workspace, processor, processor_setting)
         providers["image_generate"] = _images_api_generate_provider(preset)
+    if (
+        processor == "image_edit"
+        and processor_setting is not None
+        and processor_setting.driver_id == "openai_images_api"
+    ):
+        preset = _processor_api_preset(settings.workspace, processor, processor_setting)
+        providers["image_edit"] = _images_api_edit_provider(preset)
     return providers
 
 
@@ -1189,6 +1197,10 @@ def _images_api_generate_provider(preset: ApiPreset) -> Callable[..., Mapping[st
         }
 
     return generate
+
+
+def _images_api_edit_provider(preset: ApiPreset) -> Callable[..., Mapping[str, Any]]:
+    return _shared_images_api_edit_provider(preset)
 
 
 def _images_api_generation_payload(
