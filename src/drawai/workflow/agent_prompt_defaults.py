@@ -165,23 +165,32 @@ PAGE_SPEC_PROCESSING_OPERATIONS = {
     ),
     "image_generate": PageSpecProcessingOperation(
         processing_type="image_generate",
-        meaning="Generate a new image asset from the element semantics, description, and context.",
-        choose_when="Choose for image-like assets that must be generated rather than copied from the source image.",
+        meaning=(
+            "Generate a new raster image asset from the element's semantic role, nearby labels, "
+            "page context, and target box size. The result will be scaled back into the original PageSpec box."
+        ),
+        choose_when=(
+            "Choose for image-like conceptual graphics, illustrative icons, missing or low-quality visual assets, "
+            "and regions where copying source pixels would preserve noise rather than a clean representation."
+        ),
         avoid_when=(
-            "Do not choose for source content that can be cropped, foreground objects that only need background "
-            "removal, or structures that SVG Compose can draw."
+            "Do not choose for editable text, lines, simple shapes, tables, charts, source pixels that are already "
+            "acceptable as crops, or foreground objects that only need background removal."
         ),
     ),
     "image_edit": PageSpecProcessingOperation(
         processing_type="image_edit",
-        meaning="Edit a source crop or existing image asset to produce a new image asset.",
+        meaning=(
+            "Crop the source element and edit it into a cleaner raster asset while preserving its original composition, "
+            "visual role, colors, aspect, and placement constraints."
+        ),
         choose_when=(
-            "Choose for image-like assets that need localized repair, style adjustment, background adjustment, "
-            "or content editing based on the source image."
+            "Choose when the source crop already contains the target object but needs cleanup, redraw, deblurring, "
+            "background adjustment, style harmonization, or higher-quality reconstruction."
         ),
         avoid_when=(
-            "Do not choose for regions that can be used as direct crops, foreground objects that only need "
-            "background removal, or structures that SVG Compose can draw."
+            "Do not choose for elements that should remain structural, direct crops that are already good enough, "
+            "or standalone foreground objects where crop_nobg is sufficient."
         ),
     ),
 }

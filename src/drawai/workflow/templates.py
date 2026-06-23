@@ -30,7 +30,18 @@ from .schema import (
 from .validation import validate_workflow_template
 
 DEFAULT_WORKFLOW_TEMPLATE_ID = "default_drawai_dag"
-_BUILTIN_TEMPLATE_IDS = (DEFAULT_WORKFLOW_TEMPLATE_ID,)
+PROCESSOR_TEST_WORKFLOW_TEMPLATE_ID = "processor_test_page_spec_assets"
+PROCESSOR_TEST_PAGE_SPEC_PROCESSING_TYPES = (
+    "no_process",
+    "crop",
+    "crop_nobg",
+    "image_generate",
+    "image_edit",
+)
+_BUILTIN_TEMPLATE_IDS = (
+    DEFAULT_WORKFLOW_TEMPLATE_ID,
+    PROCESSOR_TEST_WORKFLOW_TEMPLATE_ID,
+)
 
 
 def default_drawai_workflow_template() -> WorkflowTemplate:
@@ -352,6 +363,92 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
     )
 
 
+def processor_test_page_spec_assets_workflow_template() -> WorkflowTemplate:
+    base = default_drawai_workflow_template()
+    keep_node_ids = {
+        "input",
+        "sam_parse",
+        "ocr_parse",
+        "page_spec_fuse",
+        "page_spec_refine",
+        "asset_prepare",
+        "output",
+    }
+    nodes: list[WorkflowNode] = []
+    for node in base.nodes:
+        if node.node_id not in keep_node_ids:
+            continue
+        if node.node_id == "page_spec_refine":
+            nodes.append(
+                replace(
+                    node,
+                    config={
+                        **dict(node.config),
+                        "page_spec_processing_types": list(PROCESSOR_TEST_PAGE_SPEC_PROCESSING_TYPES),
+                    },
+                )
+            )
+            continue
+        if node.node_id == "asset_prepare":
+            outputs = (
+                replace(
+                    node.outputs[0],
+                    description=(
+                        "Materialized PageSpec plus processor placement preview. "
+                        "crop/crop_nobg/image_generate/image_edit elements contain active materialization paths."
+                    ),
+                ),
+            )
+            nodes.append(replace(node, outputs=outputs, position={"x": 1120, "y": 160}))
+            continue
+        if node.node_id == "output":
+            nodes.append(
+                replace(
+                    node,
+                    inputs=(
+                        _input(
+                            "deliverables",
+                            "Deliverables",
+                            ("page_spec",),
+                            cardinality="many",
+                            description="Collect processor-test PageSpec outputs from asset_prepare.",
+                        ),
+                    ),
+                    position={"x": 1400, "y": 160},
+                )
+            )
+            continue
+        nodes.append(node)
+
+    edges = tuple(
+        edge
+        for edge in base.edges
+        if edge.source_node_id in keep_node_ids
+        and edge.target_node_id in keep_node_ids
+        and edge.source_node_id not in {"svg_compose", "svg_to_ppt"}
+        and edge.target_node_id not in {"svg_compose", "svg_to_ppt"}
+    )
+    edges = (
+        *edges,
+        _edge("asset_prepare", "page_spec", "output", "deliverables"),
+    )
+    defaults = dict(base.defaults)
+    defaults["builtin"] = True
+    defaults["read_only"] = True
+    return replace(
+        base,
+        template_id=PROCESSOR_TEST_WORKFLOW_TEMPLATE_ID,
+        name="Processor Test: PageSpec Assets",
+        description=(
+            "Built-in PageSpec workflow for testing asset_prepare processor choices and placement "
+            "without SVG Compose or PPT export."
+        ),
+        nodes=tuple(nodes),
+        edges=edges,
+        defaults=defaults,
+    )
+
+
 def workflow_templates_dir(workspace: str | Path) -> Path:
     return Path(workspace).expanduser().resolve(strict=False) / ".drawai" / "workflows"
 
@@ -361,7 +458,10 @@ def user_workflow_template_path(workspace: str | Path, template_id: str) -> Path
 
 
 def builtin_workflow_templates() -> tuple[WorkflowTemplate, ...]:
-    return (default_drawai_workflow_template(),)
+    return (
+        default_drawai_workflow_template(),
+        processor_test_page_spec_assets_workflow_template(),
+    )
 
 
 def load_workflow_template_by_id(workspace: str | Path, template_id: str) -> WorkflowTemplate:
@@ -430,15 +530,16 @@ def copy_builtin_template_to_workspace(
 
 
 def copy_builtin_template(template_id: str, *, name: str) -> WorkflowTemplate:
-    if template_id != DEFAULT_WORKFLOW_TEMPLATE_ID:
+    if template_id not in _BUILTIN_TEMPLATE_IDS:
         raise ValueError(f"unknown built-in workflow template: {template_id}")
     copied_id = f"custom_{_safe_template_id(name).replace('-', '_')}"
-    defaults = dict(default_drawai_workflow_template().defaults)
+    source_template = _builtin_workflow_template(template_id)
+    defaults = dict(source_template.defaults)
     defaults["builtin"] = False
     defaults["read_only"] = False
     defaults["source_template_id"] = template_id
     return replace(
-        default_drawai_workflow_template(),
+        source_template,
         template_id=copied_id,
         name=name,
         defaults=defaults,
@@ -464,6 +565,8 @@ def workflow_template_from_dict(payload: Mapping[str, Any]) -> WorkflowTemplate:
 def _builtin_workflow_template(template_id: str) -> WorkflowTemplate:
     if template_id == DEFAULT_WORKFLOW_TEMPLATE_ID:
         return default_drawai_workflow_template()
+    if template_id == PROCESSOR_TEST_WORKFLOW_TEMPLATE_ID:
+        return processor_test_page_spec_assets_workflow_template()
     raise ValueError(f"unknown built-in workflow template: {template_id}")
 
 

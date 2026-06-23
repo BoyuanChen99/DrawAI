@@ -48,6 +48,25 @@ def test_default_template_contains_pagespec_dag_nodes() -> None:
     }
 
 
+def test_builtin_processor_test_template_uses_asset_prepare_without_svg_compose() -> None:
+    template = load_workflow_template_by_id(".", "processor_test_page_spec_assets")
+    nodes = {node.node_id: node for node in template.nodes}
+
+    assert "page_spec_refine" in nodes
+    assert "asset_prepare" in nodes
+    assert "svg_compose" not in nodes
+    assert "svg_to_ppt" not in nodes
+    assert nodes["page_spec_refine"].config["page_spec_processing_types"] == [
+        "no_process",
+        "crop",
+        "crop_nobg",
+        "image_generate",
+        "image_edit",
+    ]
+    assert nodes["asset_prepare"].config["processor_id"] == "asset_prepare"
+    assert nodes["asset_prepare"].config["stage"] == "process_assets"
+
+
 def test_default_template_skips_human_review_node() -> None:
     template = default_drawai_workflow_template()
 

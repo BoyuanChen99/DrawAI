@@ -297,6 +297,7 @@ def test_workbench_processor_settings_api_lists_registered_processors(tmp_path: 
     assert "crop" in payload["definitions"]["processors"]
     assert "image_generate" in payload["definitions"]["processors"]
     assert "openai_images_api" in payload["definitions"]["drivers"]
+    assert "openai_images_api" in payload["definitions"]["processors"]["image_edit"]["supported_driver_ids"]
     assert payload["settings"]["processors"]["crop"]["enabled"] is True
     assert payload["validation"]["processors"]["crop"]["configured"] is True
     assert payload["settings"]["processors"]["image_generate"]["enabled"] is False
