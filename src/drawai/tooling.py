@@ -9,7 +9,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from drawai.page_spec_assets import materialized_asset_records, page_spec_asset_manifest
 
@@ -118,9 +118,12 @@ def render_drawai_tool_prompt_section(
     tool_ids: Sequence[str],
     *,
     command_prefix: str,
+    invocation: Literal["cli", "tool_call"] = "cli",
 ) -> str:
     registry = drawai_tool_registry()
     selected = [_required_tool(registry, tool_id) for tool_id in _ordered_unique(tool_ids)]
+    if invocation == "tool_call":
+        return _render_drawai_tool_call_prompt_section(selected)
     lines = [
         "## DrawAI Tools",
         "Use only the DrawAI tools listed here. They are CLI product interfaces, not direct Python function calls.",
@@ -141,6 +144,40 @@ def render_drawai_tool_prompt_section(
             lines.append("Examples:")
             lines.extend(f"- `{command_prefix} {example}`" for example in tool.examples)
     return "\n".join(lines)
+
+
+def _render_drawai_tool_call_prompt_section(tools: Sequence[DrawAITool]) -> str:
+    lines = [
+        "## DrawAI Tools",
+        "Use only the DrawAI tools listed here. They are product interfaces exposed through the `run_drawai_tool` API tool, not shell commands.",
+        "Call `run_drawai_tool` with `tool_id` and an `args` string array. For an unfamiliar tool contract, call `run_drawai_tool` with `tool_id: \"help\"` and `args: [\"<tool_id>\"]` before using it.",
+    ]
+    for tool in tools:
+        lines.extend(
+            [
+                "",
+                f"### Tool `{tool.tool_id}`",
+                tool.summary,
+                "Parameters:",
+            ]
+        )
+        lines.extend(f"- {parameter}" for parameter in tool.parameters)
+        if tool.examples:
+            lines.append("Examples:")
+            for example in tool.examples:
+                invocation = _tool_call_example(example)
+                lines.append(f"- `{invocation}`")
+    return "\n".join(lines)
+
+
+def _tool_call_example(example: str) -> str:
+    parts = shlex.split(example)
+    if not parts:
+        return 'run_drawai_tool({"tool_id": "", "args": []})'
+    return "run_drawai_tool(" + json.dumps(
+        {"tool_id": parts[0], "args": parts[1:]},
+        ensure_ascii=False,
+    ) + ")"
 
 
 def resolve_drawai_tool_command_prefix(repo_root: str | Path, *, cwd: str | Path) -> str:

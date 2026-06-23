@@ -12,13 +12,6 @@ from pathlib import Path
 from typing import Any
 
 from drawai import model_runtime
-from drawai.tool_agent_runtime import (
-    DEFAULT_TOOL_AGENT_MAX_ITERATIONS,
-    DEFAULT_TOOL_AGENT_MAX_OUTPUT_TOKENS,
-    DRAWAI_TOOL_AGENT_PROVIDER,
-    DrawAIToolAgentError,
-    invoke_drawai_tool_agent,
-)
 
 from .agents import (
     TYPE_CONTRACTS,
@@ -194,16 +187,6 @@ def execute_llm_prompt(
             "declared_outputs": [dict(item) for item in request.prompt.outputs],
         },
     )
-    if request.prompt.provider_id == DRAWAI_TOOL_AGENT_PROVIDER and invoke_model is None:
-        result = _execute_tool_agent_llm_prompt(
-            request,
-            prompt_path=prompt_path,
-            stdout_path=stdout_path,
-            trace_path=trace_path,
-            started_at=started_at,
-        )
-        return result
-
     invoker = invoke_model or model_runtime.invoke_multimodal_text
     fallback_used = False
     response_text = ""
@@ -276,19 +259,6 @@ def _render_llm_prompt_text(
     drawai_tools: tuple[str, ...],
     runtime_context: Mapping[str, str],
 ) -> str:
-    if provider_id == DRAWAI_TOOL_AGENT_PROVIDER:
-        return _render_tool_agent_prompt_text(
-            node_id=node_id,
-            provider_id=provider_id,
-            inputs=inputs,
-            outputs=outputs,
-            options=options,
-            task=task,
-            constraints=constraints,
-            drawai_tools=drawai_tools,
-            runtime_context=runtime_context,
-        )
-
     workflow_run_root = runtime_context.get("workflow_run_root") or "<workflow_run_root>"
     node_workdir = runtime_context.get("node_workdir") or f"{workflow_run_root}/nodes/{node_id}/runs/<attempt_id>"
     lines = [
@@ -417,170 +387,6 @@ def _render_llm_prompt_text(
         for constraint in constraints:
             lines.append(f"- {constraint}")
 
-    return "\n".join(lines).strip() + "\n"
-
-
-def _execute_tool_agent_llm_prompt(
-    request: LLMExecutionRequest,
-    *,
-    prompt_path: Path,
-    stdout_path: Path,
-    trace_path: Path,
-    started_at: float,
-) -> LLMExecutionResult:
-    try:
-        result = invoke_drawai_tool_agent(
-            prompt=request.prompt.text,
-            image_paths=request.prompt.image_paths,
-            task_name=f"drawai.workflow.llm.{request.node_id}.{DRAWAI_TOOL_AGENT_PROVIDER}",
-            runtime_config=_runtime_config_for_tool_agent(request),
-            workspace_dir=request.run_root,
-            repo_root=_repo_root(),
-            trace_path=trace_path,
-            max_output_tokens=_tool_agent_max_output_tokens_for_request(request),
-            max_iterations=_tool_agent_max_iterations_for_request(request),
-        )
-    except (DrawAIToolAgentError, OSError, ValueError) as exc:
-        stdout_path.write_text("", encoding="utf-8")
-        raise LLMExecutionError(
-            f"DrawAI tool Agent LLM run failed: {exc}",
-            prompt_path=prompt_path,
-            stdout_path=stdout_path,
-            trace_path=trace_path,
-            exit_code=1,
-        ) from exc
-    stdout_path.write_text(result.final_text, encoding="utf-8")
-    _require_declared_outputs(request, prompt_path=prompt_path)
-    _append_trace(
-        trace_path,
-        {
-            "type": "llm_response",
-            "provider_id": request.prompt.provider_id,
-            "node_id": request.node_id,
-            "duration_ms": int((time.monotonic() - started_at) * 1000),
-            "response_chars": len(result.final_text),
-            "fallback_used": False,
-            "tool_calls": result.tool_calls,
-            "iterations": result.iterations,
-            "output_paths": [
-                _relative_or_absolute(_declared_output_path(request, output, prompt_path=prompt_path), request.run_root)
-                for output in request.prompt.outputs
-            ],
-        },
-    )
-    manifest_path = _write_execution_manifest(request, prompt_path, stdout_path, trace_path)
-    return LLMExecutionResult(
-        provider_id=request.prompt.provider_id,
-        prompt_path=prompt_path,
-        stdout_path=stdout_path,
-        trace_path=trace_path,
-        execution_manifest_path=manifest_path,
-        exit_code=0,
-    )
-
-
-def _render_tool_agent_prompt_text(
-    *,
-    node_id: str,
-    provider_id: str,
-    inputs: tuple[Mapping[str, Any], ...],
-    outputs: tuple[Mapping[str, Any], ...],
-    options: Mapping[str, Any],
-    task: str,
-    constraints: tuple[str, ...],
-    drawai_tools: tuple[str, ...],
-    runtime_context: Mapping[str, str],
-) -> str:
-    workflow_run_root = runtime_context.get("workflow_run_root") or "<workflow_run_root>"
-    node_workdir = runtime_context.get("node_workdir") or f"{workflow_run_root}/nodes/{node_id}/runs/<attempt_id>"
-    lines = [
-        "## DrawAI Tool Agent Runtime Settings",
-        f"- Provider: {provider_id}",
-        f"- Workflow run root: {workflow_run_root}",
-        f"- Current node workdir: {node_workdir}",
-        f"- Node run manifest path: {node_workdir}/node_run.json",
-    ]
-    for key, value in options.items():
-        if str(key) in LLM_PROMPT_RUNTIME_OPTION_EXCLUDES:
-            continue
-        lines.append(f"- {key}: {value}")
-    lines.extend(
-        [
-            "",
-            "## Tool Runtime Contract",
-            "This node runs in DrawAI tool-agent mode. Use API tools to inspect connected files/images, write declared outputs, and run DrawAI validation tools when useful.",
-            "Do not return the declared JSON or SVG artifact as your final assistant message. The harness consumes files written through tools.",
-            "Use `write_file` or `edit_file` for every declared output. Use `finalize` only after the declared files exist.",
-            "",
-            "## Task",
-            task,
-            "",
-            "## Connected Input Files",
-        ]
-    )
-    if inputs:
-        for item in inputs:
-            lines.extend(
-                [
-                    f"- Source: {_source_label(item)}",
-                    f"  Format: {item.get('format_id') or 'unspecified'}",
-                    f"  Type: {item.get('type') or 'unspecified'}",
-                    f"  Run-root path: {item.get('path') or ''}",
-                    f"  Absolute path: {_input_absolute_path(item.get('path') or '', runtime_context)}",
-                    f"  Description: {item.get('description') or 'No description supplied.'}",
-                ]
-            )
-            if _is_image_input(item):
-                lines.append("  Image content is attached to the initial tool-agent model request.")
-            else:
-                lines.append("  Use `open_file` before relying on this file's contents.")
-    else:
-        lines.append("- No connected inputs were provided.")
-    lines.extend(
-        [
-            "",
-            "## Declared Output Files",
-            "Write each declared output exactly. Paths below are relative to the workflow run root unless absolute paths are shown.",
-        ]
-    )
-    for output in outputs:
-        final_run_root_path = _output_path_from_run_root(node_id, output["path"], runtime_context)
-        lines.extend(
-            [
-                f"- Port: {output['port_id']}",
-                f"  Format: {output['format_id']}",
-                f"  Type: {output['type']}",
-                f"  Node-output relative path: {output['path']}",
-                f"  Write path from workspace root: {final_run_root_path}",
-                f"  Final absolute path: {_output_absolute_path(node_id, output['path'], runtime_context)}",
-                f"  Description: {output['description']}",
-            ]
-        )
-    lines.extend(["", "## Type And Format Contracts"])
-    format_contracts = default_format_contract_descriptions()
-    for type_name in _ordered_unique(
-        [str(item.get("type") or "") for item in inputs]
-        + [str(output.get("type") or "") for output in outputs]
-    ):
-        lines.append(
-            f"- Type `{type_name}`: {TYPE_CONTRACTS.get(type_name, 'No built-in type description is registered. Follow the node description and connected file contents.')}"
-        )
-    for format_id in _ordered_unique(
-        [str(item.get("format_id") or "") for item in inputs]
-        + [str(output.get("format_id") or "") for output in outputs]
-    ):
-        lines.append(
-            f"- Format `{format_id}`: {format_contracts.get(format_id, 'No built-in format description is registered. Follow the output declaration and validate the file before finishing.')}"
-        )
-    if drawai_tools:
-        lines.extend(["", "## DrawAI Tool Names"])
-        lines.append("Use `run_drawai_tool` with one of these tool ids when the task needs contract inspection or validation:")
-        for tool_id in drawai_tools:
-            lines.append(f"- {tool_id}")
-    if constraints:
-        lines.extend(["", "## Constraints"])
-        for constraint in constraints:
-            lines.append(f"- {constraint}")
     return "\n".join(lines).strip() + "\n"
 
 
@@ -1117,52 +923,6 @@ def _runtime_config_for_model(request: LLMExecutionRequest) -> dict[str, Any]:
         if value not in (None, ""):
             runtime[key] = value
     return runtime
-
-
-def _runtime_config_for_tool_agent(request: LLMExecutionRequest) -> dict[str, Any]:
-    runtime = dict(request.runtime_config)
-    runtime["provider"] = str(runtime.get("provider") or request.prompt.provider_id)
-    runtime["connection_id"] = str(runtime.get("connection_id") or request.prompt.provider_id)
-    runtime["wire_api"] = str(runtime.get("wire_api") or "chat_completions")
-    model = request.prompt.options.get("model")
-    if model:
-        runtime["model_name"] = str(model)
-    for key in ("base_url", "api_key", "api_key_env", "timeout_seconds", "wire_api", "extra_body"):
-        value = request.prompt.options.get(key)
-        if value not in (None, ""):
-            runtime[key] = value
-    return runtime
-
-
-def _tool_agent_max_output_tokens_for_request(request: LLMExecutionRequest) -> int:
-    configured = request.prompt.options.get("max_output_tokens")
-    if configured not in (None, ""):
-        return int(configured)
-    return DEFAULT_TOOL_AGENT_MAX_OUTPUT_TOKENS
-
-
-def _tool_agent_max_iterations_for_request(request: LLMExecutionRequest) -> int:
-    configured = request.prompt.options.get("max_iterations")
-    if configured not in (None, ""):
-        return int(configured)
-    return DEFAULT_TOOL_AGENT_MAX_ITERATIONS
-
-
-def _require_declared_outputs(request: LLMExecutionRequest, *, prompt_path: Path) -> None:
-    missing: list[str] = []
-    for output in request.prompt.outputs:
-        output_path = _declared_output_path(request, output, prompt_path=prompt_path)
-        if not output_path.is_file():
-            missing.append(str(output_path))
-    if missing:
-        raise LLMExecutionError(
-            "DrawAI tool Agent did not write declared output files: " + ", ".join(missing),
-            prompt_path=prompt_path,
-        )
-
-
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
 
 
 def _redact_sensitive_mapping(value: Mapping[str, Any]) -> dict[str, Any]:

@@ -7,8 +7,8 @@ from types import SimpleNamespace
 from typing import Any
 
 from drawai.tool_agent_runtime import invoke_drawai_tool_agent
-from drawai.workflow.agents import agent_preset_by_id
-from drawai.workflow.llm_execution import LLMExecutionRequest, execute_llm_prompt, render_llm_prompt
+from drawai.workflow.agent_execution import AgentExecutionRequest, execute_agent_prompt
+from drawai.workflow.agents import agent_preset_by_id, render_agent_prompt
 
 
 def test_drawai_tool_agent_loop_writes_file_through_tool(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -54,50 +54,96 @@ def test_drawai_tool_agent_loop_writes_file_through_tool(tmp_path: Path, monkeyp
     assert "fake-key" not in trace_text
 
 
-def test_llm_execution_uses_tool_agent_outputs_instead_of_final_text(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_agent_execution_uses_shared_agent_prompt_and_allows_manifest_image_href(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     calls: list[dict[str, Any]] = []
     run_root = tmp_path / "run"
     workdir = run_root / "nodes" / "svg_compose" / "runs" / "001"
-    svg = '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>\n'
+    page_spec_path = run_root / "nodes" / "asset_prepare" / "runs" / "001" / "output" / "page_spec.json"
+    crop_path = page_spec_path.parent / "assets" / "crops" / "plot.png"
+    page_spec_path.parent.mkdir(parents=True, exist_ok=True)
+    crop_path.parent.mkdir(parents=True, exist_ok=True)
+    page_spec_path.write_text(
+        json.dumps(
+            {
+                "schema": "drawai.page_spec.v1",
+                "page_id": "p1",
+                "source": {"width_px": 10, "height_px": 10},
+                "canvas": {"width_px": 10, "height_px": 10},
+                "elements": [
+                    {
+                        "id": "plot_1",
+                        "type": "image",
+                        "bbox": {"x": 1, "y": 1, "width": 8, "height": 8},
+                        "build": {"processing_type": "crop"},
+                        "materialization": {"path": "assets/crops/plot.png"},
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    crop_path.write_bytes(b"png")
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">'
+        '<image href="nodes/asset_prepare/runs/001/output/assets/crops/plot.png" x="1" y="1" width="8" height="8"/>'
+        "</svg>\n"
+    )
     output_path = "nodes/svg_compose/runs/001/output/semantic.svg"
     _install_fake_openai(
         monkeypatch,
         calls,
         [
+            _tool_message("open_file", {"path": "nodes/asset_prepare/runs/001/output/page_spec.json"}),
             _tool_message("write_file", {"path": output_path, "content": svg}),
-            _text_message("final summary only"),
+            _tool_message("finalize", {"summary": "wrote SVG with manifest-backed image href"}),
         ],
     )
-    prompt = render_llm_prompt(
+    prompt = render_agent_prompt(
         agent_preset_by_id("svg_generation"),
-        inputs=(),
+        inputs=(
+            {
+                "path": "nodes/asset_prepare/runs/001/output/page_spec.json",
+                "format_id": "drawai.page_spec.v1",
+                "type": "page_spec",
+                "source_node_id": "asset_prepare",
+                "source_port_id": "page_spec",
+                "description": "Materialized PageSpec with crop materialization paths.",
+            },
+        ),
         node_config={
             "node_id": "svg_compose",
             "provider_id": "drawai_tool_agent",
             "model": "fake-model",
             "api_key": "fake-key",
+            "drawai_tools": ["format", "page-spec-assets", "svg-validate"],
         },
         runtime_context={"workflow_run_root": run_root, "node_workdir": workdir, "attempt_id": "001"},
     )
 
-    result = execute_llm_prompt(
-        LLMExecutionRequest(
+    result = execute_agent_prompt(
+        AgentExecutionRequest(
             prompt=prompt,
             workdir=workdir,
             run_root=run_root,
             node_id="svg_compose",
-            node_type="llm",
+            node_type="agent",
             runtime_config={"provider": "drawai_tool_agent", "model_name": "fake-model", "api_key": "fake-key"},
         ),
     )
 
     assert result.provider_id == "drawai_tool_agent"
     assert (workdir / "output" / "semantic.svg").read_text(encoding="utf-8") == svg
-    assert (workdir / "llm_response.txt").read_text(encoding="utf-8") == "final summary only"
-    assert "Direct Output Runtime Override" not in prompt.text
-    assert "Tool Runtime Contract" in prompt.text
+    assert '<image href="nodes/asset_prepare/runs/001/output/assets/crops/plot.png"' in svg
+    assert (workdir / "drawai_tool_agent_final_response.txt").read_text(encoding="utf-8") == "wrote SVG with manifest-backed image href"
+    assert "IMAGE VECTORIZATION TASK" in prompt.text
+    assert "Materialized PageSpec with crop materialization paths." in prompt.text
+    assert "run_drawai_tool" in prompt.text
+    assert "Exact command prefix" not in prompt.text
+    assert "Tool Runtime Contract" not in prompt.text
     assert "fake-key" not in prompt.text
-    request_manifest = (workdir / "llm_execution_request.json").read_text(encoding="utf-8")
+    assert "fake-key" not in calls[0]["messages"][1]["content"][0]["text"]
+    request_manifest = (workdir / "agent_execution_request.json").read_text(encoding="utf-8")
     assert "fake-key" not in request_manifest
 
 

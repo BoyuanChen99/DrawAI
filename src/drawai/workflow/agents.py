@@ -504,7 +504,17 @@ def _render_prompt_text(
                 lines.append(f"  Usage: {usage}")
 
     if drawai_tools:
-        lines.extend(["", render_drawai_tool_prompt_section(drawai_tools, command_prefix=drawai_tool_command_prefix)])
+        tool_invocation = "tool_call" if provider_id == DRAWAI_TOOL_AGENT_PROVIDER else "cli"
+        lines.extend(
+            [
+                "",
+                render_drawai_tool_prompt_section(
+                    drawai_tools,
+                    command_prefix=drawai_tool_command_prefix,
+                    invocation=tool_invocation,
+                ),
+            ]
+        )
 
     lines.extend(["", "## Type And Format Contracts"])
     format_contracts = default_format_contract_descriptions()

@@ -17,8 +17,10 @@ def test_default_agent_provider_registry_keeps_provider_resource_limits_separate
 
     assert registry["codex_sdk"].provider_id == "codex_sdk"
     assert registry["kimi_cli"].provider_id == "kimi_cli"
+    assert registry["drawai_tool_agent"].provider_id == "drawai_tool_agent"
     assert registry["codex_sdk"].resource_key == "agent_provider:codex_sdk"
     assert registry["kimi_cli"].resource_key == "agent_provider:kimi_cli"
+    assert registry["drawai_tool_agent"].resource_key == "agent_provider:drawai_tool_agent"
     assert registry["codex_sdk"].default_max_concurrent != registry["kimi_cli"].default_max_concurrent
 
 
@@ -158,6 +160,43 @@ def test_svg_agent_prompt_filters_pagespec_tools_for_image_only_inputs() -> None
     assert "Tool `page-spec-assets`" not in prompt.text
     assert "Tool `svg-validate`" not in prompt.text
     assert "Rendered PNGs and per-round validation reports are optional in image-only runs" in prompt.text
+
+
+def test_drawai_tool_agent_prompt_uses_same_agent_contract_with_tool_call_invocation() -> None:
+    prompt = render_agent_prompt(
+        svg_agent_preset(),
+        inputs=(
+            {
+                "path": "nodes/input/runs/001/output/image.png",
+                "format_id": "drawai.image.v1",
+                "type": "image",
+                "description": "Original page image.",
+            },
+            {
+                "path": "nodes/asset_prepare/runs/001/output/page_spec.json",
+                "format_id": "drawai.page_spec.v1",
+                "type": "page_spec",
+                "description": "Materialized PageSpec with crop/crop_nobg assets.",
+            },
+        ),
+        node_config={
+            "node_id": "svg_agent",
+            "provider_id": "drawai_tool_agent",
+            "model": "qwen3.7-plus",
+            "drawai_tools": ["format", "page-spec-assets", "svg-validate"],
+        },
+    )
+
+    assert prompt.provider_id == "drawai_tool_agent"
+    assert "IMAGE VECTORIZATION TASK" in prompt.text
+    assert "OVERALL SVG/PPT PROFILE" in prompt.text
+    assert "Materialized PageSpec with crop/crop_nobg assets." in prompt.text
+    assert "Use only the DrawAI tools listed here." in prompt.text
+    assert "run_drawai_tool" in prompt.text
+    assert 'run_drawai_tool({"tool_id": "page-spec-assets"' in prompt.text
+    assert "Exact command prefix" not in prompt.text
+    assert "Tool Runtime Contract" not in prompt.text
+    assert "Direct Output Runtime Override" not in prompt.text
 
 
 def test_page_spec_refine_prompt_defines_id_changes_and_validation() -> None:
