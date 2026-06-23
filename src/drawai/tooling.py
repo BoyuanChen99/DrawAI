@@ -3,13 +3,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import shlex
 import subprocess
 import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from drawai.page_spec_assets import materialized_asset_records, page_spec_asset_manifest
 
@@ -60,6 +61,26 @@ def drawai_tool_registry() -> dict[str, DrawAITool]:
                 "page-spec-assets --page-spec nodes/asset_prepare/runs/001/output/page_spec.json --svg-dir svg",
             ),
             runner=_page_spec_assets_tool,
+        ),
+        "page-spec-svg-draft": DrawAITool(
+            tool_id="page-spec-svg-draft",
+            summary=(
+                "Generate a baseline semantic SVG from a materialized PageSpec and its allowed raster assets. "
+                "When validation is requested, also promote validated drafts to canonical Workbench outputs."
+            ),
+            parameters=(
+                "--page-spec <path>: Materialized PageSpec JSON containing element.materialization outputs.",
+                "--svg <path>: SVG path to write; validated draft paths like semantic_0.svg are copied to semantic.svg.",
+                "--href-base-dir <path>: base directory used to compute/validate SVG hrefs; use svg for final deliverables.",
+                "--rendered <path>: optional PNG render path to write via validation; validated drafts are copied to rendered.png.",
+                "--report <path>: optional JSON validation report path to write; validated drafts are copied to validation_report_final.json.",
+                "--iteration-log-md <path>: optional Markdown iteration log path to write.",
+                "--iteration-log-jsonl <path>: optional JSONL iteration log path to write.",
+            ),
+            examples=(
+                "page-spec-svg-draft --page-spec nodes/asset_prepare/runs/001/output/page_spec.json --svg nodes/svg_compose/runs/001/output/semantic.svg --href-base-dir svg --rendered nodes/svg_compose/runs/001/output/rendered.png --report nodes/svg_compose/runs/001/output/validation_report_final.json --iteration-log-md nodes/svg_compose/runs/001/output/iteration_log.md --iteration-log-jsonl nodes/svg_compose/runs/001/output/iteration_log.jsonl",
+            ),
+            runner=_page_spec_svg_draft_tool,
         ),
         "svg-validate": DrawAITool(
             tool_id="svg-validate",
@@ -118,9 +139,12 @@ def render_drawai_tool_prompt_section(
     tool_ids: Sequence[str],
     *,
     command_prefix: str,
+    invocation: Literal["cli", "tool_call"] = "cli",
 ) -> str:
     registry = drawai_tool_registry()
     selected = [_required_tool(registry, tool_id) for tool_id in _ordered_unique(tool_ids)]
+    if invocation == "tool_call":
+        return _render_drawai_tool_call_prompt_section(selected)
     lines = [
         "## DrawAI Tools",
         "Use only the DrawAI tools listed here. They are CLI product interfaces, not direct Python function calls.",
@@ -141,6 +165,40 @@ def render_drawai_tool_prompt_section(
             lines.append("Examples:")
             lines.extend(f"- `{command_prefix} {example}`" for example in tool.examples)
     return "\n".join(lines)
+
+
+def _render_drawai_tool_call_prompt_section(tools: Sequence[DrawAITool]) -> str:
+    lines = [
+        "## DrawAI Tools",
+        "Use only the DrawAI tools listed here. They are product interfaces exposed through the `run_drawai_tool` API tool, not shell commands.",
+        "Call `run_drawai_tool` with `tool_id` and an `args` string array. For an unfamiliar tool contract, call `run_drawai_tool` with `tool_id: \"help\"` and `args: [\"<tool_id>\"]` before using it.",
+    ]
+    for tool in tools:
+        lines.extend(
+            [
+                "",
+                f"### Tool `{tool.tool_id}`",
+                tool.summary,
+                "Parameters:",
+            ]
+        )
+        lines.extend(f"- {parameter}" for parameter in tool.parameters)
+        if tool.examples:
+            lines.append("Examples:")
+            for example in tool.examples:
+                invocation = _tool_call_example(example)
+                lines.append(f"- `{invocation}`")
+    return "\n".join(lines)
+
+
+def _tool_call_example(example: str) -> str:
+    parts = shlex.split(example)
+    if not parts:
+        return 'run_drawai_tool({"tool_id": "", "args": []})'
+    return "run_drawai_tool(" + json.dumps(
+        {"tool_id": parts[0], "args": parts[1:]},
+        ensure_ascii=False,
+    ) + ")"
 
 
 def resolve_drawai_tool_command_prefix(repo_root: str | Path, *, cwd: str | Path) -> str:
@@ -228,6 +286,68 @@ def _page_spec_assets_tool(argv: Sequence[str]) -> int:
     return 0
 
 
+def _page_spec_svg_draft_tool(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="drawai tool page-spec-svg-draft",
+        description="Generate a baseline semantic SVG from a materialized PageSpec.",
+    )
+    parser.add_argument("--page-spec", required=True, type=Path)
+    parser.add_argument("--svg", required=True, type=Path)
+    parser.add_argument("--href-base-dir", type=Path)
+    parser.add_argument("--rendered", type=Path)
+    parser.add_argument("--report", type=Path)
+    parser.add_argument("--iteration-log-md", type=Path)
+    parser.add_argument("--iteration-log-jsonl", type=Path)
+    args = parser.parse_args(list(argv))
+
+    from drawai.page_spec_svg import draft_semantic_svg_from_page_spec
+
+    href_base_dir = args.href_base_dir or args.svg.parent
+    href_base_dir.mkdir(parents=True, exist_ok=True)
+    result = draft_semantic_svg_from_page_spec(
+        args.page_spec,
+        args.svg,
+        href_base_dir=href_base_dir,
+    )
+    if args.report is not None or args.rendered is not None:
+        if args.report is None or args.rendered is None:
+            raise SystemExit("--rendered and --report must be provided together")
+        from drawai.svg_validation import validate_svg_file
+
+        page_spec = json.loads(args.page_spec.read_text(encoding="utf-8"))
+        if not isinstance(page_spec, Mapping):
+            raise ValueError("PageSpec must be a JSON object")
+        canvas = page_spec.get("canvas") if isinstance(page_spec.get("canvas"), Mapping) else {}
+        canvas_payload = {
+            "width": canvas.get("width_px", canvas.get("width")),
+            "height": canvas.get("height_px", canvas.get("height")),
+        }
+        asset_manifest = page_spec_asset_manifest(args.page_spec, svg_dir=href_base_dir)
+        report = validate_svg_file(
+            args.svg,
+            canvas_payload,
+            asset_manifest,
+            args.rendered,
+            reference_dir=href_base_dir,
+        )
+        args.report.parent.mkdir(parents=True, exist_ok=True)
+        args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        result["validation"] = report
+        if report.get("status") == "ok":
+            _finalize_page_spec_svg_draft_outputs(
+                result,
+                svg_path=args.svg,
+                rendered_path=args.rendered,
+                report_path=args.report,
+            )
+    _write_page_spec_svg_draft_logs(result, args.iteration_log_md, args.iteration_log_jsonl)
+    _print_json(result)
+    validation = result.get("validation")
+    if isinstance(validation, Mapping) and validation.get("status") != "ok":
+        return 1
+    return 0
+
+
 def _svg_validate_tool(argv: Sequence[str]) -> int:
     parser = argparse.ArgumentParser(
         prog="drawai tool svg-validate",
@@ -264,6 +384,71 @@ def _svg_validate_tool(argv: Sequence[str]) -> int:
     args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     _print_json(report)
     return 0 if report.get("status") == "ok" else 1
+
+
+def _finalize_page_spec_svg_draft_outputs(
+    result: dict[str, Any],
+    *,
+    svg_path: Path,
+    rendered_path: Path,
+    report_path: Path,
+) -> None:
+    final_svg = svg_path.with_name("semantic.svg")
+    declared_svg = svg_path.with_name("semantic_svg.svg")
+    final_rendered = rendered_path.with_name("rendered.png")
+    final_report = report_path.with_name("validation_report_final.json")
+
+    _copy_if_different(svg_path, final_svg)
+    _copy_if_different(svg_path, declared_svg)
+    _copy_if_different(rendered_path, final_rendered)
+    _copy_if_different(report_path, final_report)
+
+    result["finalized_outputs"] = {
+        "semantic_svg": str(final_svg),
+        "declared_semantic_svg": str(declared_svg),
+        "rendered_png": str(final_rendered),
+        "validation_report": str(final_report),
+    }
+
+
+def _copy_if_different(source: Path, destination: Path) -> None:
+    source_resolved = source.expanduser().resolve(strict=False)
+    destination_resolved = destination.expanduser().resolve(strict=False)
+    if source_resolved == destination_resolved:
+        return
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source, destination)
+
+
+def _write_page_spec_svg_draft_logs(
+    result: Mapping[str, Any],
+    iteration_log_md: Path | None,
+    iteration_log_jsonl: Path | None,
+) -> None:
+    if iteration_log_md is not None:
+        iteration_log_md.parent.mkdir(parents=True, exist_ok=True)
+        validation = result.get("validation")
+        status = validation.get("status") if isinstance(validation, Mapping) else "not_run"
+        iteration_log_md.write_text(
+            "\n".join(
+                [
+                    "# SVG Iteration Log",
+                    "",
+                    "- run: page-spec-svg-draft",
+                    f"- svg: {result.get('svg')}",
+                    f"- rendered_elements: {result.get('rendered_elements')}",
+                    f"- asset_images: {result.get('asset_images')}",
+                    f"- editable_text: {result.get('editable_text')}",
+                    f"- editable_vectors: {result.get('editable_vectors')}",
+                    f"- validation_status: {status}",
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    if iteration_log_jsonl is not None:
+        iteration_log_jsonl.parent.mkdir(parents=True, exist_ok=True)
+        iteration_log_jsonl.write_text(json.dumps(dict(result), ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def _tool_list(registry: Mapping[str, DrawAITool], *, json_output: bool) -> int:

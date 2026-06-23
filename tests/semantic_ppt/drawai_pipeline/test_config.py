@@ -13,6 +13,7 @@ def test_default_prompt_plan_is_fixed_user_plan():
         ("arrow", "arrow", 0.30),
         ("border", "border", 0.30),
         ("content_box", "content box", 0.15),
+        ("diagram", "diagram", 0.20),
         ("grid", "grid", 0.30),
         ("icon", "icon", 0.30),
         ("picture", "picture", 0.30),
@@ -323,6 +324,35 @@ model_runtime:
         "agent": "kimi",
         "command": ["kimi"],
     }
+
+
+def test_config_accepts_tool_agent_svg_backend(tmp_path: Path):
+    image = tmp_path / "input.png"
+    image.write_bytes(b"not-used-by-config")
+    config_path = tmp_path / "tool_agent.yaml"
+    config_path.write_text(
+        """
+input:
+  image: input.png
+  output_dir: out
+svg:
+  generation_backend: tool_agent
+model_runtime:
+  provider: drawai_tool_agent
+  connection_id: drawai_tool_agent
+  model_name: qwen3.7-plus
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  api_key_env: DASHSCOPE_API_KEY
+  wire_api: chat_completions
+""",
+        encoding="utf-8",
+    )
+
+    cfg = load_drawai_config(config_path)
+
+    assert cfg.svg.generation_backend == "tool_agent"
+    assert cfg.model_runtime.provider == "drawai_tool_agent"
+    assert cfg.model_runtime.wire_api == "chat_completions"
 
 
 def test_config_accepts_openclaw_and_hermes_agent_cli_presets(tmp_path: Path):

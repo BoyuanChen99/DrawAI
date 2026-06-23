@@ -22,6 +22,9 @@ sam3:
     - id: content_box
       text: content box
       confidence_threshold: 0.15
+    - id: diagram
+      text: diagram
+      confidence_threshold: 0.20
     - id: grid
       text: grid
       confidence_threshold: 0.30

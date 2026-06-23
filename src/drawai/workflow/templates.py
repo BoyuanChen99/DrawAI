@@ -257,7 +257,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                     "timeout_seconds": SVG_AGENT_TIMEOUT_SECONDS,
                     "task": SVG_GENERATION_TASK,
                     "constraints": list(SVG_GENERATION_CONSTRAINTS),
-                    "drawai_tools": ["format", "page-spec-assets", "svg-validate"],
+                    "drawai_tools": ["format", "page-spec-assets", "page-spec-svg-draft", "svg-validate"],
                     "outputs": [
                         {
                             "port_id": "semantic_svg",

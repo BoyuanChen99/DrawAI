@@ -27,6 +27,13 @@ from drawai.codex_python_sdk_svg import (
     _write_codex_runtime_log_tail,
     controlled_codex_config_overrides,
 )
+from drawai.tool_agent_runtime import (
+    DEFAULT_TOOL_AGENT_MAX_ITERATIONS,
+    DEFAULT_TOOL_AGENT_MAX_OUTPUT_TOKENS,
+    DRAWAI_TOOL_AGENT_PROVIDER,
+    DrawAIToolAgentError,
+    invoke_drawai_tool_agent,
+)
 
 from .agents import DEFAULT_AGENT_TIMEOUT_SECONDS, AgentPrompt
 
@@ -45,6 +52,7 @@ class AgentExecutionRequest:
     run_root: Path
     node_id: str
     node_type: str
+    runtime_config: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +104,8 @@ def execute_agent_prompt(request: AgentExecutionRequest) -> AgentExecutionResult
         result = _execute_codex_cli_agent(request, prompt_path=prompt_path)
     elif provider_id == "kimi_cli":
         result = _execute_kimi_cli_agent(request, prompt_path=prompt_path)
+    elif provider_id == DRAWAI_TOOL_AGENT_PROVIDER:
+        result = _execute_drawai_tool_agent(request, prompt_path=prompt_path)
     elif provider_id in GENERIC_AGENT_CLI_PROVIDERS:
         result = _execute_generic_agent_cli_agent(
             request,
@@ -265,6 +275,49 @@ def _execute_codex_sdk_agent(
         stderr_path=stderr_path if stderr_path.exists() else None,
         trace_path=trace_path,
         session_log_path=session_log_path,
+    )
+
+
+def _execute_drawai_tool_agent(
+    request: AgentExecutionRequest,
+    *,
+    prompt_path: Path,
+) -> AgentExecutionResult:
+    options = dict(request.prompt.options)
+    trace_path = request.workdir / "drawai_tool_agent_trace.jsonl"
+    stdout_path = request.workdir / "drawai_tool_agent_final_response.txt"
+    stderr_path = request.workdir / "drawai_tool_agent_error.txt"
+    runtime_config = _drawai_tool_agent_runtime_config(request)
+    try:
+        result = invoke_drawai_tool_agent(
+            prompt=request.prompt.text,
+            image_paths=_image_input_paths(request),
+            task_name=f"drawai.workflow.agent.{request.node_id}.{DRAWAI_TOOL_AGENT_PROVIDER}",
+            runtime_config=runtime_config,
+            workspace_dir=_agent_cwd(request),
+            repo_root=_repo_root(),
+            trace_path=trace_path,
+            max_output_tokens=int(options.get("max_output_tokens") or DEFAULT_TOOL_AGENT_MAX_OUTPUT_TOKENS),
+            max_iterations=int(options.get("max_iterations") or DEFAULT_TOOL_AGENT_MAX_ITERATIONS),
+        )
+    except (DrawAIToolAgentError, OSError, ValueError) as exc:
+        stderr_path.write_text(f"{type(exc).__name__}: {exc}\n", encoding="utf-8")
+        raise AgentExecutionError(
+            f"DrawAI tool Agent run failed: {exc}",
+            prompt_path=prompt_path,
+            stdout_path=stdout_path if stdout_path.exists() else None,
+            stderr_path=stderr_path,
+            trace_path=trace_path if trace_path.exists() else None,
+            exit_code=1,
+        ) from exc
+    stdout_path.write_text(result.final_text, encoding="utf-8")
+    return AgentExecutionResult(
+        provider_id=DRAWAI_TOOL_AGENT_PROVIDER,
+        prompt_path=prompt_path,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path if stderr_path.exists() else None,
+        trace_path=trace_path,
+        exit_code=0,
     )
 def _execute_codex_cli_agent(
     request: AgentExecutionRequest,
@@ -613,7 +666,7 @@ def _write_execution_request_manifest(
                 for path_item in _image_input_paths(request)
             ],
             "declared_outputs": list(request.prompt.outputs),
-            "options": dict(request.prompt.options),
+            "options": _redact_sensitive_mapping(request.prompt.options),
         },
     )
     return path
@@ -789,6 +842,26 @@ def _agent_cwd(request: AgentExecutionRequest) -> Path:
     return request.run_root.expanduser().resolve(strict=False)
 
 
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _drawai_tool_agent_runtime_config(request: AgentExecutionRequest) -> dict[str, Any]:
+    runtime = dict(request.runtime_config or {})
+    runtime["provider"] = str(runtime.get("provider") or DRAWAI_TOOL_AGENT_PROVIDER)
+    runtime["connection_id"] = str(runtime.get("connection_id") or DRAWAI_TOOL_AGENT_PROVIDER)
+    runtime["wire_api"] = str(runtime.get("wire_api") or "chat_completions")
+    options = dict(request.prompt.options)
+    model = options.get("model")
+    if model:
+        runtime["model_name"] = str(model)
+    for key in ("base_url", "api_key", "api_key_env", "timeout_seconds", "wire_api", "extra_body"):
+        value = options.get(key)
+        if value not in (None, ""):
+            runtime[key] = value
+    return runtime
+
+
 def _timeout_seconds(options: Mapping[str, Any]) -> float:
     raw = options.get("timeout_seconds", DEFAULT_AGENT_TIMEOUT_SECONDS)
     timeout = float(raw)
@@ -867,6 +940,15 @@ def _append_trace(path: Path, payload: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _redact_sensitive_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    redacted: dict[str, Any] = {}
+    for key, item in value.items():
+        key_text = str(key)
+        normalized = key_text.lower().replace("-", "_")
+        redacted[key_text] = "[redacted]" if "api_key" in normalized else item
+    return redacted
 
 
 def _write_json(path: Path, payload: Mapping[str, Any]) -> None:

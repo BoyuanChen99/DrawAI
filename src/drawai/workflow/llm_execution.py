@@ -48,6 +48,7 @@ LLM_OUTPUT_TEXT_TYPES = {"page_spec", "element_plans", "element_analysis", "asse
 DEFAULT_LLM_DIRECT_OUTPUT_TOKENS = 32768
 DEFAULT_LLM_PASSTHROUGH_OUTPUT_TOKENS = 2048
 LLM_PROMPT_RUNTIME_OPTION_EXCLUDES = {
+    "api_key",
     "extra_body",
     "reasoning_effort",
     "timeout_seconds",
@@ -81,7 +82,7 @@ class LLMPrompt:
             "text": self.text,
             "inputs": [dict(item) for item in self.inputs],
             "outputs": [dict(item) for item in self.outputs],
-            "options": dict(self.options),
+            "options": _redact_sensitive_mapping(self.options),
             "image_paths": [str(path) for path in self.image_paths],
         }
 
@@ -870,7 +871,7 @@ def _write_execution_request_manifest(request: LLMExecutionRequest, prompt_path:
                 for path_item in request.prompt.image_paths
             ],
             "declared_outputs": [dict(item) for item in request.prompt.outputs],
-            "options": dict(request.prompt.options),
+            "options": _redact_sensitive_mapping(request.prompt.options),
         },
     )
     return path
@@ -922,6 +923,15 @@ def _runtime_config_for_model(request: LLMExecutionRequest) -> dict[str, Any]:
         if value not in (None, ""):
             runtime[key] = value
     return runtime
+
+
+def _redact_sensitive_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    redacted: dict[str, Any] = {}
+    for key, item in value.items():
+        key_text = str(key)
+        normalized = key_text.lower().replace("-", "_")
+        redacted[key_text] = "[redacted]" if "api_key" in normalized else item
+    return redacted
 
 
 def _max_output_tokens_for_request(request: LLMExecutionRequest) -> int:
