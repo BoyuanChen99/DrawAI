@@ -1437,6 +1437,7 @@
 .workflow-picker-list {
   max-height: 468px;
   overflow: auto;
+  overscroll-behavior: contain;
   border-top: 1px solid rgba(16, 24, 40, 0.08);
   padding: 5px;
 }

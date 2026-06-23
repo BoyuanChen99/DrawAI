@@ -893,6 +893,11 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
   }
 
   function handleCanvasWheel(event: globalThis.WheelEvent) {
+    const target = event.target;
+    if (target instanceof Element && target.closest(".workflow-node-picker")) {
+      event.stopPropagation();
+      return;
+    }
     event.preventDefault();
     const delta = normalizedWheelDelta(event);
     if (event.ctrlKey || event.metaKey) {
