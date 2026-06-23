@@ -139,7 +139,7 @@ const WORKBENCH_SETTINGS_NAV_SECTIONS: { label: string; items: WorkbenchSettings
     items: [
       { id: "api", label: "模型供应商", icon: "api" },
       { id: "agent", label: "Agent", icon: "agent" },
-      { id: "llm", label: "默认 LLM", icon: "llm" }
+      { id: "llm", label: "LLM 配置", icon: "llm" }
     ]
   },
   {
