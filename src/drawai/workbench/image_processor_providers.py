@@ -55,16 +55,18 @@ def images_api_generate_provider(preset: ApiPreset) -> Callable[..., Mapping[str
     ) -> Mapping[str, Any]:
         output_path = Path(output_dir).expanduser().resolve(strict=False)
         output_path.mkdir(parents=True, exist_ok=True)
+        api_key = _api_preset_key(preset)
         request_payload = _images_api_payload(preset, prompt, runtime_config=runtime_config)
         response_payload = call_image_generation_upstream(
             request_payload,
             api_url=image_generation_api_url(preset.base_url),
-            api_key=_api_preset_key(preset),
+            api_key=api_key,
         )
         image_payload = _materialize_first_images_api_image(
             response_payload,
             output_dir=output_path,
             output_stem=output_stem,
+            download_api_key=api_key,
         )
         return _provider_result("generate", preset, prompt, output_path, task_name, image_payload)
 
@@ -83,25 +85,27 @@ def images_api_edit_provider(preset: ApiPreset) -> Callable[..., Mapping[str, An
     ) -> Mapping[str, Any]:
         output_path = Path(output_dir).expanduser().resolve(strict=False)
         output_path.mkdir(parents=True, exist_ok=True)
+        api_key = _api_preset_key(preset)
         request_payload = _images_api_payload(preset, prompt, runtime_config=runtime_config)
         if _uses_reference_generation_edit(preset.base_url):
             response_payload = call_image_reference_edit_upstream(
                 request_payload,
                 source_image_path=source_image_path,
                 api_url=image_generation_api_url(preset.base_url),
-                api_key=_api_preset_key(preset),
+                api_key=api_key,
             )
         else:
             response_payload = call_image_edit_upstream(
                 request_payload,
                 source_image_path=source_image_path,
                 api_url=image_edit_api_url(preset.base_url),
-                api_key=_api_preset_key(preset),
+                api_key=api_key,
             )
         image_payload = _materialize_first_images_api_image(
             response_payload,
             output_dir=output_path,
             output_stem=output_stem,
+            download_api_key=api_key,
         )
         result = _provider_result("edit", preset, prompt, output_path, task_name, image_payload)
         result["source_image_path"] = str(source_image_path)
@@ -363,9 +367,10 @@ def _materialize_first_images_api_image(
     *,
     output_dir: Path,
     output_stem: str,
+    download_api_key: str | None = None,
 ) -> dict[str, Any]:
     for index, record in enumerate(_image_generation_payload_records(payload), start=1):
-        image_bytes, suffix = _images_api_record_bytes(record)
+        image_bytes, suffix = _images_api_record_bytes(record, download_api_key=download_api_key)
         if not image_bytes:
             continue
         if len(image_bytes) > MAX_GENERATED_IMAGE_BYTES:
@@ -388,7 +393,7 @@ def _materialize_first_images_api_image(
     raise HTTPException(status_code=502, detail="image generation upstream did not return an image")
 
 
-def _images_api_record_bytes(record: Mapping[str, Any]) -> tuple[bytes, str]:
+def _images_api_record_bytes(record: Mapping[str, Any], *, download_api_key: str | None = None) -> tuple[bytes, str]:
     raw_b64 = record.get("b64_json") or record.get("image_base64")
     if isinstance(raw_b64, str) and raw_b64.strip():
         mime_type = str(record.get("mime_type") or record.get("content_type") or "image/png").split(";", 1)[0].lower()
@@ -399,15 +404,15 @@ def _images_api_record_bytes(record: Mapping[str, Any]) -> tuple[bytes, str]:
         return image_bytes, _image_suffix_from_mime(mime_type)
     raw_url = record.get("url")
     if isinstance(raw_url, str) and raw_url.strip():
-        return _read_generated_image_value(raw_url)
+        return _read_generated_image_value(raw_url, download_api_key=download_api_key)
     return b"", ".png"
 
 
-def _read_generated_image_value(value: str) -> tuple[bytes, str]:
+def _read_generated_image_value(value: str, *, download_api_key: str | None = None) -> tuple[bytes, str]:
     text = value.strip()
     if text.startswith("data:"):
         return _read_data_image_url(text)
-    return _download_generated_image_url(text)
+    return _download_generated_image_url(text, api_key=download_api_key)
 
 
 def _read_data_image_url(value: str) -> tuple[bytes, str]:
@@ -424,17 +429,38 @@ def _read_data_image_url(value: str) -> tuple[bytes, str]:
     return image_bytes, _image_suffix_from_mime(mime_type)
 
 
-def _download_generated_image_url(value: str) -> tuple[bytes, str]:
-    request = urllib.request.Request(value, headers={"Accept": "image/*"})
+def _download_generated_image_url(value: str, *, api_key: str | None = None) -> tuple[bytes, str]:
     try:
-        with urlopen_external(request, timeout=600) as response:
-            image_bytes = response.read(MAX_GENERATED_IMAGE_BYTES + 1)
-            mime_type = str(response.headers.get("content-type") or "image/png").split(";", 1)[0].lower()
+        image_bytes, mime_type = _read_generated_image_url(value)
+    except urllib.error.HTTPError as exc:
+        if exc.code not in {401, 403} or not api_key:
+            raise HTTPException(status_code=400, detail=f"failed to download image URL: {exc}") from exc
+        try:
+            image_bytes, mime_type = _read_generated_image_url(
+                value,
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+        except (urllib.error.URLError, TimeoutError, OSError) as retry_exc:
+            raise HTTPException(status_code=400, detail=f"failed to download image URL: {retry_exc}") from retry_exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise HTTPException(status_code=400, detail=f"failed to download image URL: {exc}") from exc
     if len(image_bytes) > MAX_GENERATED_IMAGE_BYTES:
         raise HTTPException(status_code=400, detail="image URL is too large")
     return image_bytes, _image_suffix_from_mime(mime_type)
+
+
+def _read_generated_image_url(value: str, *, headers: Mapping[str, str] | None = None) -> tuple[bytes, str]:
+    request_headers = {
+        "Accept": "image/*,*/*;q=0.8",
+        "User-Agent": "Mozilla/5.0 DrawAI/1.0",
+    }
+    if headers:
+        request_headers.update(dict(headers))
+    request = urllib.request.Request(value, headers=request_headers)
+    with urlopen_external(request, timeout=600) as response:
+        image_bytes = response.read(MAX_GENERATED_IMAGE_BYTES + 1)
+        mime_type = str(response.headers.get("content-type") or "image/png").split(";", 1)[0].lower()
+    return image_bytes, mime_type
 
 
 def _poll_image_generation_task(api_url: str, api_key: str, task_id: str) -> dict[str, Any]:

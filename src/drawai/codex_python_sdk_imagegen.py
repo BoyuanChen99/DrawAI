@@ -35,7 +35,7 @@ from .codex_python_sdk_svg import (
 CODEX_PYTHON_SDK_IMAGEGEN_RUNNER = "codex_python_sdk_imagegen"
 CODEX_IMAGEGEN_RESULT_SCHEMA = "drawai.codex_python_sdk_imagegen_result.v1"
 CODEX_IMAGEGEN_DEFAULT_REASONING_EFFORT = "low"
-CODEX_IMAGEGEN_DEFAULT_TIMEOUT_SECONDS = 300.0
+CODEX_IMAGEGEN_DEFAULT_TIMEOUT_SECONDS = 900.0
 
 
 class CodexPythonSdkImageGenError(RuntimeError):

@@ -674,6 +674,77 @@ def test_images_api_provider_materializes_apimart_task_result_urls(
     assert image_payload["height"] == 2
 
 
+def test_images_api_provider_retries_protected_result_url_with_api_key(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from drawai.workbench.api_presets import ApiPreset
+    from drawai.workbench import image_processor_providers as provider_module
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (3, 2), "#1f77b4").save(buffer, format="PNG")
+    image_bytes = buffer.getvalue()
+    requested_authorization: list[str | None] = []
+
+    class Response:
+        headers = {"content-type": "image/png"}
+
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self, *_args: object) -> bytes:
+            return image_bytes
+
+    def fake_upstream(
+        payload: Mapping[str, object],
+        *,
+        api_url: str,
+        api_key: str | None = None,
+    ) -> dict[str, object]:
+        return {"data": {"result": {"images": [{"url": "https://api.apimart.ai/v1/files/generated.png"}]}}}
+
+    def fake_urlopen(request: object, timeout: float) -> Response:
+        assert isinstance(request, urllib.request.Request)
+        authorization = request.headers.get("Authorization")
+        requested_authorization.append(authorization)
+        if authorization is None:
+            raise urllib.error.HTTPError(
+                request.full_url,
+                403,
+                "Forbidden",
+                {},
+                io.BytesIO(b"forbidden"),
+            )
+        assert authorization == "Bearer plain-test-key"
+        return Response()
+
+    monkeypatch.setattr(provider_module, "call_image_generation_upstream", fake_upstream)
+    monkeypatch.setattr(provider_module, "urlopen_external", fake_urlopen)
+    provider = provider_module.images_api_generate_provider(
+        ApiPreset(
+            id="apimart_images",
+            label="Apimart Images",
+            type="images_api",
+            base_url="https://api.apimart.ai/v1/images/generations",
+            model="gpt-image-2",
+            api_key="plain-test-key",
+        )
+    )
+
+    result = provider(
+        prompt="Draw it",
+        output_dir=tmp_path / "images",
+        task_name="drawai.test.image_generate",
+        output_stem="image_generate",
+    )
+
+    assert requested_authorization == [None, "Bearer plain-test-key"]
+    assert Path(result["images"][0]["path"]).is_file()
+
+
 def test_workbench_processor_settings_api_rejects_invalid_processor_settings(tmp_path: Path) -> None:
     client = _client(tmp_path)
 
