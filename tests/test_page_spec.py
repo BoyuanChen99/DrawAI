@@ -257,7 +257,11 @@ def test_materialize_page_spec_assets_runs_image_generate_and_edit(tmp_path: Pat
                 "role": "representation",
                 "box_px": [2, 3, 18, 12],
                 "z_index": 1,
-                "build": {"mode": "asset_ref", "processing_type": "image_generate"},
+                "build": {
+                    "mode": "asset_ref",
+                    "processing_type": "image_generate",
+                    "parameters": {"prompt": "Small blue predictive-state icon."},
+                },
                 "measurement": {"text": "Future representation"},
             },
             {
@@ -281,6 +285,7 @@ def test_materialize_page_spec_assets_runs_image_generate_and_edit(tmp_path: Pat
     )
 
     assert {call[0] for call in calls} == {"generate", "edit"}
+    assert any("Small blue predictive-state icon" in call[1] for call in calls)
     first, second = materialized["elements"]
     assert first["materialization"]["processing_type"] == "image_generate"
     assert second["materialization"]["processing_type"] == "image_edit"

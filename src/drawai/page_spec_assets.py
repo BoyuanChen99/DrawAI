@@ -409,6 +409,7 @@ def _image_processor_prompt(element: Mapping[str, Any], *, processing_type: str)
     bbox = _bbox_xywh(element)
     role = str(element.get("role") or element.get("kind") or "image")
     text = str(element.get("text") or _mapping_text(element.get("measurement"), "text") or "").strip()
+    explicit_prompt = _build_parameter_text(element, "prompt")
     action = (
         "Generate a clean raster asset"
         if processing_type == "image_generate"
@@ -419,13 +420,23 @@ def _image_processor_prompt(element: Mapping[str, Any], *, processing_type: str)
         if processing_type == "image_generate"
         else "Preserve the original composition, colors, aspect, and visible subject unless cleanup requires minor repair."
     )
+    source_text = f"Explicit asset prompt: {explicit_prompt} " if explicit_prompt else f"Nearby/source text: {text or 'none'}. "
     return (
         f"{action} for DrawAI PageSpec element {element_id}. "
         f"Role: {role}. Target box: {bbox[2]:.0f}x{bbox[3]:.0f}px at ({bbox[0]:.0f}, {bbox[1]:.0f}). "
-        f"Nearby/source text: {text or 'none'}. {source_rule} "
+        f"{source_text}{source_rule} "
         "The output will be scaled back into the exact original box, so avoid extra margins, labels, "
         "frames, or unrelated background."
     )
+
+
+def _build_parameter_text(element: Mapping[str, Any], key: str) -> str:
+    build = element.get("build")
+    parameters = build.get("parameters") if isinstance(build, Mapping) else None
+    if not isinstance(parameters, Mapping):
+        return ""
+    value = parameters.get(key)
+    return value.strip() if isinstance(value, str) else ""
 
 
 def _crop_element(
