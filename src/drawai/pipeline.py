@@ -1764,11 +1764,13 @@ class _DefaultSvgInvoker:
     def __call__(self, **kwargs: Any) -> str:
         phase = str(kwargs.get("phase") or "single")
         prompt_kwargs = dict(kwargs)
-        if self.cfg.svg.generation_backend in {"codex_python_sdk_controlled", "agent_cli"}:
+        if self.cfg.svg.generation_backend in {"codex_python_sdk_controlled", "agent_cli", "tool_agent"}:
             prompt_kwargs["file_context_mode"] = True
             prompt_kwargs["workspace_dir"] = self.paths.root
             if self.cfg.svg.generation_backend == "agent_cli":
                 prompt_kwargs["agent_label"] = _agent_cli_label(self.cfg.model_runtime.cli.agent)
+            elif self.cfg.svg.generation_backend == "tool_agent":
+                prompt_kwargs["agent_label"] = "DrawAI Tool Agent"
             else:
                 prompt_kwargs["codex_thread_turn_mode"] = True
         prompt = _svg_generation_prompt(prompt_kwargs)
@@ -1781,6 +1783,8 @@ class _DefaultSvgInvoker:
             return self._invoke_codex_thread(phase=phase, prompt=prompt, kwargs=kwargs)
         if self.cfg.svg.generation_backend == "agent_cli":
             return self._invoke_agent_cli(phase=phase, prompt=prompt, kwargs=kwargs)
+        if self.cfg.svg.generation_backend == "tool_agent":
+            return self._invoke_tool_agent(phase=phase, prompt=prompt, kwargs=kwargs)
         if self.cfg.svg.generation_backend == "sdk_tool_loop":
             from .codex_svg_tool_loop import invoke_codex_svg_text
 
@@ -1881,6 +1885,43 @@ class _DefaultSvgInvoker:
             output_svg_path=Path(kwargs["output_svg_path"]),
             output_response_path=Path(kwargs["output_response_path"]),
         )
+
+    def _invoke_tool_agent(
+        self,
+        *,
+        phase: str,
+        prompt: str,
+        kwargs: Mapping[str, Any],
+    ) -> str:
+        from .tool_agent_runtime import (
+            DEFAULT_TOOL_AGENT_MAX_ITERATIONS,
+            DRAWAI_TOOL_AGENT_PROVIDER,
+            invoke_drawai_tool_agent,
+        )
+
+        runtime_config = dict(self.runtime_config)
+        runtime_config["provider"] = DRAWAI_TOOL_AGENT_PROVIDER
+        runtime_config["connection_id"] = DRAWAI_TOOL_AGENT_PROVIDER
+        runtime_config["wire_api"] = str(runtime_config.get("wire_api") or "chat_completions")
+        result = invoke_drawai_tool_agent(
+            image_paths=[Path(kwargs["figure_path"]), Path(kwargs["reference_image_path"])],
+            prompt=prompt,
+            task_name=f"box_ir_semantic_svg.{phase}.v1",
+            runtime_config=runtime_config,
+            workspace_dir=self.paths.root,
+            repo_root=Path(__file__).resolve().parents[2],
+            trace_path=self.trace_path,
+            max_output_tokens=int(runtime_config.get("max_output_tokens") or 32768),
+            max_iterations=int(runtime_config.get("max_iterations") or DEFAULT_TOOL_AGENT_MAX_ITERATIONS),
+        )
+        output_svg_path = Path(kwargs["output_svg_path"])
+        if not output_svg_path.is_file():
+            raise RuntimeError(f"DrawAI Tool Agent did not write SVG output: {output_svg_path}")
+        output_response_path = Path(kwargs["output_response_path"])
+        if not output_response_path.exists():
+            output_response_path.parent.mkdir(parents=True, exist_ok=True)
+            output_response_path.write_text(result.final_text, encoding="utf-8")
+        return output_svg_path.read_text(encoding="utf-8")
 
 
 def _recover_latest_valid_codex_partial_svg(

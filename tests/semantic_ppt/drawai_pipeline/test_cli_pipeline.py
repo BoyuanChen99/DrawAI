@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -2099,6 +2100,73 @@ model_runtime:
     assert calls[0]["output_response_path"].endswith("/svg/template_iterations/01_template/001/model_response.txt")
     assert "Run 1 / template" in calls[0]["prompt"]
     assert "Claude CLI" in calls[0]["prompt"]
+
+
+def test_default_svg_invoker_routes_tool_agent_backend(monkeypatch, tmp_path: Path):
+    image = tmp_path / "input.png"
+    Image.new("RGB", (100, 50), "white").save(image)
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"""
+input:
+  image: {image.name}
+  output_dir: out
+svg:
+  generation_backend: tool_agent
+model_runtime:
+  provider: drawai_tool_agent
+  connection_id: drawai_tool_agent
+  model_name: qwen3.7-plus
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+  api_key_env: DASHSCOPE_API_KEY
+  wire_api: chat_completions
+  timeout_seconds: 120
+""",
+        encoding="utf-8",
+    )
+    cfg = load_drawai_config(config)
+    paths = prepare_artifact_paths(cfg.input.output_dir)
+    figure = paths.inputs_dir / "figure.png"
+    reference = paths.svg_dir / "template_reference.png"
+    Image.new("RGB", (100, 50), "white").save(figure)
+    Image.new("RGB", (100, 50), "white").save(reference)
+    output_svg = paths.svg_dir / "template_iterations" / "01_template" / "001" / "semantic.svg"
+    output_response = output_svg.with_name("model_response.txt")
+    prompt_path = output_svg.with_name("prompt.txt")
+    calls = []
+
+    def fake_tool_agent(**kwargs):
+        calls.append(kwargs)
+        output_svg.parent.mkdir(parents=True, exist_ok=True)
+        output_svg.write_text(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50" width="100" height="50"></svg>',
+            encoding="utf-8",
+        )
+        return SimpleNamespace(final_text="tool agent done", iterations=2, tool_calls=1)
+
+    monkeypatch.setattr("drawai.tool_agent_runtime.invoke_drawai_tool_agent", fake_tool_agent)
+
+    with _default_svg_invoker(cfg, paths) as invoker:
+        svg = invoker(
+            phase="template",
+            figure_path=figure,
+            reference_image_path=reference,
+            box_ir={"canvas": {"width": 100, "height": 50}, "boxes": []},
+            asset_manifest={"assets": []},
+            template_ir={"canvas": {"width": 100, "height": 50}, "elements": []},
+            prompt_path=prompt_path,
+            output_svg_path=output_svg,
+            output_response_path=output_response,
+            text_rendering="model_text",
+        )
+
+    assert svg.startswith("<svg")
+    assert calls[0]["runtime_config"]["provider"] == "drawai_tool_agent"
+    assert calls[0]["runtime_config"]["wire_api"] == "chat_completions"
+    assert calls[0]["workspace_dir"] == paths.root
+    assert calls[0]["image_paths"] == [figure, reference]
+    assert "DrawAI Tool Agent" in calls[0]["prompt"]
+    assert output_response.read_text(encoding="utf-8") == "tool agent done"
 
 
 def test_failed_rerun_clears_stale_later_stage_status_and_artifacts(tmp_path: Path):

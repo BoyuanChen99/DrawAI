@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from drawai.codex_cli import resolve_codex_executable
+from drawai.tool_agent_runtime import DRAWAI_TOOL_AGENT_PROVIDER
 from drawai.workflow.agents import SUPPORTED_REASONING_EFFORTS
 
 
@@ -105,6 +106,14 @@ AGENT_DEFINITIONS: dict[str, WorkbenchAgentDefinition] = {
         default_command=("hermes", "chat"),
         description="Hermes local Agent CLI provider.",
     ),
+    DRAWAI_TOOL_AGENT_PROVIDER: WorkbenchAgentDefinition(
+        provider_id=DRAWAI_TOOL_AGENT_PROVIDER,
+        label="DrawAI Tool Agent",
+        kind="api",
+        workflow_provider_id=DRAWAI_TOOL_AGENT_PROVIDER,
+        pipeline_agent="",
+        description="OpenAI-compatible API provider with DrawAI-owned file and tool loop.",
+    ),
 }
 
 
@@ -185,6 +194,21 @@ def apply_workbench_agent_settings_to_node_config(
     definition = AGENT_DEFINITIONS[settings.selected_provider_id]
     config = dict(node_config)
     config["provider_id"] = definition.workflow_provider_id
+    if definition.provider_id == DRAWAI_TOOL_AGENT_PROVIDER:
+        if settings.llm_model or settings.model:
+            config["model"] = settings.llm_model or settings.model
+        if settings.llm_base_url:
+            config["base_url"] = settings.llm_base_url
+        if settings.llm_api_key:
+            config["api_key"] = settings.llm_api_key
+        if settings.llm_api_key_env:
+            config["api_key_env"] = settings.llm_api_key_env
+        config["wire_api"] = "chat_completions"
+        if settings.llm_extra_body:
+            config["extra_body"] = dict(settings.llm_extra_body)
+        if settings.timeout_seconds:
+            config["timeout_seconds"] = settings.timeout_seconds
+        return config
     if settings.model:
         config["model"] = settings.model
     if settings.reasoning_effort:
@@ -244,6 +268,20 @@ def apply_workbench_agent_settings_to_config_payload(
         runtime_config["connection_id"] = "codex-python-sdk-controlled"
         if settings.model:
             runtime_config["model_name"] = settings.model
+    elif definition.provider_id == DRAWAI_TOOL_AGENT_PROVIDER:
+        svg_config["generation_backend"] = "tool_agent"
+        runtime_config["provider"] = DRAWAI_TOOL_AGENT_PROVIDER
+        runtime_config["connection_id"] = DRAWAI_TOOL_AGENT_PROVIDER
+        runtime_config["model_name"] = settings.llm_model or settings.model
+        runtime_config["wire_api"] = "chat_completions"
+        if settings.llm_base_url:
+            runtime_config["base_url"] = settings.llm_base_url
+        if settings.llm_api_key:
+            runtime_config["api_key"] = settings.llm_api_key
+        if settings.llm_api_key_env:
+            runtime_config["api_key_env"] = settings.llm_api_key_env
+        if settings.llm_extra_body:
+            runtime_config["extra_body"] = dict(settings.llm_extra_body)
     else:
         svg_config["generation_backend"] = "agent_cli"
         runtime_config["provider"] = "agent-cli"
@@ -323,6 +361,23 @@ def _discover_agent(definition: WorkbenchAgentDefinition) -> dict[str, Any]:
             "command": [],
             "version": "",
             "auth": auth,
+            "workflow_provider_id": definition.workflow_provider_id,
+            "pipeline_agent": definition.pipeline_agent,
+            "description": definition.description,
+        }
+    if definition.kind == "api":
+        return {
+            "provider_id": definition.provider_id,
+            "label": definition.label,
+            "kind": definition.kind,
+            "available": True,
+            "status": "ok",
+            "detail": "OpenAI-compatible API settings are configured per workspace.",
+            "fix": "",
+            "executable_path": "",
+            "command": [],
+            "version": "",
+            "auth": {"available": True, "detail": "Set an API key or API key environment variable."},
             "workflow_provider_id": definition.workflow_provider_id,
             "pipeline_agent": definition.pipeline_agent,
             "description": definition.description,

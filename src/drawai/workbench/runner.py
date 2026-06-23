@@ -31,6 +31,7 @@ from drawai.pipeline import run_drawai_pipeline_from_stage
 from drawai.rmbg_client import RemoteRmbgClient
 from drawai.sam3_client import run_sam3_prompt_plan
 from drawai.svg_to_ppt_check import check_svg_to_ppt_compatibility
+from drawai.tool_agent_runtime import DRAWAI_TOOL_AGENT_PROVIDER
 from drawai.tooling import resolve_drawai_tool_command_prefix
 from drawai.v2.parsers import ocr_payload_to_candidates, sam3_payload_to_candidates
 from drawai.v2.packages import write_element_plan
@@ -586,6 +587,11 @@ class WorkbenchRunner:
         runtime_options = workbench_agent_runtime_options(agent_settings)
         if runtime_options:
             prompt = replace(prompt, options={**dict(prompt.options), **runtime_options})
+        runtime_config = (
+            _workflow_llm_runtime_config(case, node_config, prompt.provider_id)
+            if prompt.provider_id == DRAWAI_TOOL_AGENT_PROVIDER
+            else None
+        )
         resource = f"agent_provider:{prompt.provider_id}"
         with self._resource_slot(resource):
             result = self.agent_executor(
@@ -595,6 +601,7 @@ class WorkbenchRunner:
                     run_root=context.run_root,
                     node_id=context.node.node_id,
                     node_type=context.node.node_type,
+                    runtime_config=runtime_config,
                 )
             )
         outputs: list[dict[str, Any]] = []

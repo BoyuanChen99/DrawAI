@@ -12,7 +12,7 @@ from .prompt_plan import DEFAULT_SAM3_PROMPTS, Sam3Prompt
 RECOGNIZED_OCR_PROVIDERS = frozenset({"remote_paddleocr", "fixture"})
 RECOGNIZED_ASSET_SELECTION_PROVIDERS = frozenset({"deterministic"})
 RECOGNIZED_SVG_GENERATION_BACKENDS = frozenset(
-    {"responses", "sdk_tool_loop", "codex_python_sdk_controlled", "agent_cli"}
+    {"responses", "sdk_tool_loop", "codex_python_sdk_controlled", "agent_cli", "tool_agent"}
 )
 RECOGNIZED_SVG_TEXT_RENDERING = frozenset({"model_text"})
 RECOGNIZED_VISUAL_REVIEW_ROUNDS = frozenset({"text_style", "layout"})
@@ -165,6 +165,9 @@ class ModelRuntimeConfig:
     image_model_name: str = ""
     base_url: str = ""
     api_key: str = ""
+    api_key_env: str = ""
+    wire_api: str = "responses"
+    extra_body: dict[str, Any] | None = None
     extra_headers: dict[str, str] | None = None
     timeout_seconds: float = 600
     concurrency_mode: str = "auto"
@@ -182,6 +185,9 @@ class ModelRuntimeConfig:
             "image_model_name": self.image_model_name,
             "base_url": self.base_url,
             "api_key": self.api_key,
+            "api_key_env": self.api_key_env,
+            "wire_api": self.wire_api,
+            "extra_body": dict(self.extra_body or {}),
             "extra_headers": dict(self.extra_headers or {}),
             "timeout_seconds": self.timeout_seconds,
             "concurrency_mode": self.concurrency_mode,
@@ -566,6 +572,9 @@ def _parse_model_runtime_config(raw: Any) -> ModelRuntimeConfig:
         ),
         base_url=_as_str(data.get("base_url", ModelRuntimeConfig.base_url), "model_runtime.base_url"),
         api_key=_as_str(data.get("api_key", ModelRuntimeConfig.api_key), "model_runtime.api_key"),
+        api_key_env=_as_str(data.get("api_key_env", ModelRuntimeConfig.api_key_env), "model_runtime.api_key_env"),
+        wire_api=_as_str(data.get("wire_api", ModelRuntimeConfig.wire_api), "model_runtime.wire_api"),
+        extra_body=dict(_optional_mapping(data.get("extra_body"), "model_runtime.extra_body") or {}),
         extra_headers=_parse_extra_headers(data.get("extra_headers")),
         timeout_seconds=_as_float(
             data.get("timeout_seconds", ModelRuntimeConfig.timeout_seconds),

@@ -7,6 +7,7 @@ from pathlib import Path
 from posixpath import normpath
 from typing import Any, Literal
 
+from drawai.tool_agent_runtime import DRAWAI_TOOL_AGENT_PROVIDER
 from .agent_prompt_defaults import (
     CUSTOM_AGENT_CONSTRAINTS,
     CUSTOM_AGENT_TASK,
@@ -21,7 +22,7 @@ from drawai.tooling import render_drawai_tool_prompt_section
 
 from .formats import default_format_contract_descriptions, default_format_registry
 
-AgentProviderKind = Literal["sdk", "cli"]
+AgentProviderKind = Literal["sdk", "cli", "api"]
 
 SUPPORTED_REASONING_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh")
 DANGEROUS_AGENT_CONFIG_KEYS = (
@@ -168,7 +169,7 @@ class AgentPrompt:
             "text": self.text,
             "inputs": [dict(item) for item in self.inputs],
             "outputs": [dict(item) for item in self.outputs],
-            "options": dict(self.options),
+            "options": _redact_sensitive_mapping(self.options),
         }
 
 
@@ -226,6 +227,14 @@ def default_agent_provider_registry() -> dict[str, AgentProviderSpec]:
             default_max_concurrent=1,
             executable="hermes",
             description="Hermes CLI provider for file-backed Agent nodes.",
+        ),
+        DRAWAI_TOOL_AGENT_PROVIDER: AgentProviderSpec(
+            provider_id=DRAWAI_TOOL_AGENT_PROVIDER,
+            label="DrawAI Tool Agent",
+            kind="api",
+            resource_key=f"agent_provider:{DRAWAI_TOOL_AGENT_PROVIDER}",
+            default_max_concurrent=2,
+            description="OpenAI-compatible API provider with DrawAI-owned file and tool loop.",
         ),
     }
 
@@ -403,7 +412,10 @@ def _render_prompt_text(
         f"- Node run manifest path: {node_workdir}/node_run.json",
     ]
     for key, value in options.items():
-        lines.append(f"- {key}: {value}")
+        if str(key).lower().replace("-", "_") == "api_key":
+            lines.append(f"- {key}: [redacted]")
+        else:
+            lines.append(f"- {key}: {value}")
 
     lines.extend(
         [
@@ -796,18 +808,42 @@ def _validate_agent_config(config: Mapping[str, Any]) -> None:
             or timeout <= 0
         ):
             raise ValueError("timeout_seconds must be positive")
-    for field_name in ("model", "profile", "provider_id"):
+    for field_name in ("model", "profile", "provider_id", "base_url", "api_key", "api_key_env", "wire_api"):
         if field_name in config and not isinstance(config[field_name], str):
             raise ValueError(f"{field_name} must be a string")
+    for field_name in ("max_output_tokens", "max_iterations"):
+        if field_name in config and config[field_name] not in (None, ""):
+            value = config[field_name]
+            if (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value <= 0
+            ):
+                raise ValueError(f"{field_name} must be a positive integer")
+    if "extra_body" in config and config["extra_body"] not in (None, "") and not isinstance(config["extra_body"], Mapping):
+        raise ValueError("extra_body must be an object")
     if "drawai_tools" in config and not isinstance(config["drawai_tools"], list | tuple):
         raise ValueError("drawai_tools must be an array of tool ids")
 
 
 def _agent_options(config: Mapping[str, Any]) -> Mapping[str, Any]:
     options: dict[str, Any] = {}
-    for key in ("model", "profile", "timeout_seconds", "reasoning_effort"):
+    for key in (
+        "model",
+        "profile",
+        "timeout_seconds",
+        "reasoning_effort",
+        "base_url",
+        "api_key",
+        "api_key_env",
+        "wire_api",
+        "max_output_tokens",
+        "max_iterations",
+    ):
         if key in config and config[key] not in (None, ""):
             options[key] = config[key]
+    if isinstance(config.get("extra_body"), Mapping):
+        options["extra_body"] = dict(config["extra_body"])  # type: ignore[index]
     return options
 
 
@@ -837,6 +873,15 @@ def _drawai_tools_for_inputs(
     if has_page_spec:
         return tuple(tool_ids)
     return tuple(tool_id for tool_id in tool_ids if tool_id not in PAGE_SPEC_ONLY_DRAWAI_TOOLS)
+
+
+def _redact_sensitive_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    redacted: dict[str, Any] = {}
+    for key, item in value.items():
+        key_text = str(key)
+        normalized = key_text.lower().replace("-", "_")
+        redacted[key_text] = "[redacted]" if "api_key" in normalized else item
+    return redacted
 
 
 def _agent_task(preset: AgentPreset, config: Mapping[str, Any]) -> str:
