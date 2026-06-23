@@ -877,6 +877,34 @@ select:focus {
   white-space: nowrap;
 }
 
+.batch-create-button {
+  flex: 0 0 auto;
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  min-height: 34px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid rgba(15, 150, 103, 0.42);
+  border-radius: 999px;
+  background: #16a875;
+  color: #ffffff;
+  padding: 0;
+  box-shadow: 0 10px 22px rgba(15, 150, 103, 0.22);
+  transition: background-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+}
+
+.batch-create-button:hover {
+  background: #0f9667;
+  transform: translateY(-1px);
+  box-shadow: 0 14px 26px rgba(15, 150, 103, 0.26);
+}
+
+.batch-create-button .plus-icon {
+  width: 18px;
+  height: 18px;
+}
+
 .plus-icon {
   width: 23px;
   height: 23px;
@@ -898,11 +926,11 @@ select:focus {
 
 .task-list {
   grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
-  padding-bottom: 140px;
+  padding-bottom: 96px;
 }
 
 .batch-download-floating,
-.task-create-floating {
+.settings-preset-floating {
   position: absolute;
   right: 20px;
   z-index: 24;
@@ -923,18 +951,19 @@ select:focus {
 }
 
 .batch-download-floating {
-  bottom: 78px;
+  bottom: 20px;
 }
 
-.task-create-floating {
-  bottom: 20px;
+.settings-preset-floating {
+  right: 18px;
+  bottom: 18px;
   border-color: rgba(15, 150, 103, 0.38);
   background: #16a875;
   color: #ffffff;
   box-shadow: 0 14px 32px rgba(15, 150, 103, 0.28);
 }
 
-.task-create-floating:hover {
+.settings-preset-floating:hover {
   background: #0f9667;
   transform: translateY(-1px);
   box-shadow: 0 18px 38px rgba(15, 150, 103, 0.32);
@@ -968,7 +997,7 @@ select:focus {
   height: 18px;
 }
 
-.task-create-floating .plus-icon {
+.settings-preset-floating .plus-icon {
   width: 24px;
   height: 24px;
 }
@@ -3357,11 +3386,6 @@ button.asset-status-unsupported {
   padding: 14px 18px;
 }
 
-.settings-secondary-action {
-  margin-top: 12px;
-  width: 100%;
-}
-
 .settings-toggle-row {
   display: flex;
   align-items: center;
@@ -3443,6 +3467,7 @@ button.asset-status-unsupported {
 }
 
 .agent-settings-shell {
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
@@ -3456,6 +3481,10 @@ button.asset-status-unsupported {
 
 .agent-settings-shell.category-llm .agent-settings-panel {
   grid-column: 2;
+}
+
+.agent-settings-shell.category-api .agent-settings-panel {
+  padding-bottom: 72px;
 }
 
 .settings-nav,

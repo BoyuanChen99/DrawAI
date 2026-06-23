@@ -1526,6 +1526,12 @@ function WorkbenchSettingsCenter({
     setDraft((current) => ({ ...current, selected_provider_id: providerId }));
   };
 
+  const createApiPresetDraft = () => {
+    const nextPreset = newApiPresetDraft(apiDrafts);
+    setApiDrafts((current) => [...current, nextPreset]);
+    setSelectedApiPresetId(nextPreset.id);
+  };
+
   const saveSettings = async () => {
     setSaving(true);
     setLocalError("");
@@ -1630,17 +1636,6 @@ function WorkbenchSettingsCenter({
                   ))}
                   {apiDrafts.length === 0 && <div className="agent-settings-empty">还没有 API 预设</div>}
                 </div>
-                <button
-                  type="button"
-                  className="settings-secondary-action"
-                  onClick={() => {
-                    const nextPreset = newApiPresetDraft(apiDrafts);
-                    setApiDrafts((current) => [...current, nextPreset]);
-                    setSelectedApiPresetId(nextPreset.id);
-                  }}
-                >
-                  新建预设
-                </button>
               </div>
             )}
             {settingsCategory === "agent" && (
@@ -2020,6 +2015,17 @@ function WorkbenchSettingsCenter({
                 </div>
               )}
             </div>
+            {settingsCategory === "api" && (
+              <button
+                type="button"
+                className="settings-preset-floating"
+                title="新建预设"
+                aria-label="新建预设"
+                onClick={createApiPresetDraft}
+              >
+                <PlusIcon />
+              </button>
+            )}
           </div>
         </div>
         <footer className="settings-actions">
@@ -4579,6 +4585,15 @@ function TaskSelectionWorkspace({
             <span>任务</span>
             <strong>{batches.length} 个任务</strong>
           </div>
+          <button
+            type="button"
+            className="batch-create-button"
+            title="提交任务"
+            aria-label="提交任务"
+            onClick={onOpenSubmit}
+          >
+            <PlusIcon />
+          </button>
         </div>
         <div className="batch-list-modern">
           {batches.map((batch) => {
@@ -4763,15 +4778,6 @@ function TaskSelectionWorkspace({
           }}
         >
           {batchDownloadPending ? <ButtonSpinner /> : <DownloadIcon />}
-        </button>
-        <button
-          type="button"
-          className="task-create-floating"
-          title="提交任务"
-          aria-label="提交任务"
-          onClick={onOpenSubmit}
-        >
-          <PlusIcon />
         </button>
       </section>
       {batchContextMenu && (
