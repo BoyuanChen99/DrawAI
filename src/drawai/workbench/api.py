@@ -40,7 +40,9 @@ from .api_presets import (
 )
 from .image_processor_providers import images_api_edit_provider as _shared_images_api_edit_provider
 from .processor_settings import (
+    PROCESSOR_DRIVER_DEFINITIONS,
     ProcessorSetting,
+    read_workbench_processor_settings,
     require_processor_configured,
     workbench_processor_settings_payload,
     write_workbench_processor_settings,
@@ -71,7 +73,7 @@ from ..v2.workbench import (
 )
 from .agent_settings import WORKBENCH_SELECTABLE_AGENT_PROVIDER_IDS
 from .models import BatchExecutionMode, CaseRecord, WorkbenchSettings
-from .runner import WorkbenchRunner, create_case_config
+from .runner import WorkbenchRunner, create_case_config, _workflow_template_with_agent_settings
 from .store import WorkbenchStore
 from drawai.workflow.agents import (
     agent_preset_by_id,
@@ -546,6 +548,7 @@ def create_app(
             "case": _case_to_api_with_preview(resolved_store, case),
             "stage_runs": stage_runs,
             "workflow_node_runs": _workflow_node_runs_progress(root),
+            "workflow_nodes": _workflow_node_metadata(resolved_store, case),
             "files": _standard_progress_files(case_id, root),
             "svg_attempts": _svg_attempts_progress(case_id, root),
             "pptx_export": _pptx_export_progress(case_id, root),
@@ -2581,11 +2584,19 @@ def _workflow_node_runs_progress(root: Path) -> list[dict[str, Any]]:
             continue
         node_id = str(payload.get("node_id") or run_path.parents[2].name)
         attempt_id = str(payload.get("attempt_id") or run_path.parent.name)
+        provider_id = str(payload.get("provider_id") or "")
+        if not provider_id:
+            manifest = _workflow_node_execution_manifest(root, payload)
+            provider_id = str(manifest.get("provider_id") or "") if manifest else ""
+        resource_id = str(payload.get("resource_id") or "")
         runs.append(
             {
                 "node_id": node_id,
                 "attempt_id": attempt_id,
                 "status": str(payload.get("status") or ""),
+                "provider_id": provider_id,
+                "provider_label": _workflow_provider_label(provider_id),
+                "resource_id": resource_id,
                 "started_at": str(payload.get("started_at") or ""),
                 "ended_at": str(payload.get("ended_at") or ""),
                 "error_message": str(payload.get("error") or ""),
@@ -2593,6 +2604,138 @@ def _workflow_node_runs_progress(root: Path) -> list[dict[str, Any]]:
             }
         )
     return runs
+
+
+def _workflow_node_metadata(store: WorkbenchStore, case: CaseRecord) -> list[dict[str, Any]]:
+    batch = store.get_batch(case.batch_id)
+    template = load_workflow_template_by_id(store.workspace, batch.workflow_template_id)
+    effective = _workflow_template_with_agent_settings(
+        template,
+        read_workbench_agent_settings(store.workspace),
+        execution_mode=batch.execution_mode,
+    )
+    api_presets = read_workbench_api_presets(store.workspace)
+    processor_api_presets = _workflow_processor_api_preset_summaries(store.workspace, api_presets)
+    metadata: list[dict[str, Any]] = []
+    for node in effective.nodes:
+        config = dict(node.config)
+        provider_id = str(config.get("provider_id") or "")
+        model = str(config.get("model") or config.get("model_name") or "")
+        node_api_presets = list(_workflow_node_api_preset_summaries(config, api_presets))
+        if node.node_id in {"page_spec_refine", "asset_prepare"}:
+            node_api_presets.extend(processor_api_presets)
+        metadata.append(
+            {
+                "node_id": node.node_id,
+                "node_type": node.node_type,
+                "provider_id": provider_id,
+                "provider_label": _workflow_provider_label(provider_id),
+                "model": model,
+                "api_presets": _dedupe_api_preset_summaries(node_api_presets),
+            }
+        )
+    return metadata
+
+
+def _workflow_provider_label(provider_id: str) -> str:
+    if not provider_id:
+        return ""
+    provider = default_agent_provider_registry().get(provider_id)
+    if provider is not None:
+        return provider.label
+    if provider_id == "openai_compatible":
+        return "OpenAI Compatible API"
+    return provider_id.replace("_", " ").title()
+
+
+def _workflow_processor_api_preset_summaries(
+    workspace: str | Path,
+    api_presets: Sequence[ApiPreset],
+) -> list[dict[str, str]]:
+    settings = read_workbench_processor_settings(workspace)
+    summaries: list[dict[str, str]] = []
+    for processing_type, setting in settings.items():
+        if not setting.enabled or not setting.api_preset_id:
+            continue
+        driver = PROCESSOR_DRIVER_DEFINITIONS[setting.driver_id]
+        if not driver.required_api_preset_type:
+            continue
+        preset = api_preset_by_id(api_presets, setting.api_preset_id)
+        if preset is None:
+            continue
+        summaries.append(
+            {
+                "processing_type": processing_type,
+                "api_preset_id": preset.id,
+                "api_preset_label": preset.label or preset.id,
+            }
+        )
+    return summaries
+
+
+def _workflow_node_api_preset_summaries(
+    config: Mapping[str, Any],
+    api_presets: Sequence[ApiPreset],
+) -> list[dict[str, str]]:
+    api_preset_id = str(config.get("api_preset_id") or "")
+    if api_preset_id:
+        preset = api_preset_by_id(api_presets, api_preset_id)
+        if preset is not None:
+            return [{"processing_type": "", "api_preset_id": preset.id, "api_preset_label": preset.label or preset.id}]
+        return [{"processing_type": "", "api_preset_id": api_preset_id, "api_preset_label": api_preset_id}]
+    base_url = str(config.get("base_url") or "").strip().rstrip("/")
+    model = str(config.get("model") or config.get("model_name") or "").strip()
+    if not base_url or not model:
+        return []
+    summaries: list[dict[str, str]] = []
+    for preset in api_presets:
+        if preset.type not in {"llm_chat_completions", "llm_responses"}:
+            continue
+        if preset.base_url.strip().rstrip("/") == base_url and preset.model.strip() == model:
+            summaries.append({"processing_type": "", "api_preset_id": preset.id, "api_preset_label": preset.label or preset.id})
+    return summaries
+
+
+def _dedupe_api_preset_summaries(items: Sequence[Mapping[str, str]]) -> list[dict[str, str]]:
+    seen: set[tuple[str, str]] = set()
+    result: list[dict[str, str]] = []
+    for item in items:
+        processing_type = str(item.get("processing_type") or "")
+        preset_id = str(item.get("api_preset_id") or "")
+        preset_label = str(item.get("api_preset_label") or preset_id)
+        key = (processing_type, preset_id)
+        if not preset_id or key in seen:
+            continue
+        seen.add(key)
+        result.append(
+            {
+                "processing_type": processing_type,
+                "api_preset_id": preset_id,
+                "api_preset_label": preset_label,
+            }
+        )
+    return result
+
+
+def _workflow_node_execution_manifest(root: Path, node_run: Mapping[str, Any]) -> dict[str, Any]:
+    candidates: list[str] = []
+    raw_manifest = node_run.get("execution_manifest_path")
+    if isinstance(raw_manifest, str) and raw_manifest:
+        candidates.append(raw_manifest)
+    outputs = node_run.get("outputs")
+    if isinstance(outputs, Sequence) and not isinstance(outputs, (str, bytes)):
+        for output in outputs:
+            if not isinstance(output, Mapping):
+                continue
+            raw = output.get("execution_manifest_path")
+            if isinstance(raw, str) and raw:
+                candidates.append(raw)
+    for candidate in candidates:
+        path = _resolve_case_path(root, candidate)
+        payload = _read_json_file(path)
+        if isinstance(payload, dict):
+            return payload
+    return {}
 
 
 def _svg_attempt_summary(attempt_dir: Path, files: list[dict[str, Any]]) -> dict[str, Any]:

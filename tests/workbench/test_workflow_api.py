@@ -1119,6 +1119,98 @@ def test_workbench_workflow_template_injects_processor_operation_config(tmp_path
     assert node.config["page_spec_processing_operations"]["image_edit"]["meaning"] == "Workspace image edit meaning."
 
 
+def test_case_progress_exposes_effective_workflow_node_runtime_metadata(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "single.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    settings = _settings(tmp_path, base_config)
+    runner = WorkbenchRunner(store, settings, stage_executor=lambda _case, _stage: None)
+    app = create_app(settings, store=store, runner=runner)
+    client = TestClient(app)
+    preset_response = client.put(
+        "/api/workbench/api-presets",
+        json={
+            "presets": [
+                {
+                    "id": "apimart_images",
+                    "label": "Apimart Images",
+                    "type": "images_api",
+                    "base_url": "https://api.apimart.ai/v1/images/generations",
+                    "model": "gpt-image-2",
+                    "api_key_env": "APIMART_API_KEY",
+                }
+            ]
+        },
+    )
+    assert preset_response.status_code == 200
+    processor_response = client.put(
+        "/api/workbench/processor-settings",
+        json={
+            "processors": {
+                "image_generate": {
+                    "enabled": True,
+                    "driver_id": "openai_images_api",
+                    "api_preset_id": "apimart_images",
+                }
+            }
+        },
+    )
+    assert processor_response.status_code == 200
+    agent_response = client.put(
+        "/api/workbench/agent-settings",
+        json={
+            "selected_provider_id": "hermes_acp",
+            "model": "hermes-model",
+        },
+    )
+    assert agent_response.status_code == 200
+    batch = store.create_batch(
+        name="metadata batch",
+        input_mode="local_dir",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+        execution_mode="agent",
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name=source.name,
+        source_image_path=source,
+        config_path=base_config,
+    )
+    _write_workflow_node_run_fixture(
+        Path(case.run_root),
+        "page_spec_refine",
+        output_type="element_plans",
+        format_id="drawai.element_plans.v1",
+        output_payload={"elements": []},
+        output_name="elements.json",
+        provider_id="kimi_acp",
+        resource_id="agent_provider:kimi_acp",
+    )
+
+    response = client.get(f"/api/cases/{case.case_id}/progress")
+
+    assert response.status_code == 200
+    payload = response.json()
+    runs = {item["node_id"]: item for item in payload["workflow_node_runs"]}
+    assert runs["page_spec_refine"]["provider_id"] == "kimi_acp"
+    assert runs["page_spec_refine"]["provider_label"] == "Kimi ACP"
+    assert runs["page_spec_refine"]["resource_id"] == "agent_provider:kimi_acp"
+    nodes = {item["node_id"]: item for item in payload["workflow_nodes"]}
+    assert nodes["page_spec_refine"]["provider_id"] == "hermes_acp"
+    assert nodes["page_spec_refine"]["provider_label"] == "Hermes ACP"
+    assert nodes["page_spec_refine"]["model"] == "hermes-model"
+    assert nodes["asset_prepare"]["api_presets"] == [
+        {
+            "processing_type": "image_generate",
+            "api_preset_id": "apimart_images",
+            "api_preset_label": "Apimart Images",
+        }
+    ]
+
+
 def test_create_batch_binds_selected_workflow_template(tmp_path: Path) -> None:
     store = WorkbenchStore(tmp_path / "workspace")
     base_config = _base_config(tmp_path)
@@ -1381,6 +1473,60 @@ def _write_executable(path: Path, body: str) -> Path:
     path.write_text("#!/bin/sh\n" + body, encoding="utf-8")
     path.chmod(0o755)
     return path
+
+
+def _write_workflow_node_run_fixture(
+    root: Path,
+    node_id: str,
+    *,
+    output_type: str,
+    format_id: str,
+    output_payload: object,
+    output_name: str,
+    provider_id: str = "",
+    resource_id: str = "",
+) -> None:
+    run_dir = root / "nodes" / node_id / "runs" / "001"
+    output_relative_path = Path("nodes") / node_id / "runs" / "001" / "output" / output_name
+    output_path = root / output_relative_path
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(output_payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "node_run.json").write_text(
+        json.dumps(
+            {
+                "schema": "drawai.workflow_node_run.v1",
+                "node_id": node_id,
+                "node_type": "agent",
+                "attempt_id": "001",
+                "status": "ok",
+                "workdir": f"nodes/{node_id}/runs/001",
+                "provider_id": provider_id,
+                "resource_id": resource_id,
+                "inputs": [],
+                "outputs": [
+                    {
+                        "port_id": "output",
+                        "path": output_relative_path.as_posix(),
+                        "format_id": format_id,
+                        "type": output_type,
+                        "exit_code": 0,
+                        "source_node_id": node_id,
+                        "source_port_id": "output",
+                    }
+                ],
+                "started_at": "2026-06-18T00:00:00Z",
+                "ended_at": "2026-06-18T00:00:01Z",
+                "duration_ms": 1000,
+                "exit_code": 0,
+                "error": None,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
 
 def _write_direct_svg_export_template(workspace: Path, template_id: str) -> None:

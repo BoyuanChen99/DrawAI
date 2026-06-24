@@ -292,10 +292,28 @@ export interface WorkflowNodeRunRecord {
   node_id: string;
   attempt_id: string;
   status: string;
+  provider_id?: string;
+  provider_label?: string;
+  resource_id?: string;
   started_at: string;
   ended_at: string;
   error_message: string;
   workdir: string;
+}
+
+export interface WorkflowNodeApiPresetSummary {
+  processing_type: string;
+  api_preset_id: string;
+  api_preset_label: string;
+}
+
+export interface WorkflowNodeMetadata {
+  node_id: string;
+  node_type: string;
+  provider_id: string;
+  provider_label: string;
+  model: string;
+  api_presets: WorkflowNodeApiPresetSummary[];
 }
 
 export interface CaseProgressFile {
@@ -540,6 +558,7 @@ export interface CaseProgress {
   case: CaseRecord;
   stage_runs: StageRunRecord[];
   workflow_node_runs: WorkflowNodeRunRecord[];
+  workflow_nodes: WorkflowNodeMetadata[];
   files: CaseProgressFile[];
   svg_attempts: SvgAttemptProgress[];
   pptx_export: PptxExportProgress;

@@ -53,6 +53,11 @@ import {
 } from "./workflowRunState";
 import { listWorkflowTemplates } from "./workflowApi";
 import {
+  dagRunCaseIdentifier,
+  latestWorkflowNodeRunForNode,
+  workflowNodeExtraInfoRows
+} from "./workflowNodeDisplay";
+import {
   buildUploadConfirmation,
   isSupportedUpload,
   selectedUploadFilesFromDrop,
@@ -90,6 +95,7 @@ import type {
   WorkbenchAgentSettings,
   WorkbenchAgentSettingsResponse,
   WorkflowNodeRunRecord,
+  WorkflowNodeMetadata,
   WorkflowNodeViewer
 } from "./types";
 import type { WorkflowTemplate } from "./workflowTypes";
@@ -1336,11 +1342,6 @@ function BoardWorkspace({
           v2PackageError={v2PackageError}
           v2AssetLoadingElementId={v2AssetLoadingElementId}
           v2ActionPending={v2ActionPending}
-          canForkV2FromSource={canForkV2FromSource}
-          onSelectV2Element={onSelectV2Element}
-          onProcessV2Asset={onProcessV2Asset}
-          onSetActiveV2Result={onSetActiveV2Result}
-          onForkV2FromSource={onForkV2FromSource}
           onOpenCaseAssets={onOpenCaseAssets}
           onOpenWorkflowNodeArtifact={onOpenWorkflowNodeArtifact}
         />
@@ -2378,11 +2379,6 @@ function TaskDetailPanel({
   v2PackageError,
   v2AssetLoadingElementId,
   v2ActionPending,
-  canForkV2FromSource,
-  onSelectV2Element,
-  onProcessV2Asset,
-  onSetActiveV2Result,
-  onForkV2FromSource,
   onOpenCaseAssets,
   onOpenWorkflowNodeArtifact
 }: {
@@ -2397,11 +2393,6 @@ function TaskDetailPanel({
   v2PackageError: string;
   v2AssetLoadingElementId: string;
   v2ActionPending: string;
-  canForkV2FromSource: boolean;
-  onSelectV2Element: (elementId: string) => void;
-  onProcessV2Asset: (processor: V2ProcessorType, elementId?: string) => void;
-  onSetActiveV2Result: (resultId: string) => void;
-  onForkV2FromSource: () => void;
   onOpenCaseAssets: (caseId: string) => void;
   onOpenWorkflowNodeArtifact: (caseId: string, nodeId: string) => void;
 }) {
@@ -2423,13 +2414,6 @@ function TaskDetailPanel({
         onOpenAssetsReview={() => onOpenCaseAssets(currentCase.case_id)}
         onOpenNodeArtifact={(nodeId) => onOpenWorkflowNodeArtifact(currentCase.case_id, nodeId)}
       />
-      {runCompatibility === "legacy_readonly" && (
-        <LegacyReadOnlyBanner
-          canForkV2FromSource={canForkV2FromSource}
-          actionPending={v2ActionPending === "fork"}
-          onForkV2FromSource={onForkV2FromSource}
-        />
-      )}
       {runCompatibility === "v2" && v2PackageError && <ErrorDetail message={v2PackageError} />}
       {currentCase.error_message && <ErrorDetail message={currentCase.error_message} />}
     </aside>
@@ -2442,6 +2426,8 @@ type DagNodeView = {
   stage: string;
   meta: string;
   error: string;
+  run: WorkflowNodeRunRecord | null;
+  metadata: WorkflowNodeMetadata | null;
   x: number;
   y: number;
   width: number;
@@ -2489,9 +2475,10 @@ function DagRunPanel({
   const currentDetail = { ...caseDetail, case: currentCase };
   const stageRuns = mergedStageRuns(progress?.stage_runs, caseDetail.stage_runs);
   const nodeRuns = progress?.workflow_node_runs || [];
+  const nodeMetadataById = useMemo(() => new Map((progress?.workflow_nodes || []).map((item) => [item.node_id, item])), [progress?.workflow_nodes]);
   const files = progress?.files || [];
   const layout = useMemo(() => (template ? buildWorkflowPreviewLayout(template) : null), [template]);
-  const views = useMemo(() => buildDagNodeViews(template, layout, currentDetail, stageRuns, nodeRuns, files), [template, layout, currentDetail, stageRuns, nodeRuns, files]);
+  const views = useMemo(() => buildDagNodeViews(template, layout, currentDetail, stageRuns, nodeRuns, nodeMetadataById, files), [template, layout, currentDetail, stageRuns, nodeRuns, nodeMetadataById, files]);
   const selectedView = views.find((item) => item.node.node_id === selectedNodeId) || views.find((item) => item.state === "running") || views.find((item) => item.state === "review") || views[0] || null;
   const viewByNodeId = useMemo(() => new Map(views.map((view) => [view.node.node_id, view])), [views]);
   useEffect(() => {
@@ -2524,7 +2511,7 @@ function DagRunPanel({
           <span>Workflow run</span>
           <strong>{template?.name || workflowTemplateId || "Default DrawAI DAG"}</strong>
         </div>
-        <em>{currentCase.name}</em>
+        <em>{dagRunCaseIdentifier(currentCase)}</em>
       </header>
       {loadError && <ErrorDetail message={loadError} />}
       <div className="dag-run-body">
@@ -2620,6 +2607,13 @@ function DagRunPanel({
                 <div><dt>Stage</dt><dd>{selectedView.stage ? humanize(selectedView.stage) : "Workflow node"}</dd></div>
                 <div><dt>Node ID</dt><dd>{selectedView.node.node_id}</dd></div>
                 <div><dt>Runtime</dt><dd>{selectedView.meta}</dd></div>
+                {workflowNodeExtraInfoRows({
+                  node: selectedView.node,
+                  nodeRun: selectedView.run,
+                  metadata: selectedView.metadata
+                }).map((row) => (
+                  <div key={row.label}><dt>{row.label}</dt><dd>{row.value}</dd></div>
+                ))}
                 <div><dt>Inputs</dt><dd>{selectedView.node.inputs.map((portItem) => portItem.types.join("/")).join(", ") || "-"}</dd></div>
                 <div><dt>Outputs</dt><dd>{selectedView.node.outputs.map((portItem) => portItem.types.join("/")).join(", ") || "-"}</dd></div>
               </dl>
@@ -2973,33 +2967,6 @@ function agentLogEntryVisible(entry: { source: string; item: Record<string, unkn
 function stringField(item: Record<string, unknown>, key: string): string {
   const value = item[key];
   return typeof value === "string" ? value : "";
-}
-
-function LegacyReadOnlyBanner({
-  canForkV2FromSource,
-  actionPending,
-  onForkV2FromSource
-}: {
-  canForkV2FromSource: boolean;
-  actionPending: boolean;
-  onForkV2FromSource: () => void;
-}) {
-  return (
-    <section className="legacy-readonly-banner">
-      <div>
-        <strong>历史结果只读</strong>
-        <span>可以继续预览和下载已有 SVG / PPTX，但素材处理、SVG 编辑、重新组合和导出已关闭。</span>
-      </div>
-      {canForkV2FromSource ? (
-        <button type="button" className={actionPending ? "running" : ""} disabled={actionPending} onClick={onForkV2FromSource}>
-          {actionPending && <ButtonSpinner />}
-          {actionPending ? "创建中" : "从源图创建 v2 run"}
-        </button>
-      ) : (
-        <em>源图不可用，无法创建 v2 run</em>
-      )}
-    </section>
-  );
 }
 
 function V2AssetPackagePanel({
@@ -4423,6 +4390,7 @@ function buildDagNodeViews(
   caseDetail: CaseDetail,
   stageRuns: StageRunRecord[],
   nodeRuns: WorkflowNodeRunRecord[],
+  nodeMetadataById: Map<string, WorkflowNodeMetadata>,
   files: CaseProgress["files"]
 ): DagNodeView[] {
   if (!template || !layout) return [];
@@ -4430,9 +4398,12 @@ function buildDagNodeViews(
   return template.nodes.map((node) => {
     const nodeLayout = layoutByNodeId.get(node.node_id);
     const runtime = workflowNodeRuntimeState(node, caseDetail.case, stageRuns, nodeRuns, files, caseDetail.artifacts);
+    const run = latestWorkflowNodeRunForNode(nodeRuns, node.node_id);
     return {
       node,
       ...runtime,
+      run,
+      metadata: nodeMetadataById.get(node.node_id) || null,
       x: nodeLayout?.x || 0,
       y: nodeLayout?.y || 0,
       width: nodeLayout?.width || 138,
