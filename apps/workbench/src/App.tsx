@@ -149,6 +149,11 @@ const WORKBENCH_SETTINGS_NAV_SECTIONS: { label: string; items: WorkbenchSettings
     items: [{ id: "processor", label: "处理器", icon: "processor" }]
   }
 ];
+const BOARD_NAV_ITEMS: { id: BoardMode; label: string; icon: BoardMode }[] = [
+  { id: "generate", label: "图像生成", icon: "generate" },
+  { id: "process", label: "可编辑化任务", icon: "process" },
+  { id: "workflow", label: "工作流配置", icon: "workflow" }
+];
 const DEFAULT_IMAGEGEN_CONNECTION: ImageGenConnectionSettings = {
   provider: "codex",
   baseUrl: "",
@@ -976,40 +981,28 @@ export default function App() {
           <div className="brand-copy">
             <h1>DrawAI</h1>
           </div>
+        </div>
+        <div id="drawai-view-controls" className={activeView === "board" ? "topbar-view-controls board-view-controls" : "topbar-view-controls"}>
           {activeView === "board" && (
-            <div className={`board-mode-switch is-${boardMode}`} role="tablist" aria-label="工作模式">
-              <span className="board-mode-switch__thumb" aria-hidden="true" />
-              <button
-                type="button"
-                role="tab"
-                aria-selected={boardMode === "generate"}
-                className={boardMode === "generate" ? "active" : ""}
-                onClick={() => setBoardMode("generate")}
-              >
-                生成
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={boardMode === "process"}
-                className={boardMode === "process" ? "active" : ""}
-                onClick={() => setBoardMode("process")}
-              >
-                处理
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={boardMode === "workflow"}
-                className={boardMode === "workflow" ? "active" : ""}
-                onClick={() => setBoardMode("workflow")}
-              >
-                Workflow
-              </button>
-            </div>
+            <nav className={`board-mode-switch is-${boardMode}`} role="tablist" aria-label="工作模式">
+              {BOARD_NAV_ITEMS.map((item) => (
+                <button
+                  type="button"
+                  key={item.id}
+                  role="tab"
+                  aria-selected={boardMode === item.id}
+                  className={boardMode === item.id ? "active" : ""}
+                  onClick={() => setBoardMode(item.id)}
+                >
+                  <span className="board-mode-icon" aria-hidden="true">
+                    <BoardModeIcon mode={item.icon} />
+                  </span>
+                  <span>{item.label}</span>
+                </button>
+              ))}
+            </nav>
           )}
         </div>
-        <div id="drawai-view-controls" className="topbar-view-controls" />
         <div className="topbar-links">
           <button
             type="button"
@@ -1573,7 +1566,7 @@ function WorkbenchSettingsCenter({
   };
 
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+    <div className="modal-backdrop workbench-settings-backdrop" role="presentation" onMouseDown={onClose}>
       <section
         className="settings-dialog workbench-agent-settings-dialog"
         role="dialog"
@@ -1592,30 +1585,38 @@ function WorkbenchSettingsCenter({
         </header>
         <div className="agent-settings-body">
           {localError && <div className="agent-settings-error">{localError}</div>}
-          <div className={`agent-settings-shell category-${settingsCategory}`}>
-            <nav className="settings-nav" aria-label="设置导航">
-              {WORKBENCH_SETTINGS_NAV_SECTIONS.map((section) => (
-                <div className="settings-nav-section" key={section.label}>
-                  <div className="settings-nav-heading">{section.label}</div>
-                  <div className="settings-nav-group">
-                    {section.items.map((item) => (
-                      <button
-                        type="button"
-                        key={item.id}
-                        className={`settings-nav-item${settingsCategory === item.id ? " active" : ""}`}
-                        aria-current={settingsCategory === item.id ? "page" : undefined}
-                        onClick={() => setSettingsCategory(item.id)}
-                      >
-                        <span className="settings-nav-icon" aria-hidden="true">
-                          <SettingsNavIcon icon={item.icon} />
-                        </span>
-                        <span className="settings-nav-label">{item.label}</span>
-                      </button>
-                    ))}
+          <div className="settings-full-layout">
+            <aside className="settings-full-sidebar">
+              <div className="settings-full-title">
+                <span>DrawAI</span>
+                <strong>设置</strong>
+              </div>
+              <nav className="settings-nav" aria-label="设置导航">
+                {WORKBENCH_SETTINGS_NAV_SECTIONS.map((section) => (
+                  <div className="settings-nav-section" key={section.label}>
+                    <div className="settings-nav-heading">{section.label}</div>
+                    <div className="settings-nav-group">
+                      {section.items.map((item) => (
+                        <button
+                          type="button"
+                          key={item.id}
+                          className={`settings-nav-item${settingsCategory === item.id ? " active" : ""}`}
+                          aria-current={settingsCategory === item.id ? "page" : undefined}
+                          onClick={() => setSettingsCategory(item.id)}
+                        >
+                          <span className="settings-nav-icon" aria-hidden="true">
+                            <SettingsNavIcon icon={item.icon} />
+                          </span>
+                          <span className="settings-nav-label">{item.label}</span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ))}
-            </nav>
+                ))}
+              </nav>
+            </aside>
+            <div className="settings-full-main">
+              <div className={`agent-settings-shell category-${settingsCategory}`}>
             {settingsCategory === "api" && (
               <div className="agent-settings-list-panel">
                 <div className="agent-settings-list" aria-label="API 预设">
@@ -2027,6 +2028,8 @@ function WorkbenchSettingsCenter({
                 </div>
               )}
             </div>
+          </div>
+          </div>
           </div>
         </div>
         <footer className="settings-actions">
@@ -6232,6 +6235,36 @@ function AssetTooltip({ element, naturalSize }: { element: AssetElement; natural
 
 function DraftBox({ bbox, naturalSize }: { bbox: [number, number, number, number]; naturalSize: { width: number; height: number } }) {
   return <div className="draft-box" style={{ ...bboxStyle(bbox, naturalSize), zIndex: 1_000_000 }} />;
+}
+
+function BoardModeIcon({ mode }: { mode: BoardMode }) {
+  if (mode === "generate") {
+    return (
+      <svg className="board-mode-svg" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M5.5 15.2 8.7 12l2.3 2.1 3.2-4.1 4.3 5.2" />
+        <path d="M6.2 5.3h11.6c.9 0 1.6.7 1.6 1.6v10.2c0 .9-.7 1.6-1.6 1.6H6.2c-.9 0-1.6-.7-1.6-1.6V6.9c0-.9.7-1.6 1.6-1.6Z" />
+        <circle cx="8.5" cy="8.5" r="1.3" />
+      </svg>
+    );
+  }
+  if (mode === "workflow") {
+    return (
+      <svg className="board-mode-svg" viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="4.5" y="5" width="5" height="5" rx="1.2" />
+        <rect x="14.5" y="5" width="5" height="5" rx="1.2" />
+        <rect x="9.5" y="14" width="5" height="5" rx="1.2" />
+        <path d="M9.5 7.5h5M12 10v4" />
+      </svg>
+    );
+  }
+  return (
+    <svg className="board-mode-svg" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5 7.2h8.8" />
+      <path d="M5 12h14" />
+      <path d="M5 16.8h8.8" />
+      <path d="m16.1 6.7 2.9 2.9-2.9 2.9" />
+    </svg>
+  );
 }
 
 function SettingsNavIcon({ icon }: { icon: WorkbenchSettingsCategory }) {
