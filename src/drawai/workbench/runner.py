@@ -27,6 +27,7 @@ from drawai.page_spec import (
     write_page_spec,
 )
 from drawai.page_spec_assets import copy_page_spec_bundle, materialize_page_spec_assets, page_spec_asset_manifest
+from drawai.page_spec_svg import draft_semantic_svg_from_page_spec
 from drawai.pipeline import run_drawai_pipeline_from_stage
 from drawai.rmbg_client import RemoteRmbgClient
 from drawai.sam3_client import run_sam3_prompt_plan
@@ -70,6 +71,7 @@ from .agent_settings import (
     read_workbench_agent_settings,
     workbench_agent_runtime_options,
 )
+from .image_processor_providers import asset_prepare_image_providers
 from .processor_settings import resolved_processor_operation_config
 from .models import CaseRecord, WorkbenchSettings
 from .store import WorkbenchStore
@@ -746,21 +748,49 @@ class WorkbenchRunner:
             cfg = load_drawai_config(case.config_path, validate_input_exists=False)
             rmbg_config = cfg.asset_materialization.rmbg
             rmbg_client = RemoteRmbgClient(rmbg_config.base_url) if rmbg_config.enabled else None
+            image_providers = asset_prepare_image_providers(self.store.workspace)
             materialized = materialize_page_spec_assets(
                 page_spec,
                 source_image_path=source_image,
                 output_dir=context.output_dir,
                 rmbg_config=rmbg_config,
                 rmbg_client=rmbg_client,
+                image_generate=image_providers.get("image_generate"),
+                image_edit=image_providers.get("image_edit"),
             )
             canonical_path = write_page_spec(Path(case.run_root) / "page_spec.json", materialized)
             output_path = write_page_spec(context.output_dir / "page_spec.json", materialized)
+            preview_svg = context.output_dir / "processor_preview.svg"
+            draft_semantic_svg_from_page_spec(
+                output_path,
+                preview_svg,
+                href_base_dir=Path(case.run_root) / "svg",
+            )
             if canonical_path != output_path:
                 write_json(
                     Path(case.run_root) / "page_spec_asset_manifest.json",
                     page_spec_asset_manifest(output_path, svg_dir=Path(case.run_root) / "svg"),
                 )
-            return (_workflow_output(context, "page_spec", output_path, "page_spec", "drawai.page_spec.v1"),)
+            outputs = [
+                _workflow_output(
+                    context,
+                    "page_spec",
+                    output_path,
+                    "page_spec",
+                    "drawai.page_spec.v1",
+                )
+            ]
+            if any(port.port_id == "processor_preview" for port in context.node.outputs):
+                outputs.append(
+                    _workflow_output(
+                        context,
+                        "processor_preview",
+                        preview_svg,
+                        "semantic_svg",
+                        "drawai.semantic_svg.v1",
+                    )
+                )
+            return tuple(outputs)
         if processor_id == "asset_planner":
             elements_source = Path(_first_input_path(case.run_root, inputs)).expanduser().resolve(strict=False)
             if not elements_source.is_file():

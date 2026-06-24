@@ -4,6 +4,7 @@ import copy
 import json
 import os
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -13,11 +14,13 @@ from PIL import Image
 from drawai.asset_geometry import geometry_crop, normalize_asset_geometry
 from drawai.page_spec import validate_page_spec_payload
 from drawai.rmbg_client import RmbgResult
-from drawai.v2.schema import utc_now
+from drawai.v2.processors import ImageEditProcessor, ImageGenerateProcessor
+from drawai.v2.schema import ElementPlan, ProcessingIntent, utc_now
 
 _RASTER_PROCESSING_TYPES = {"crop", "crop_nobg"}
+_IMAGE_PROCESSING_TYPES = {"image_generate", "image_edit"}
 _NON_MATERIALIZED_PROCESSING_TYPES = {"no_process", "svg_self_draw", "chart_rebuild_reserved"}
-_UNSUPPORTED_PROCESSING_TYPES = {"image_generate", "image_edit"}
+_DEFAULT_PROCESSOR_WORKERS = 4
 
 
 def materialize_page_spec_assets(
@@ -27,6 +30,9 @@ def materialize_page_spec_assets(
     output_dir: str | Path,
     rmbg_config: Any = None,
     rmbg_client: Any = None,
+    image_generate: Any = None,
+    image_edit: Any = None,
+    processor_workers: int | None = None,
 ) -> dict[str, Any]:
     """Return a PageSpec copy whose raster elements point to assets in output_dir."""
 
@@ -40,30 +46,48 @@ def materialize_page_spec_assets(
     raw_elements = materialized.get("elements")
     if isinstance(raw_elements, str) or not isinstance(raw_elements, Sequence):
         raise ValueError("PageSpec elements must be a list")
+    elements: list[dict[str, Any]] = []
     for raw_element in raw_elements:
         if not isinstance(raw_element, dict):
             raise ValueError("PageSpec elements must contain objects")
+        elements.append(raw_element)
+
+    def materialize_one(raw_element: dict[str, Any]) -> tuple[str, dict[str, Any] | None]:
         processing_type = _processing_type(raw_element)
-        if processing_type in _UNSUPPORTED_PROCESSING_TYPES:
-            element_id = _required_string(raw_element.get("id"), "element.id")
-            raise RuntimeError(
-                f"PageSpec asset_prepare cannot run processing_type {processing_type!r} for element {element_id}; "
-                "image generation/editing must be modeled as a dedicated real tool or node before enabling it."
-            )
+        element_id = _required_string(raw_element.get("id"), "element.id")
         if processing_type in _NON_MATERIALIZED_PROCESSING_TYPES:
+            return element_id, None
+        if processing_type in _RASTER_PROCESSING_TYPES:
+            return element_id, _materialize_raster_element(
+                raw_element,
+                source_image_path=source_path,
+                output_dir=output_root,
+                processing_type=processing_type,
+                rmbg_config=rmbg_config,
+                rmbg_client=rmbg_client,
+            )
+        if processing_type in _IMAGE_PROCESSING_TYPES:
+            return element_id, _materialize_image_processor_element(
+                raw_element,
+                source_image_path=source_path,
+                output_dir=output_root,
+                processing_type=processing_type,
+                image_generate=image_generate,
+                image_edit=image_edit,
+            )
+        raise RuntimeError(f"unsupported PageSpec build.processing_type for element {element_id}: {processing_type}")
+
+    workers = max(1, int(processor_workers or min(_DEFAULT_PROCESSOR_WORKERS, max(1, len(elements)))))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        materialized_by_id = dict(executor.map(materialize_one, elements))
+
+    for raw_element in elements:
+        materialization = materialized_by_id[_required_string(raw_element.get("id"), "element.id")]
+        if materialization is None:
             raw_element.pop("materialization", None)
-            continue
-        if processing_type not in _RASTER_PROCESSING_TYPES:
-            element_id = _required_string(raw_element.get("id"), "element.id")
-            raise RuntimeError(f"unsupported PageSpec build.processing_type for element {element_id}: {processing_type}")
-        raw_element["materialization"] = _materialize_raster_element(
-            raw_element,
-            source_image_path=source_path,
-            output_dir=output_root,
-            processing_type=processing_type,
-            rmbg_config=rmbg_config,
-            rmbg_client=rmbg_client,
-        )
+        else:
+            raw_element["materialization"] = materialization
+
     metadata = materialized.get("metadata")
     if not isinstance(metadata, dict):
         metadata = {}
@@ -266,6 +290,154 @@ def _materialize_raster_element(
             "active_variant": active_variant,
         },
     }
+
+
+def _materialize_image_processor_element(
+    element: Mapping[str, Any],
+    *,
+    source_image_path: Path,
+    output_dir: Path,
+    processing_type: str,
+    image_generate: Any,
+    image_edit: Any,
+) -> dict[str, Any]:
+    element_id = _required_string(element.get("id"), "element.id")
+    plan = _element_plan_from_page_spec_element(element, processing_type=processing_type)
+    if processing_type == "image_generate":
+        package = ImageGenerateProcessor(image_generate=image_generate).process(output_dir, plan)
+    elif processing_type == "image_edit":
+        package = ImageEditProcessor(image_edit=image_edit).process(
+            output_dir,
+            plan,
+            source_image_path=source_image_path,
+        )
+    else:
+        raise RuntimeError(f"unsupported image processor: {processing_type}")
+    active = package.active_result
+    if not isinstance(active, Mapping) or not active.get("path"):
+        raise RuntimeError(f"PageSpec element {element_id} image processor did not produce an active result")
+    active_path = output_dir / str(active["path"])
+    return {
+        "status": package.status,
+        "processor": "asset_prepare",
+        "processing_type": processing_type,
+        "created_at": utc_now(),
+        "outputs": {
+            "active": _image_output_record(active_path, output_dir),
+        },
+        "metadata": {
+            "asset_package_path": f"elements/{_safe_asset_dir_name(element_id)}/asset_package.json",
+            "processor_metadata": dict(package.metadata),
+        },
+    }
+
+
+def _element_plan_from_page_spec_element(
+    element: Mapping[str, Any],
+    *,
+    processing_type: str,
+) -> ElementPlan:
+    element_id = _required_string(element.get("id"), "element.id")
+    bbox = _bbox_xywh(element)
+    role = str(element.get("role") or element.get("kind") or "image")
+    geometry = element.get("geometry")
+    if not isinstance(geometry, Mapping):
+        geometry = {
+            "kind": "bbox",
+            "bbox": [bbox[0], bbox[1], bbox[0] + bbox[2], bbox[1] + bbox[3]],
+        }
+    return ElementPlan(
+        element_id=element_id,
+        source_candidate_ids=_source_ref_ids(element) or (element_id,),
+        element_type=role,
+        bbox=bbox,
+        geometry=geometry,
+        z_order=int(element.get("z_index") or 0),
+        confidence="medium",
+        processing_intent=ProcessingIntent(
+            object_type=role,
+            processing_type=processing_type,
+            parameters={
+                "prompt": _image_processor_prompt(element, processing_type=processing_type),
+                "runtime_config": _image_processor_runtime_config(element),
+            },
+        ),
+        review_status="agent_refined",
+        created_by_stage="asset_prepare",
+        change_reason=str(
+            _mapping_text(element.get("metadata"), "change_reason")
+            or "PageSpec asset_prepare image processor."
+        ),
+    )
+
+
+def _source_ref_ids(element: Mapping[str, Any]) -> tuple[str, ...]:
+    refs = element.get("source_refs")
+    if isinstance(refs, str) or not isinstance(refs, Sequence):
+        return ()
+    ids: list[str] = []
+    for ref in refs:
+        if isinstance(ref, Mapping) and isinstance(ref.get("id"), str) and ref["id"]:
+            ids.append(str(ref["id"]))
+    return tuple(ids)
+
+
+def _mapping_text(value: Any, key: str) -> str:
+    if isinstance(value, Mapping):
+        item = value.get(key)
+        if isinstance(item, str):
+            return item
+    return ""
+
+
+def _image_processor_runtime_config(element: Mapping[str, Any]) -> dict[str, Any]:
+    build = element.get("build")
+    parameters = build.get("parameters") if isinstance(build, Mapping) else None
+    if not isinstance(parameters, Mapping):
+        return {}
+    runtime_config = parameters.get("runtime_config")
+    if isinstance(runtime_config, Mapping):
+        return dict(runtime_config)
+    return {
+        key: parameters[key]
+        for key in ("size", "quality", "background", "output_format", "output_compression")
+        if key in parameters
+    }
+
+
+def _image_processor_prompt(element: Mapping[str, Any], *, processing_type: str) -> str:
+    element_id = _required_string(element.get("id"), "element.id")
+    bbox = _bbox_xywh(element)
+    role = str(element.get("role") or element.get("kind") or "image")
+    text = str(element.get("text") or _mapping_text(element.get("measurement"), "text") or "").strip()
+    explicit_prompt = _build_parameter_text(element, "prompt")
+    action = (
+        "Generate a clean raster asset"
+        if processing_type == "image_generate"
+        else "Edit the provided source crop into a clean raster asset"
+    )
+    source_rule = (
+        "Synthesize from the semantic description rather than copying source noise."
+        if processing_type == "image_generate"
+        else "Preserve the original composition, colors, aspect, and visible subject unless cleanup requires minor repair."
+    )
+    source_text = f"Explicit asset prompt: {explicit_prompt} " if explicit_prompt else f"Nearby/source text: {text or 'none'}. "
+    return (
+        f"{action} for DrawAI PageSpec element {element_id}. "
+        f"Role: {role}. Target box: {bbox[2]:.0f}x{bbox[3]:.0f}px at ({bbox[0]:.0f}, {bbox[1]:.0f}). "
+        f"{source_text}{source_rule} "
+        "The output will be scaled back into the exact original box, so avoid extra margins, labels, "
+        "frames, or unrelated background."
+    )
+
+
+def _build_parameter_text(element: Mapping[str, Any], key: str) -> str:
+    build = element.get("build")
+    parameters = build.get("parameters") if isinstance(build, Mapping) else None
+    if not isinstance(parameters, Mapping):
+        return ""
+    value = parameters.get(key)
+    return value.strip() if isinstance(value, str) else ""
 
 
 def _crop_element(
