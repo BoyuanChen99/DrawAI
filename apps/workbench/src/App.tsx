@@ -4838,6 +4838,7 @@ function TaskSelectionWorkspace({
               >
                 <div className="batch-row-main">
                   <strong>{batch.name}</strong>
+                  <span className={`status-pill status-${batch.status}`}>{humanize(batch.status)}</span>
                 </div>
               </article>
             );

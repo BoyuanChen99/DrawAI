@@ -1034,26 +1034,6 @@ select:focus {
   border-bottom: 0;
 }
 
-.batch-row.batch-status-queued {
-  background: rgba(248, 250, 252, 0.72);
-}
-
-.batch-row.batch-status-running {
-  background: rgba(239, 246, 255, 0.72);
-}
-
-.batch-row.batch-status-waiting_review {
-  background: rgba(255, 247, 237, 0.74);
-}
-
-.batch-row.batch-status-completed {
-  background: rgba(236, 253, 245, 0.68);
-}
-
-.batch-row.batch-status-canceled {
-  background: rgba(241, 245, 249, 0.84);
-}
-
 .task-row:hover {
   border-color: rgba(49, 104, 245, 0.22);
   background: #ffffff;
@@ -1108,40 +1088,20 @@ select:focus {
 }
 
 .batch-row.failed {
-  background: rgba(254, 242, 242, 0.68);
+  background: rgba(248, 250, 252, 0.54);
 }
 
 .batch-row.failed:hover {
-  background: rgba(254, 226, 226, 0.76);
+  background: #f1f5f9;
 }
 
 .batch-row.failed.active {
-  background: rgba(254, 218, 218, 0.86);
+  background: #e6efff;
   box-shadow: none;
 }
 
 .batch-row.failed.active::before {
-  background: var(--danger);
-}
-
-.batch-row.batch-status-queued.active {
-  background: rgba(226, 232, 240, 0.9);
-}
-
-.batch-row.batch-status-running.active {
-  background: rgba(219, 234, 254, 0.96);
-}
-
-.batch-row.batch-status-waiting_review.active {
-  background: rgba(254, 226, 178, 0.86);
-}
-
-.batch-row.batch-status-completed.active {
-  background: rgba(209, 250, 229, 0.94);
-}
-
-.batch-row.batch-status-canceled.active {
-  background: rgba(226, 232, 240, 0.98);
+  background: var(--blue);
 }
 
 .batch-row-top,
@@ -1171,7 +1131,10 @@ select:focus {
 .batch-row-main {
   min-width: 0;
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-content: center;
+  align-items: center;
+  gap: 8px;
 }
 
 .batch-row strong,
@@ -1183,6 +1146,7 @@ select:focus {
 }
 
 .batch-row strong {
+  min-width: 0;
   display: block;
   overflow: hidden;
   white-space: nowrap;
@@ -1224,6 +1188,14 @@ select:focus {
   font-weight: 560;
   text-transform: lowercase;
   white-space: nowrap;
+}
+
+.batch-row-main .status-pill {
+  justify-self: end;
+  max-width: 82px;
+  overflow: hidden;
+  box-shadow: none;
+  text-overflow: ellipsis;
 }
 
 .status-pill::first-letter {

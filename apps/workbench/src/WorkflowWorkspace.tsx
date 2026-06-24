@@ -1487,6 +1487,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                 >
                   <div className="batch-row-main">
                     <strong>{folder.name}</strong>
+                    <span className={`status-pill ${folder.builtin ? "status-completed" : ""}`}>{folder.builtin ? "内置" : "自定义"}</span>
                   </div>
                 </article>
               ))}
