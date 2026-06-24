@@ -150,12 +150,17 @@ export function getHealth(): Promise<HealthResponse> {
   return requestJson<HealthResponse>("/api/health");
 }
 
-export function getWorkbenchAgentSettings(): Promise<WorkbenchAgentSettingsResponse> {
-  return requestJson<WorkbenchAgentSettingsResponse>("/api/workbench/agent-settings");
+export function getWorkbenchAgentSettings(includeAgents = true): Promise<WorkbenchAgentSettingsResponse> {
+  const query = includeAgents ? "" : "?include_agents=false";
+  return requestJson<WorkbenchAgentSettingsResponse>(`/api/workbench/agent-settings${query}`);
 }
 
-export function saveWorkbenchAgentSettings(settings: WorkbenchAgentSettings): Promise<WorkbenchAgentSettingsResponse> {
-  return requestJson<WorkbenchAgentSettingsResponse>("/api/workbench/agent-settings", {
+export function saveWorkbenchAgentSettings(
+  settings: WorkbenchAgentSettings,
+  includeAgents = true
+): Promise<WorkbenchAgentSettingsResponse> {
+  const query = includeAgents ? "" : "?include_agents=false";
+  return requestJson<WorkbenchAgentSettingsResponse>(`/api/workbench/agent-settings${query}`, {
     method: "PUT",
     body: JSON.stringify(settings)
   });

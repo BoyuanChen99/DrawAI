@@ -1470,10 +1470,12 @@ function WorkbenchSettingsCenter({
   const [processorDrafts, setProcessorDrafts] = useState<ProcessorSettingsResponse["settings"]["processors"]>({});
   const [llmExtraBodyText, setLlmExtraBodyText] = useState(formatWorkbenchAgentJsonObject({}));
   const [loading, setLoading] = useState(true);
+  const [agentsLoading, setAgentsLoading] = useState(false);
+  const [agentsLoaded, setAgentsLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState("");
   const [settingsCategory, setSettingsCategory] = useState<WorkbenchSettingsCategory>("api");
-  const [selectedApiPresetId, setSelectedApiPresetId] = useState("");
+  const [selectedApiPresetIndex, setSelectedApiPresetIndex] = useState(0);
   const [selectedLlmPresetId, setSelectedLlmPresetId] = useState("");
   const [selectedProcessorId, setSelectedProcessorId] = useState("");
 
@@ -1482,7 +1484,7 @@ function WorkbenchSettingsCenter({
     setLocalError("");
     try {
       const [nextResponse, nextApiResponse, nextProcessorResponse] = await Promise.all([
-        getWorkbenchAgentSettings(),
+        getWorkbenchAgentSettings(false),
         getApiPresets(),
         getProcessorSettings()
       ]);
@@ -1491,11 +1493,12 @@ function WorkbenchSettingsCenter({
       setResponse(nextResponse);
       setApiResponse(nextApiResponse);
       setProcessorResponse(nextProcessorResponse);
+      setAgentsLoaded((nextResponse.agents || []).length > 0);
       setDraft(normalizedSettings);
       setApiDrafts(nextApiDrafts);
       setProcessorDrafts({ ...(nextProcessorResponse.settings?.processors || {}) });
       setLlmExtraBodyText(formatWorkbenchAgentJsonObject(normalizedSettings.llm_extra_body));
-      setSelectedApiPresetId(nextApiDrafts[0]?.id || "");
+      setSelectedApiPresetIndex(0);
       setSelectedLlmPresetId(matchingLlmPresetId(nextApiDrafts, normalizedSettings));
       setSelectedProcessorId(Object.keys(nextProcessorResponse.definitions.processors || {})[0] || "");
     } catch (err) {
@@ -1511,9 +1514,40 @@ function WorkbenchSettingsCenter({
     void loadSettings();
   }, [loadSettings]);
 
+  const loadAgentDiscovery = useCallback(async () => {
+    setAgentsLoading(true);
+    setLocalError("");
+    try {
+      const nextResponse = await getWorkbenchAgentSettings(true);
+      setResponse((current) => ({
+        settings: current?.settings || nextResponse.settings,
+        agents: nextResponse.agents || []
+      }));
+      setAgentsLoaded(true);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setLocalError(message);
+      onError(message);
+    } finally {
+      setAgentsLoading(false);
+    }
+  }, [onError]);
+
+  useEffect(() => {
+    if (settingsCategory === "agent" && !loading && !agentsLoaded && !agentsLoading) {
+      void loadAgentDiscovery();
+    }
+  }, [agentsLoaded, agentsLoading, loadAgentDiscovery, loading, settingsCategory]);
+
+  useEffect(() => {
+    if (selectedApiPresetIndex >= apiDrafts.length && selectedApiPresetIndex !== 0) {
+      setSelectedApiPresetIndex(Math.max(0, apiDrafts.length - 1));
+    }
+  }, [apiDrafts.length, selectedApiPresetIndex]);
+
   const agents = response?.agents || [];
   const presetTypes = apiResponse?.preset_types || ["images_api", "llm_chat_completions", "llm_responses"];
-  const selectedApiPreset = apiDrafts.find((preset) => preset.id === selectedApiPresetId) || apiDrafts[0] || null;
+  const selectedApiPreset = apiDrafts[selectedApiPresetIndex] || null;
   const llmPresets = apiDrafts.filter((preset) => preset.type === "llm_chat_completions" || preset.type === "llm_responses");
   const selectedLlmPreset = llmPresets.find((preset) => preset.id === selectedLlmPresetId) || null;
   const processorDefinitions = processorResponse?.definitions.processors || {};
@@ -1530,7 +1564,7 @@ function WorkbenchSettingsCenter({
   const createApiPresetDraft = () => {
     const nextPreset = newApiPresetDraft(apiDrafts);
     setApiDrafts((current) => [...current, nextPreset]);
-    setSelectedApiPresetId(nextPreset.id);
+    setSelectedApiPresetIndex(apiDrafts.length);
   };
 
   const saveSettings = async () => {
@@ -1552,7 +1586,7 @@ function WorkbenchSettingsCenter({
       const nextApiResponse = await saveApiPresets(normalizedApiDrafts);
       const [nextProcessorResponse, nextResponse] = await Promise.all([
         saveProcessorSettings(processorDrafts),
-        saveWorkbenchAgentSettings(agentPayload)
+        saveWorkbenchAgentSettings(agentPayload, false)
       ]);
       const normalizedSettings = normalizeWorkbenchAgentDraft(nextResponse.settings);
       const nextApiDrafts = nextApiResponse.presets || [];
@@ -1620,12 +1654,12 @@ function WorkbenchSettingsCenter({
             {settingsCategory === "api" && (
               <div className="agent-settings-list-panel">
                 <div className="agent-settings-list" aria-label="API 预设">
-                  {apiDrafts.map((preset) => (
+                  {apiDrafts.map((preset, presetIndex) => (
                     <button
                       type="button"
-                      key={preset.id}
-                      className={`agent-option${selectedApiPreset?.id === preset.id ? " active" : ""}`}
-                      onClick={() => setSelectedApiPresetId(preset.id)}
+                      key={`${presetIndex}:${preset.id}`}
+                      className={`agent-option${selectedApiPresetIndex === presetIndex ? " active" : ""}`}
+                      onClick={() => setSelectedApiPresetIndex(presetIndex)}
                     >
                       <span className="agent-option-main">
                         <strong>{preset.label || preset.id}</strong>
@@ -1654,8 +1688,8 @@ function WorkbenchSettingsCenter({
             {settingsCategory === "agent" && (
               <div className="agent-settings-list-panel">
                 <div className="agent-settings-list" aria-label="本地 Agent">
-                  {loading && <div className="agent-settings-empty">加载中</div>}
-                  {!loading && agents.length === 0 && <div className="agent-settings-empty">未发现 Agent</div>}
+                  {(loading || agentsLoading) && <div className="agent-settings-empty">加载中</div>}
+                  {!loading && !agentsLoading && agentsLoaded && agents.length === 0 && <div className="agent-settings-empty">未发现 Agent</div>}
                   {agents.map((agent) => (
                     <button
                       type="button"
@@ -1713,10 +1747,13 @@ function WorkbenchSettingsCenter({
                         type="button"
                         className="link-button"
                         onClick={() => {
+                          const removeIndex = selectedApiPresetIndex;
                           const removeId = selectedApiPreset.id;
-                          const next = apiDrafts.filter((preset) => preset.id !== removeId);
+                          const next = apiDrafts.filter((_, presetIndex) => presetIndex !== removeIndex);
                           setApiDrafts(next);
-                          setSelectedApiPresetId(next[0]?.id || "");
+                          setSelectedApiPresetIndex(Math.min(removeIndex, Math.max(0, next.length - 1)));
+                          setSelectedLlmPresetId((current) => (current === removeId ? "" : current));
+                          setProcessorDrafts((current) => retargetProcessorApiPresetDrafts(current, removeId, ""));
                         }}
                       >
                         删除
@@ -1730,7 +1767,13 @@ function WorkbenchSettingsCenter({
                           <span>ID</span>
                           <input
                             value={selectedApiPreset.id}
-                            onChange={(event) => updateApiPresetDraft(setApiDrafts, selectedApiPreset.id, { id: event.target.value })}
+                            onChange={(event) => {
+                              const previousId = selectedApiPreset.id;
+                              const nextId = event.target.value;
+                              updateApiPresetDraft(setApiDrafts, selectedApiPresetIndex, { id: nextId });
+                              setSelectedLlmPresetId((current) => (current === previousId ? nextId : current));
+                              setProcessorDrafts((current) => retargetProcessorApiPresetDrafts(current, previousId, nextId));
+                            }}
                             autoComplete="off"
                           />
                         </label>
@@ -1738,7 +1781,7 @@ function WorkbenchSettingsCenter({
                           <span>名称</span>
                           <input
                             value={selectedApiPreset.label}
-                            onChange={(event) => updateApiPresetDraft(setApiDrafts, selectedApiPreset.id, { label: event.target.value })}
+                            onChange={(event) => updateApiPresetDraft(setApiDrafts, selectedApiPresetIndex, { label: event.target.value })}
                             autoComplete="off"
                           />
                         </label>
@@ -1747,7 +1790,7 @@ function WorkbenchSettingsCenter({
                         <span>类型</span>
                         <select
                           value={selectedApiPreset.type}
-                          onChange={(event) => updateApiPresetDraft(setApiDrafts, selectedApiPreset.id, { type: event.target.value })}
+                          onChange={(event) => updateApiPresetDraft(setApiDrafts, selectedApiPresetIndex, { type: event.target.value })}
                         >
                           {presetTypes.map((type) => (
                             <option key={type} value={type}>{type}</option>
@@ -1758,7 +1801,7 @@ function WorkbenchSettingsCenter({
                         <span>Base URL</span>
                         <input
                           value={selectedApiPreset.base_url}
-                          onChange={(event) => updateApiPresetDraft(setApiDrafts, selectedApiPreset.id, { base_url: event.target.value })}
+                          onChange={(event) => updateApiPresetDraft(setApiDrafts, selectedApiPresetIndex, { base_url: event.target.value })}
                           placeholder="https://api.openai.com"
                           autoComplete="off"
                         />
@@ -1767,7 +1810,7 @@ function WorkbenchSettingsCenter({
                         <span>模型</span>
                         <input
                           value={selectedApiPreset.model}
-                          onChange={(event) => updateApiPresetDraft(setApiDrafts, selectedApiPreset.id, { model: event.target.value })}
+                          onChange={(event) => updateApiPresetDraft(setApiDrafts, selectedApiPresetIndex, { model: event.target.value })}
                           placeholder={selectedApiPreset.type === "images_api" ? "gpt-image-2" : "model name"}
                           autoComplete="off"
                         />
@@ -1777,7 +1820,7 @@ function WorkbenchSettingsCenter({
                           <span>API Key Env</span>
                           <input
                             value={selectedApiPreset.api_key_env}
-                            onChange={(event) => updateApiPresetDraft(setApiDrafts, selectedApiPreset.id, { api_key_env: event.target.value })}
+                            onChange={(event) => updateApiPresetDraft(setApiDrafts, selectedApiPresetIndex, { api_key_env: event.target.value })}
                             placeholder="OPENAI_API_KEY"
                             autoComplete="off"
                           />
@@ -1787,7 +1830,7 @@ function WorkbenchSettingsCenter({
                           <input
                             type="password"
                             value={selectedApiPreset.api_key}
-                            onChange={(event) => updateApiPresetDraft(setApiDrafts, selectedApiPreset.id, { api_key: event.target.value })}
+                            onChange={(event) => updateApiPresetDraft(setApiDrafts, selectedApiPresetIndex, { api_key: event.target.value })}
                             placeholder="保存到本机 workspace"
                             autoComplete="off"
                           />
@@ -1809,7 +1852,7 @@ function WorkbenchSettingsCenter({
                     <select
                       value={draft.selected_provider_id}
                       onChange={(event) => selectAgentProvider(event.target.value)}
-                      disabled={loading}
+                      disabled={loading || agentsLoading}
                     >
                       {agents.map((agent) => (
                         <option key={agent.provider_id} value={agent.provider_id}>
@@ -2126,10 +2169,27 @@ function uniqueApiPresetId(existing: ApiPreset[], base: string): string {
 
 function updateApiPresetDraft(
   setter: (updater: (current: ApiPreset[]) => ApiPreset[]) => void,
-  presetId: string,
+  presetIndex: number,
   patch: Partial<ApiPreset>
 ): void {
-  setter((current) => current.map((preset) => (preset.id === presetId ? { ...preset, ...patch } : preset)));
+  setter((current) => current.map((preset, index) => (index === presetIndex ? { ...preset, ...patch } : preset)));
+}
+
+function retargetProcessorApiPresetDrafts(
+  current: ProcessorSettingsResponse["settings"]["processors"],
+  previousId: string,
+  nextId: string
+): ProcessorSettingsResponse["settings"]["processors"] {
+  if (!previousId) return current;
+  let changed = false;
+  const next = Object.fromEntries(
+    Object.entries(current).map(([processingType, setting]) => {
+      if (setting.api_preset_id !== previousId) return [processingType, setting];
+      changed = true;
+      return [processingType, { ...setting, api_preset_id: nextId }];
+    })
+  );
+  return changed ? next : current;
 }
 
 function updateProcessorDraft(

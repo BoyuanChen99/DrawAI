@@ -214,6 +214,28 @@ def test_workbench_agent_settings_api_discovers_validates_and_saves_cli_provider
     assert settings["llm_extra_body"] == {"reasoning": {"enabled": True}}
 
 
+def test_workbench_agent_settings_api_can_skip_agent_discovery(tmp_path: Path) -> None:
+    client = _client(tmp_path)
+
+    response = client.get("/api/workbench/agent-settings?include_agents=false")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["settings"]["selected_provider_id"] == "codex_sdk"
+    assert payload["agents"] == []
+
+    save_response = client.put(
+        "/api/workbench/agent-settings?include_agents=false",
+        json={"selected_provider_id": "codex_cli", "model": "gpt-5"},
+    )
+
+    assert save_response.status_code == 200
+    save_payload = save_response.json()
+    assert save_payload["settings"]["selected_provider_id"] == "codex_cli"
+    assert save_payload["settings"]["model"] == "gpt-5"
+    assert save_payload["agents"] == []
+
+
 def test_workbench_agent_settings_api_rejects_hidden_drawai_tool_agent(tmp_path: Path) -> None:
     client = _client(tmp_path)
 

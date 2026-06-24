@@ -209,10 +209,10 @@ def discover_workbench_agents() -> list[dict[str, Any]]:
     return [_discover_agent(AGENT_DEFINITIONS[provider_id]) for provider_id in WORKBENCH_SELECTABLE_AGENT_PROVIDER_IDS]
 
 
-def workbench_agent_settings_payload(workspace: str | Path) -> dict[str, Any]:
+def workbench_agent_settings_payload(workspace: str | Path, *, include_agents: bool = True) -> dict[str, Any]:
     return {
         "settings": read_workbench_agent_settings(workspace).to_dict(),
-        "agents": discover_workbench_agents(),
+        "agents": discover_workbench_agents() if include_agents else [],
     }
 
 

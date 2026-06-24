@@ -250,8 +250,11 @@ def create_app(
         }
 
     @app.get("/api/workbench/agent-settings")
-    def get_workbench_agent_settings_api() -> dict[str, Any]:
-        return workbench_agent_settings_payload(resolved_store.workspace)
+    def get_workbench_agent_settings_api(request: Request) -> dict[str, Any]:
+        return workbench_agent_settings_payload(
+            resolved_store.workspace,
+            include_agents=_include_agents_param(request),
+        )
 
     @app.put("/api/workbench/agent-settings")
     async def save_workbench_agent_settings_api(request: Request) -> dict[str, Any]:
@@ -262,7 +265,10 @@ def create_app(
             write_workbench_agent_settings(resolved_store.workspace, payload)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return workbench_agent_settings_payload(resolved_store.workspace)
+        return workbench_agent_settings_payload(
+            resolved_store.workspace,
+            include_agents=_include_agents_param(request),
+        )
 
     @app.get("/api/workbench/api-presets")
     def get_workbench_api_presets_api() -> dict[str, Any]:
@@ -3889,6 +3895,11 @@ def _as_bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return False
+
+
+def _include_agents_param(request: Request) -> bool:
+    raw = request.query_params.get("include_agents")
+    return True if raw is None else _as_bool(raw)
 
 
 def _batch_execution_mode(value: Any) -> BatchExecutionMode:
