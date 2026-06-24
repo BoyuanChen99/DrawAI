@@ -4819,11 +4819,10 @@ function TaskSelectionWorkspace({
         </div>
         <div className="batch-list-modern">
           {batches.map((batch) => {
-            const totalCases = caseCountTotal(batch.case_counts || {});
             return (
               <article
                 key={batch.batch_id}
-                className={`batch-row ${activeBatch?.batch.batch_id === batch.batch_id ? "active" : ""} ${batch.status === "failed" ? "failed" : ""}`}
+                className={`batch-row batch-status-${batch.status} ${activeBatch?.batch.batch_id === batch.batch_id ? "active" : ""} ${batch.status === "failed" ? "failed" : ""}`}
                 role="button"
                 tabIndex={0}
                 onClick={() => onSelectBatch(batch.batch_id)}
@@ -4837,15 +4836,8 @@ function TaskSelectionWorkspace({
                   }
                 }}
               >
-                <div className="batch-row-top">
-                  <time dateTime={batch.created_at} title={batch.created_at}>{submittedTimeText(batch.created_at)}</time>
-                  <span className={`status-pill status-${batch.status}`}>{humanize(batch.status)}</span>
-                </div>
                 <div className="batch-row-main">
                   <strong>{batch.name}</strong>
-                </div>
-                <div className="batch-row-bottom">
-                  <em>{totalCases} 张图</em>
                 </div>
               </article>
             );

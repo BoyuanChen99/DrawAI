@@ -1953,7 +1953,7 @@
   grid-template-columns: 272px minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
   gap: 0;
-  background: var(--line);
+  background: var(--canvas);
 }
 
 .workflow-folder-rail {
@@ -1966,18 +1966,50 @@
 }
 
 .workflow-folder-list .batch-row {
+  min-height: 54px;
+  justify-content: center;
+  gap: 0;
+  padding: 9px 14px 9px 16px;
   border-radius: 0;
+  background: rgba(248, 250, 252, 0.54);
+}
+
+.workflow-folder-list .batch-row:hover {
+  background: #f1f5f9;
+}
+
+.workflow-folder-list .batch-row.active {
+  background: #e6efff;
+}
+
+.workflow-folder-list .batch-row.active:hover {
+  background: #dce9ff;
 }
 
 .workflow-add-button {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  min-height: 34px;
+  display: inline-grid;
+  place-items: center;
   border-color: rgba(37, 99, 235, 0.3);
   background: #2563eb;
   color: #ffffff;
+  padding: 0;
+  box-shadow: none;
+}
+
+.workflow-add-button .plus-icon {
+  width: 18px;
+  height: 18px;
 }
 
 .workflow-add-button:hover:not(:disabled) {
   border-color: rgba(29, 78, 216, 0.44);
   background: #1d4ed8;
+  box-shadow: none;
+  transform: none;
 }
 
 .workflow-template-lane {

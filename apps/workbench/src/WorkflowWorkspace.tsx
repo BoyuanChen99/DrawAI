@@ -1485,15 +1485,8 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                     }
                   }}
                 >
-                  <div className="batch-row-top">
-                    <span className={`status-pill ${folder.builtin ? "status-completed" : ""}`}>{folder.builtin ? "内置" : "自定义"}</span>
-                    <em>{folder.count} 个</em>
-                  </div>
                   <div className="batch-row-main">
                     <strong>{folder.name}</strong>
-                  </div>
-                  <div className="batch-row-bottom">
-                    <em>{folder.builtin ? "内置类型" : "本地分类"}</em>
                   </div>
                 </article>
               ))}

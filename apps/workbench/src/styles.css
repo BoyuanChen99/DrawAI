@@ -799,7 +799,7 @@ select:focus {
 .task-selection-workspace {
   min-height: 0;
   display: grid;
-  grid-template-columns: 276px minmax(0, 1fr);
+  grid-template-columns: 272px minmax(0, 1fr);
   gap: 0;
 }
 
@@ -897,14 +897,14 @@ select:focus {
   background: var(--blue);
   color: #ffffff;
   padding: 0;
-  box-shadow: 0 10px 22px rgba(49, 104, 245, 0.22);
-  transition: background-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+  box-shadow: none;
+  transition: background-color 140ms ease, border-color 140ms ease;
 }
 
 .batch-create-button:hover {
   background: #2458db;
-  transform: translateY(-1px);
-  box-shadow: 0 14px 26px rgba(49, 104, 245, 0.28);
+  border-color: rgba(49, 104, 245, 0.36);
+  box-shadow: none;
 }
 
 .batch-create-button .plus-icon {
@@ -1014,16 +1014,16 @@ select:focus {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  justify-content: flex-start;
-  gap: 8px;
+  justify-content: center;
+  gap: 0;
   height: auto;
-  min-height: 88px;
+  min-height: 54px;
   overflow: visible;
-  padding: 12px 14px;
+  padding: 9px 14px 9px 16px;
   border: 0;
   border-bottom: 1px solid rgba(226, 232, 240, 0.86);
   border-radius: 0;
-  background: transparent;
+  background: rgba(248, 250, 252, 0.54);
   box-shadow: none;
   cursor: pointer;
   transform: none;
@@ -1032,6 +1032,26 @@ select:focus {
 
 .batch-row:last-child {
   border-bottom: 0;
+}
+
+.batch-row.batch-status-queued {
+  background: rgba(248, 250, 252, 0.72);
+}
+
+.batch-row.batch-status-running {
+  background: rgba(239, 246, 255, 0.72);
+}
+
+.batch-row.batch-status-waiting_review {
+  background: rgba(255, 247, 237, 0.74);
+}
+
+.batch-row.batch-status-completed {
+  background: rgba(236, 253, 245, 0.68);
+}
+
+.batch-row.batch-status-canceled {
+  background: rgba(241, 245, 249, 0.84);
 }
 
 .task-row:hover {
@@ -1048,12 +1068,12 @@ select:focus {
 }
 
 .batch-row:hover {
-  background: #f8fafc;
+  background: #f1f5f9;
 }
 
 .batch-row.active {
   border-bottom-color: rgba(226, 232, 240, 0.86);
-  background: #eef4ff;
+  background: #e6efff;
   box-shadow: none;
 }
 
@@ -1069,7 +1089,7 @@ select:focus {
 }
 
 .batch-row.active:hover {
-  background: #e8f0ff;
+  background: #dce9ff;
 }
 
 .batch-row:active {
@@ -1088,20 +1108,40 @@ select:focus {
 }
 
 .batch-row.failed {
-  background: transparent;
+  background: rgba(254, 242, 242, 0.68);
 }
 
 .batch-row.failed:hover {
-  background: rgba(170, 38, 27, 0.045);
+  background: rgba(254, 226, 226, 0.76);
 }
 
 .batch-row.failed.active {
-  background: linear-gradient(90deg, rgba(170, 38, 27, 0.075), rgba(170, 38, 27, 0.028));
+  background: rgba(254, 218, 218, 0.86);
   box-shadow: none;
 }
 
 .batch-row.failed.active::before {
   background: var(--danger);
+}
+
+.batch-row.batch-status-queued.active {
+  background: rgba(226, 232, 240, 0.9);
+}
+
+.batch-row.batch-status-running.active {
+  background: rgba(219, 234, 254, 0.96);
+}
+
+.batch-row.batch-status-waiting_review.active {
+  background: rgba(254, 226, 178, 0.86);
+}
+
+.batch-row.batch-status-completed.active {
+  background: rgba(209, 250, 229, 0.94);
+}
+
+.batch-row.batch-status-canceled.active {
+  background: rgba(226, 232, 240, 0.98);
 }
 
 .batch-row-top,
@@ -1144,9 +1184,11 @@ select:focus {
 
 .batch-row strong {
   display: block;
-  overflow: visible;
-  white-space: normal;
-  font-size: 15px;
+  overflow: hidden;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 640;
+  text-overflow: ellipsis;
 }
 
 .batch-row-main span,
