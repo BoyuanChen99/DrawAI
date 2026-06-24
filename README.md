@@ -17,15 +17,7 @@
 <a id="demo"></a>
 ## 🎬 演示
 
-<p align="center">
-  <a href="https://github.com/Renaissance-Mind/DrawAI/releases/download/v0.0.1/drawai-workbench-demo-with-audio.mp4">
-    <img src="figures/readme_demo/drawai-workbench-demo-with-audio-poster.jpg" alt="DrawAI Workbench 演示视频" width="900">
-  </a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/Renaissance-Mind/DrawAI/releases/download/v0.0.1/drawai-workbench-demo-with-audio.mp4">打开 76 秒 Workbench 演示视频（MP4，3.6 MB，含音频）</a>
-</p>
+https://github.com/user-attachments/assets/bca69174-10d6-44c4-a73e-7b95e8eefde9
 
 <details>
 <summary>更新日志</summary>
