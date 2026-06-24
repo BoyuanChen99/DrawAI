@@ -19,27 +19,6 @@ It decomposes input images into structure, text, and local assets, then generate
 
 https://github.com/user-attachments/assets/bca69174-10d6-44c4-a73e-7b95e8eefde9
 
-<details>
-<summary>Changelog</summary>
-
-### 2026-06-18
-
-- Added the Agent CLI backend for asset analysis and SVG generation, with support for `codex cli`, `claude`, `kimi-code`, `OpenClaw`, `Hermes`, and custom agent commands.
-- Added Codex SDK image generation and editing support, and exposed those image-generation flows in the Workbench.
-- Added native Windows deployment support, including packaged Codex CLI detection, launcher output flushing, platform-safe launcher tests, and README documentation.
-- Added Workbench runtime and queue visibility so users can see backend runtime status while tasks are running.
-- Hardened inherited Codex provider configuration so local and nested runtime configs resolve more reliably.
-- Improved SVG generation resilience by extending Codex recovery timeout behavior and disabling SAM mask output by default in the public path.
-
-### 2026-06-17
-
-- Published the initial DrawAI source snapshot.
-- Exposed mask and polygon geometry in asset review so users can inspect richer asset boundaries before SVG/PPTX generation.
-
-</details>
-
-The current pipeline packages each run as `drawai_package.json`. That package records element parsing, fusion, optional Agent refinement, asset processing, SVG composition, and export results. Users usually open the rendered SVG, PNG, or PPTX, but follow-up edits can continue from the package instead of starting from a flattened image.
-
 <a id="roadmap"></a>
 ## 🗺️ Roadmap
 

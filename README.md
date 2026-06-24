@@ -19,27 +19,6 @@
 
 https://github.com/user-attachments/assets/bca69174-10d6-44c4-a73e-7b95e8eefde9
 
-<details>
-<summary>更新日志</summary>
-
-### 2026-06-18
-
-- 支持 Agent CLI 后端，可用于资产分析和 SVG 生成，已支持 `codex cli`、`claude`、`kimi-code`、`OpenClaw`、`Hermes` 和自定义 agent 命令。
-- 支持 Codex SDK 图像生成和编辑，并在 Workbench 中开放相关图像生成流程。
-- 支持 Windows 原生部署，包括 packaged Codex CLI 检测、启动器输出刷新、跨平台路径测试和 README 说明。
-- 增加 Workbench 运行时和队列状态展示，便于任务运行时查看后端状态。
-- 强化继承式 Codex provider 配置，提升本地和嵌套运行配置的解析稳定性。
-- 提升 SVG 生成恢复能力，延长 Codex recovery timeout，并在公开路径默认关闭 SAM mask 输出。
-
-### 2026-06-17
-
-- 发布 DrawAI 初始源码快照。
-- 在资产 review 中展示 mask 和 polygon 几何，方便在 SVG/PPTX 生成前检查更细的资产边界。
-
-</details>
-
-新流水线会把每次运行封装成一个 `drawai_package.json` 数据包：里面记录元素解析、融合、Agent 校验、素材处理、SVG 生成和导出的过程。用户通常只打开最终的 SVG、PNG 或 PPTX，但后续重新处理某个元素时会从这个数据包继续，而不是只依赖渲染图。
-
 <a id="roadmap"></a>
 ## 🗺️ 规划
 
