@@ -47,10 +47,10 @@ https://github.com/user-attachments/assets/bca69174-10d6-44c4-a73e-7b95e8eefde9
 
 - [x] 支持 Windows 系统（已支持原生部署，Mac 和 Linux 保持兼容）
 - [ ] 支持多边形和不规则 Mask
-- [ ] 支持用 GPT-Image-2 重绘素材
+- [x] 支持用 GPT-Image-2 重绘素材
 - [ ] 支持更复杂的生成模式（各种图像生成 Skill 等）
 - [ ] 支持以 Skills 方式使用
-- [ ] 支持其他 Agent 和模型（已支持 `codex cli`、`claude`、`kimi-code`、`OpenClaw`、`Hermes`）
+- [x] 支持其他 Agent 和模型（已支持 `codex cli`、`claude`、`kimi-code`、`OpenClaw`、`Hermes`）
 
 > 备注：由于目前删减了 Mask 和重绘能力，对于全图复杂背景的鲁棒性有下降，目前正在火速支持中。
 

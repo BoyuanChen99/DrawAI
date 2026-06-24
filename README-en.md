@@ -47,10 +47,10 @@ For open-source stability, DrawAI currently keeps some still-under-validation ca
 
 - [x] Support Windows systems (native deployment is supported; macOS and Linux remain compatible)
 - [ ] Support polygon and irregular masks
-- [ ] Support asset redrawing with GPT-Image-2
+- [x] Support asset redrawing with GPT-Image-2
 - [ ] Support more complex generation modes, including image-generation skills
 - [ ] Support skill-based usage
-- [ ] Support other agents and models (already supports `codex cli`, `claude`, `kimi-code`, `OpenClaw`, `Hermes`)
+- [x] Support other agents and models (already supports `codex cli`, `claude`, `kimi-code`, `OpenClaw`, `Hermes`)
 
 > Note: Because mask and redraw capabilities are currently reduced in the open-source path, robustness on full-image complex backgrounds is lower than the internal target. Support is being added rapidly.
 
