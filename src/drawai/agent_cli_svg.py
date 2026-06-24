@@ -313,10 +313,7 @@ def _agent_cli_invocation(
     command = _parse_command(raw)
     model_name = str(runtime_config.get("model_name") or "").strip()
     if agent == "kimi":
-        return _AgentCliInvocation(
-            command=_kimi_preset_command(command, model_name=model_name, work_dir=work_dir),
-            stdin=prompt,
-        )
+        return _kimi_invocation(command, model_name=model_name, prompt=prompt)
     if agent == "claude":
         return _AgentCliInvocation(command=_claude_command(command, model_name=model_name), stdin=prompt)
     if agent == "codex":
@@ -395,17 +392,14 @@ def _parse_command(raw: Any) -> list[str]:
     return command
 
 
-def _kimi_preset_command(command: list[str], *, model_name: str, work_dir: Path) -> list[str]:
+def _kimi_invocation(command: list[str], *, model_name: str, prompt: str) -> _AgentCliInvocation:
     if model_name and "--model" not in command and "-m" not in command:
         command.extend(["--model", model_name])
-    if "--work-dir" not in command and "-w" not in command:
-        command.extend(["--work-dir", str(work_dir)])
-    for flag in ("--print", "--yolo", "--final-message-only"):
-        if flag not in command:
-            command.append(flag)
-    if "--input-format" not in command:
-        command.extend(["--input-format", "text"])
-    return command
+    if "--output-format" not in command:
+        command.extend(["--output-format", "text"])
+    if not _has_any_flag(command, ("--prompt", "-p")):
+        command.extend(["--prompt", prompt])
+    return _AgentCliInvocation(command=command, stdin=None)
 
 
 def _claude_command(command: list[str], *, model_name: str) -> list[str]:

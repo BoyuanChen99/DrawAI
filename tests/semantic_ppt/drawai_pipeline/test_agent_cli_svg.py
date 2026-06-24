@@ -61,19 +61,17 @@ def test_agent_cli_svg_runner_calls_kimi_preset_and_reads_output(monkeypatch, tm
         "kimi",
         "--model",
         "kimi-code/kimi-for-coding",
-        "--work-dir",
-        str(tmp_path),
-        "--print",
-        "--yolo",
-        "--final-message-only",
-        "--input-format",
+        "--output-format",
         "text",
+        "--prompt",
+        calls[0]["command"][-1],
     ]
+    assert calls[0]["input"] is None
     assert calls[0]["cwd"] == str(tmp_path)
     assert calls[0]["timeout"] == 5
-    assert "Internal DrawAI Kimi CLI SVG generation task" in calls[0]["input"]
-    assert str(image_path) in calls[0]["input"]
-    assert str(output_svg) in calls[0]["input"]
+    assert "Internal DrawAI Kimi CLI SVG generation task" in calls[0]["command"][-1]
+    assert str(image_path) in calls[0]["command"][-1]
+    assert str(output_svg) in calls[0]["command"][-1]
     trace_events = [json.loads(line) for line in trace_path.read_text(encoding="utf-8").splitlines()]
     assert trace_events[0]["type"] == "agent_cli_request"
     assert trace_events[0]["agent"] == "kimi"
