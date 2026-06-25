@@ -131,6 +131,8 @@ type TaskDialogTarget = { batchId: string; name: string };
 type WorkbenchSettingsNavItem = { id: WorkbenchSettingsCategory; label: string; icon: WorkbenchSettingsCategory };
 
 const CASE_DETAIL_LAYOUT_MS = 420;
+const CASE_CARD_LAYOUT_MS = 560;
+const CASE_CARD_LAYOUT_ANIMATION_ID = "case-card-layout";
 
 type DragState =
   | { kind: "move"; id: string; startX: number; startY: number; bbox: [number, number, number, number]; geometry?: AssetGeometry }
@@ -1419,37 +1421,76 @@ function BoardWorkspace({
   const boardRef = useRef<HTMLElement | null>(null);
   const detailCloseTimerRef = useRef<number | null>(null);
   const previousCaseCardRectsRef = useRef<Map<string, DOMRect>>(new Map());
+  const previousCaseLayoutKeyRef = useRef("");
+  const closedTaskListScrollTopRef = useRef(0);
   const detailOpen = Boolean(activeCase);
+  const caseLayoutKey = detailOpen ? `open:${activeCase?.case.case_id || ""}` : "closed";
 
   useLayoutEffect(() => {
     const root = boardRef.current;
     if (!root) return;
     const cards = Array.from(root.querySelectorAll<HTMLElement>("[data-case-card-id]"));
+    const taskList = root.querySelector<HTMLElement>(".case-lane .task-list");
     const previousRects = previousCaseCardRectsRef.current;
+    const previousLayoutKey = previousCaseLayoutKeyRef.current;
+    const layoutChanged = previousLayoutKey !== "" && previousLayoutKey !== caseLayoutKey;
+    const activeLayoutAnimations = caseCardLayoutAnimations(cards);
+
+    if (layoutChanged && taskList) {
+      if (detailOpen) {
+        if (previousLayoutKey === "closed") {
+          closedTaskListScrollTopRef.current = taskList.scrollTop;
+        }
+        centerCaseCardInTaskList(taskList, activeCase?.case.case_id || "");
+      } else if (previousLayoutKey.startsWith("open:")) {
+        taskList.scrollTop = closedTaskListScrollTopRef.current;
+      }
+    } else if (previousLayoutKey === "" && detailOpen && taskList) {
+      centerCaseCardInTaskList(taskList, activeCase?.case.case_id || "");
+    }
+
+    const currentRects = measureCaseCardRects(cards);
     const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (!reducedMotion && previousRects.size > 0) {
-      cards.forEach((card) => {
+
+    if (layoutChanged && !reducedMotion && previousRects.size > 0) {
+      activeLayoutAnimations.forEach((animation) => animation.cancel());
+      const animations = cards.flatMap((card) => {
         const caseId = card.dataset.caseCardId || "";
         const previous = previousRects.get(caseId);
-        if (!previous) return;
-        const current = card.getBoundingClientRect();
+        const current = currentRects.get(caseId);
+        if (!previous || !current) return [];
         const deltaX = previous.left - current.left;
         const deltaY = previous.top - current.top;
-        if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) return;
-        card.getAnimations().forEach((animation) => animation.cancel());
-        card.animate(
+        if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) return [];
+        const distance = Math.hypot(deltaX, deltaY);
+        const animation = card.animate(
           [
             { transform: `translate(${deltaX}px, ${deltaY}px)` },
             { transform: "translate(0, 0)" }
           ],
           {
-            duration: CASE_DETAIL_LAYOUT_MS,
-            easing: "cubic-bezier(0.16, 1, 0.3, 1)"
+            duration: CASE_CARD_LAYOUT_MS + Math.min(160, distance * 0.08),
+            easing: "cubic-bezier(0.22, 1, 0.36, 1)"
           }
         );
+        animation.id = CASE_CARD_LAYOUT_ANIMATION_ID;
+        animation.finished
+          .then(() => {
+            if (previousCaseLayoutKeyRef.current !== caseLayoutKey) return;
+            previousCaseCardRectsRef.current = measureCaseCardRects(Array.from(root.querySelectorAll<HTMLElement>("[data-case-card-id]")));
+          })
+          .catch(() => undefined);
+        return [animation];
       });
+      previousCaseCardRectsRef.current = currentRects;
+    } else if (activeLayoutAnimations.some(isActiveAnimation)) {
+      previousCaseLayoutKeyRef.current = caseLayoutKey;
+      return;
+    } else {
+      previousCaseCardRectsRef.current = currentRects;
     }
-    previousCaseCardRectsRef.current = new Map(cards.map((card) => [card.dataset.caseCardId || "", card.getBoundingClientRect()]));
+
+    previousCaseLayoutKeyRef.current = caseLayoutKey;
   });
 
   useEffect(() => {
@@ -1542,6 +1583,29 @@ function BoardWorkspace({
       </div>
     </main>
   );
+}
+
+function measureCaseCardRects(cards: HTMLElement[]): Map<string, DOMRect> {
+  return new Map(cards.map((card) => [card.dataset.caseCardId || "", card.getBoundingClientRect()]));
+}
+
+function caseCardLayoutAnimations(cards: HTMLElement[]): Animation[] {
+  return cards.flatMap((card) => card.getAnimations().filter((animation) => animation.id === CASE_CARD_LAYOUT_ANIMATION_ID));
+}
+
+function isActiveAnimation(animation: Animation): boolean {
+  return animation.playState === "running";
+}
+
+function centerCaseCardInTaskList(taskList: HTMLElement, caseId: string) {
+  if (!caseId) return;
+  const card = Array.from(taskList.querySelectorAll<HTMLElement>("[data-case-card-id]")).find((item) => item.dataset.caseCardId === caseId);
+  if (!card) return;
+  const listRect = taskList.getBoundingClientRect();
+  const cardRect = card.getBoundingClientRect();
+  const cardCenter = taskList.scrollTop + cardRect.top - listRect.top + cardRect.height / 2;
+  const maxScrollTop = Math.max(0, taskList.scrollHeight - taskList.clientHeight);
+  taskList.scrollTop = clamp(cardCenter - taskList.clientHeight / 2, 0, maxScrollTop);
 }
 
 function SubmitDialog({
