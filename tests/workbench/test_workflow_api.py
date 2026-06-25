@@ -1308,6 +1308,13 @@ def test_case_progress_exposes_effective_workflow_node_runtime_metadata(tmp_path
     assert nodes["page_spec_refine"]["provider_id"] == "hermes_acp"
     assert nodes["page_spec_refine"]["provider_label"] == "Hermes ACP"
     assert nodes["page_spec_refine"]["model"] == "hermes-model"
+    assert nodes["page_spec_refine"]["api_presets"] == []
+    assert nodes["page_spec_refine"]["processor_types"] == [
+        "no_process",
+        "crop",
+        "crop_nobg",
+        "image_generate",
+    ]
     assert nodes["asset_prepare"]["api_presets"] == [
         {
             "processing_type": "image_generate",
@@ -1315,6 +1322,7 @@ def test_case_progress_exposes_effective_workflow_node_runtime_metadata(tmp_path
             "api_preset_label": "Apimart Images",
         }
     ]
+    assert nodes["asset_prepare"]["processor_types"] == []
 
 
 def test_create_batch_binds_selected_workflow_template(tmp_path: Path) -> None:

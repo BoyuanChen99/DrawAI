@@ -45,6 +45,7 @@ from .processor_settings import (
     ProcessorSetting,
     read_workbench_processor_settings,
     require_processor_configured,
+    resolved_processor_operation_config,
     workbench_processor_settings_payload,
     write_workbench_processor_settings,
 )
@@ -2670,13 +2671,14 @@ def _workflow_node_metadata(store: WorkbenchStore, case: CaseRecord) -> list[dic
     )
     api_presets = read_workbench_api_presets(store.workspace)
     processor_api_presets = _workflow_processor_api_preset_summaries(store.workspace, api_presets)
+    processor_types = _workflow_processor_types_for_refine(store.workspace)
     metadata: list[dict[str, Any]] = []
     for node in effective.nodes:
         config = dict(node.config)
         provider_id = str(config.get("provider_id") or "")
         model = str(config.get("model") or config.get("model_name") or "")
         node_api_presets = list(_workflow_node_api_preset_summaries(config, api_presets))
-        if node.node_id in {"page_spec_refine", "asset_prepare"}:
+        if node.node_id == "asset_prepare":
             node_api_presets.extend(processor_api_presets)
         metadata.append(
             {
@@ -2686,6 +2688,7 @@ def _workflow_node_metadata(store: WorkbenchStore, case: CaseRecord) -> list[dic
                 "provider_label": _workflow_provider_label(provider_id),
                 "model": model,
                 "api_presets": _dedupe_api_preset_summaries(node_api_presets),
+                "processor_types": processor_types if node.node_id == "page_spec_refine" else [],
             }
         )
     return metadata
@@ -2725,6 +2728,15 @@ def _workflow_processor_api_preset_summaries(
             }
         )
     return summaries
+
+
+def _workflow_processor_types_for_refine(workspace: str | Path) -> list[str]:
+    operation_config = resolved_processor_operation_config(workspace)
+    return [
+        processing_type
+        for item in operation_config.get("page_spec_processing_types", [])
+        if (processing_type := str(item).strip())
+    ]
 
 
 def _workflow_node_api_preset_summaries(

@@ -42,6 +42,12 @@ export function workflowNodeExtraInfoRows({
   if (model) {
     rows.push({ label: "Model", value: model });
   }
+  const processorTypes = (metadata?.processor_types || [])
+    .map(clean)
+    .filter((value, index, values) => value && values.indexOf(value) === index);
+  if (processorTypes.length > 0) {
+    rows.push({ label: "Classification Processors", value: processorTypes.join(", ") });
+  }
   const apiPresetLabels = (metadata?.api_presets || [])
     .map((preset) => clean(preset.api_preset_label) || clean(preset.api_preset_id))
     .filter((value, index, values) => value && values.indexOf(value) === index);

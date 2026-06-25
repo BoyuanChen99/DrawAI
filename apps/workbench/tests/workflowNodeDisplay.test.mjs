@@ -12,7 +12,7 @@ test("DAG run heading uses task id instead of source filename", async () => {
   assert.equal(dagRunCaseIdentifier({ case_id: "case_abc123", name: "微信图片.png" }), "case_abc123");
 });
 
-test("workflow node info rows expose actual agent and API preset labels", async () => {
+test("workflow node info rows expose actual agent and classification processors", async () => {
   const { workflowNodeExtraInfoRows } = await loadDisplayModule();
   const rows = workflowNodeExtraInfoRows({
     node: workflowNode("page_spec_refine", "agent", { provider_id: "codex_sdk", model: "codex-default" }),
@@ -30,6 +30,30 @@ test("workflow node info rows expose actual agent and API preset labels", async 
       provider_id: "kimi_cli",
       provider_label: "Kimi CLI",
       model: "kimi-code/kimi-for-coding",
+      api_presets: [],
+      processor_types: ["no_process", "crop", "image_generate"]
+    }
+  });
+
+  assert.deepEqual(rows, [
+    { label: "Agent", value: "Hermes ACP" },
+    { label: "Provider ID", value: "hermes_acp" },
+    { label: "Model", value: "kimi-code/kimi-for-coding" },
+    { label: "Classification Processors", value: "no_process, crop, image_generate" }
+  ]);
+});
+
+test("workflow node info rows keep processor backends on prepare nodes", async () => {
+  const { workflowNodeExtraInfoRows } = await loadDisplayModule();
+  const rows = workflowNodeExtraInfoRows({
+    node: workflowNode("asset_prepare", "processor"),
+    metadata: {
+      node_id: "asset_prepare",
+      node_type: "processor",
+      provider_id: "",
+      provider_label: "",
+      model: "",
+      processor_types: [],
       api_presets: [
         {
           processing_type: "image_generate",
@@ -41,9 +65,6 @@ test("workflow node info rows expose actual agent and API preset labels", async 
   });
 
   assert.deepEqual(rows, [
-    { label: "Agent", value: "Hermes ACP" },
-    { label: "Provider ID", value: "hermes_acp" },
-    { label: "Model", value: "kimi-code/kimi-for-coding" },
     { label: "API Preset", value: "Apimart Images" }
   ]);
 });

@@ -364,6 +364,7 @@ export interface WorkflowNodeMetadata {
   provider_label: string;
   model: string;
   api_presets: WorkflowNodeApiPresetSummary[];
+  processor_types: string[];
 }
 
 export interface CaseProgressFile {
