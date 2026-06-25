@@ -13,12 +13,12 @@ export const AGENT_PROVIDER_ICONS: Record<string, AgentProviderIcon> = {
     icon_url: "/agent-icons/codex.svg"
   },
   kimi_cli: {
-    accent_color: "#1d9bf0",
-    icon_url: "/agent-icons/kimi.svg"
+    accent_color: "#111827",
+    icon_url: "/agent-icons/kimi.png"
   },
   kimi_acp: {
-    accent_color: "#1d9bf0",
-    icon_url: "/agent-icons/kimi.svg"
+    accent_color: "#111827",
+    icon_url: "/agent-icons/kimi.png"
   },
   gemini_acp: {
     accent_color: "#4285f4",
