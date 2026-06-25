@@ -236,6 +236,40 @@ def test_workbench_agent_settings_api_can_skip_agent_discovery(tmp_path: Path) -
     assert save_payload["agents"] == []
 
 
+def test_workbench_agent_settings_api_uses_startup_agent_snapshot_until_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_bin = tmp_path / "first-bin"
+    second_bin = tmp_path / "second-bin"
+    first_kimi = _write_executable(first_bin / "kimi", "echo 'kimi first'\n")
+    second_kimi = _write_executable(second_bin / "kimi", "echo 'kimi second'\n")
+    monkeypatch.setenv("PATH", str(first_bin))
+    client = _client(tmp_path)
+
+    first_response = client.get("/api/workbench/agent-settings")
+
+    assert first_response.status_code == 200
+    first_agents = {item["provider_id"]: item for item in first_response.json()["agents"]}
+    assert first_agents["kimi_cli"]["executable_path"] == str(first_kimi)
+    assert first_agents["kimi_cli"]["version"] == "kimi first"
+
+    monkeypatch.setenv("PATH", str(second_bin))
+    cached_response = client.get("/api/workbench/agent-settings")
+
+    assert cached_response.status_code == 200
+    cached_agents = {item["provider_id"]: item for item in cached_response.json()["agents"]}
+    assert cached_agents["kimi_cli"]["executable_path"] == str(first_kimi)
+    assert cached_agents["kimi_cli"]["version"] == "kimi first"
+
+    refreshed_response = client.get("/api/workbench/agent-settings?refresh_agents=true")
+
+    assert refreshed_response.status_code == 200
+    refreshed_agents = {item["provider_id"]: item for item in refreshed_response.json()["agents"]}
+    assert refreshed_agents["kimi_cli"]["executable_path"] == str(second_kimi)
+    assert refreshed_agents["kimi_cli"]["version"] == "kimi second"
+
+
 def test_workbench_agent_settings_api_preserves_explicit_empty_llm_key_env(tmp_path: Path) -> None:
     client = _client(tmp_path)
 

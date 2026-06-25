@@ -27,6 +27,7 @@ from PIL import Image
 from ..artifacts import write_json
 from .assets import process_asset_plan_elements, read_asset_draft, validate_asset_plan, write_asset_draft
 from .agent_settings import (
+    discover_workbench_agents,
     read_workbench_agent_settings,
     workbench_agent_settings_payload,
     write_workbench_agent_settings,
@@ -149,6 +150,7 @@ def create_app(
     app.state.store = resolved_store
     app.state.runner = resolved_runner
     app.state.rmbg_client = rmbg_client
+    app.state.workbench_agent_discovery_snapshot = discover_workbench_agents()
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -252,9 +254,12 @@ def create_app(
 
     @app.get("/api/workbench/agent-settings")
     def get_workbench_agent_settings_api(request: Request) -> dict[str, Any]:
+        include_agents = _include_agents_param(request)
+        agents = _workbench_agent_discovery_snapshot(app, refresh=_refresh_agents_param(request)) if include_agents else []
         return workbench_agent_settings_payload(
             resolved_store.workspace,
-            include_agents=_include_agents_param(request),
+            include_agents=include_agents,
+            agents=agents,
         )
 
     @app.put("/api/workbench/agent-settings")
@@ -266,9 +271,12 @@ def create_app(
             write_workbench_agent_settings(resolved_store.workspace, payload)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        include_agents = _include_agents_param(request)
+        agents = _workbench_agent_discovery_snapshot(app, refresh=_refresh_agents_param(request)) if include_agents else []
         return workbench_agent_settings_payload(
             resolved_store.workspace,
-            include_agents=_include_agents_param(request),
+            include_agents=include_agents,
+            agents=agents,
         )
 
     @app.get("/api/workbench/api-presets")
@@ -3940,6 +3948,16 @@ def _as_bool(value: Any) -> bool:
 def _include_agents_param(request: Request) -> bool:
     raw = request.query_params.get("include_agents")
     return True if raw is None else _as_bool(raw)
+
+
+def _refresh_agents_param(request: Request) -> bool:
+    return _as_bool(request.query_params.get("refresh_agents"))
+
+
+def _workbench_agent_discovery_snapshot(app: FastAPI, *, refresh: bool = False) -> list[dict[str, Any]]:
+    if refresh:
+        app.state.workbench_agent_discovery_snapshot = discover_workbench_agents()
+    return [dict(agent) for agent in app.state.workbench_agent_discovery_snapshot]
 
 
 def _batch_execution_mode(value: Any) -> BatchExecutionMode:

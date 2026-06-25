@@ -1789,7 +1789,6 @@ function WorkbenchSettingsCenter({
   const [llmExtraBodyText, setLlmExtraBodyText] = useState(formatWorkbenchAgentJsonObject({}));
   const [loading, setLoading] = useState(true);
   const [agentsLoading, setAgentsLoading] = useState(false);
-  const [agentsLoaded, setAgentsLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState("");
   const [settingsCategory, setSettingsCategory] = useState<WorkbenchSettingsCategory>("overview");
@@ -1809,7 +1808,7 @@ function WorkbenchSettingsCenter({
         getWorkbenchStatusOverview()
           .then((payload) => ({ payload, error: "" }))
           .catch((err) => ({ payload: null, error: err instanceof Error ? err.message : String(err) })),
-        getWorkbenchAgentSettings(false),
+        getWorkbenchAgentSettings(true),
         getApiPresets(),
         getProcessorSettings()
       ]);
@@ -1820,7 +1819,6 @@ function WorkbenchSettingsCenter({
       setResponse(nextResponse);
       setApiResponse(nextApiResponse);
       setProcessorResponse(nextProcessorResponse);
-      setAgentsLoaded((nextResponse.agents || []).length > 0);
       setDraft(normalizedSettings);
       setApiDrafts(nextApiDrafts);
       setProcessorDrafts({ ...(nextProcessorResponse.settings?.processors || {}) });
@@ -1841,16 +1839,15 @@ function WorkbenchSettingsCenter({
     void loadSettings();
   }, [loadSettings]);
 
-  const loadAgentDiscovery = useCallback(async () => {
+  const refreshAgentDiscovery = useCallback(async () => {
     setAgentsLoading(true);
     setLocalError("");
     try {
-      const nextResponse = await getWorkbenchAgentSettings(true);
+      const nextResponse = await getWorkbenchAgentSettings(true, true);
       setResponse((current) => ({
         settings: current?.settings || nextResponse.settings,
         agents: nextResponse.agents || []
       }));
-      setAgentsLoaded(true);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setLocalError(message);
@@ -1859,12 +1856,6 @@ function WorkbenchSettingsCenter({
       setAgentsLoading(false);
     }
   }, [onError]);
-
-  useEffect(() => {
-    if (settingsCategory === "agent" && !loading && !agentsLoaded && !agentsLoading) {
-      void loadAgentDiscovery();
-    }
-  }, [agentsLoaded, agentsLoading, loadAgentDiscovery, loading, settingsCategory]);
 
   useEffect(() => {
     if (selectedApiPresetIndex >= apiDrafts.length && selectedApiPresetIndex !== 0) {
@@ -2145,31 +2136,45 @@ function WorkbenchSettingsCenter({
               <div className={`agent-settings-shell category-${settingsCategory}`}>
                 <div className="settings-card-board">
                   <div className="settings-card-heading">
-                    <span>{currentSettingsItem.label}</span>
-                    <strong>
-                      {settingsCategory === "overview"
-                        ? "状态与能力总览"
-                        : settingsCategory === "api"
-                          ? "模型与 API 预设"
-                          : settingsCategory === "agent"
-                            ? "Agent 运行配置"
-                            : settingsCategory === "llm"
-                              ? "默认 LLM 配置"
-                              : "处理器配置"}
-                    </strong>
-                    <p>
-                      {settingsCategory === "overview"
-                        ? overviewResponse
-                          ? `${overviewResponse.overall.error_count} 个错误 · ${overviewResponse.overall.warning_count} 个提醒`
-                          : "读取当前 workspace 状态"
-                        : settingsCategory === "api"
-                          ? `${apiDrafts.length} 个 API 预设`
-                          : settingsCategory === "agent"
-                            ? `${agents.length} 个 Agent 供应方`
-                            : settingsCategory === "llm"
-                              ? `${llmPresets.length} 个 LLM 预设`
-                              : `${processorIds.length} 个处理器`}
-                    </p>
+                    <div className="settings-card-heading-copy">
+                      <span>{currentSettingsItem.label}</span>
+                      <strong>
+                        {settingsCategory === "overview"
+                          ? "状态与能力总览"
+                          : settingsCategory === "api"
+                            ? "模型与 API 预设"
+                            : settingsCategory === "agent"
+                              ? "Agent 运行配置"
+                              : settingsCategory === "llm"
+                                ? "默认 LLM 配置"
+                                : "处理器配置"}
+                      </strong>
+                      <p>
+                        {settingsCategory === "overview"
+                          ? overviewResponse
+                            ? `${overviewResponse.overall.error_count} 个错误 · ${overviewResponse.overall.warning_count} 个提醒`
+                            : "读取当前 workspace 状态"
+                          : settingsCategory === "api"
+                            ? `${apiDrafts.length} 个 API 预设`
+                            : settingsCategory === "agent"
+                              ? `${agents.length} 个 Agent 供应方`
+                              : settingsCategory === "llm"
+                                ? `${llmPresets.length} 个 LLM 预设`
+                                : `${processorIds.length} 个处理器`}
+                      </p>
+                    </div>
+                    {settingsCategory === "agent" && (
+                      <button
+                        type="button"
+                        className="settings-card-refresh"
+                        aria-label="刷新 Agent 运行配置"
+                        title="刷新 Agent 运行配置"
+                        onClick={() => void refreshAgentDiscovery()}
+                        disabled={loading || agentsLoading}
+                      >
+                        <RefreshIcon />
+                      </button>
+                    )}
                   </div>
                   {settingsCategory === "overview" && (
                     <SettingsOverviewPage
@@ -2233,7 +2238,7 @@ function WorkbenchSettingsCenter({
                   {settingsCategory === "agent" && (
                     <div className="settings-model-grid" aria-label="本地 Agent">
                       {(loading || agentsLoading) && <div className="agent-settings-empty">加载中</div>}
-                      {!loading && !agentsLoading && agentsLoaded && agents.length === 0 && <div className="agent-settings-empty">未发现 Agent</div>}
+                      {!loading && !agentsLoading && agents.length === 0 && <div className="agent-settings-empty">未发现 Agent</div>}
                       {sortedAgents.map((agent) => {
                         const agentIcon = agentProviderIconForId(agent.provider_id);
                         return (
@@ -7422,6 +7427,17 @@ function PlusIcon() {
   return (
     <svg className="plus-icon" viewBox="0 0 20 20" aria-hidden="true">
       <path d="M10 4.6v10.8M4.6 10h10.8" />
+    </svg>
+  );
+}
+
+function RefreshIcon() {
+  return (
+    <svg className="refresh-icon" viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M15.6 8.1a5.8 5.8 0 0 0-10.2-2.4L3.8 7.3" />
+      <path d="M3.8 3.8v3.5h3.5" />
+      <path d="M4.4 11.9a5.8 5.8 0 0 0 10.2 2.4l1.6-1.6" />
+      <path d="M16.2 16.2v-3.5h-3.5" />
     </svg>
   );
 }

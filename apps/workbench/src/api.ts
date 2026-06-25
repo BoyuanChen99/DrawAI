@@ -151,17 +151,26 @@ export function getHealth(): Promise<HealthResponse> {
   return requestJson<HealthResponse>("/api/health");
 }
 
-export function getWorkbenchAgentSettings(includeAgents = true): Promise<WorkbenchAgentSettingsResponse> {
-  const query = includeAgents ? "" : "?include_agents=false";
-  return requestJson<WorkbenchAgentSettingsResponse>(`/api/workbench/agent-settings${query}`);
+export function workbenchAgentSettingsPath(includeAgents = true, refreshAgents = false): string {
+  const params = new URLSearchParams();
+  if (!includeAgents) {
+    params.set("include_agents", "false");
+  } else if (refreshAgents) {
+    params.set("refresh_agents", "true");
+  }
+  const query = params.toString();
+  return `/api/workbench/agent-settings${query ? `?${query}` : ""}`;
+}
+
+export function getWorkbenchAgentSettings(includeAgents = true, refreshAgents = false): Promise<WorkbenchAgentSettingsResponse> {
+  return requestJson<WorkbenchAgentSettingsResponse>(workbenchAgentSettingsPath(includeAgents, refreshAgents));
 }
 
 export function saveWorkbenchAgentSettings(
   settings: WorkbenchAgentSettings,
   includeAgents = true
 ): Promise<WorkbenchAgentSettingsResponse> {
-  const query = includeAgents ? "" : "?include_agents=false";
-  return requestJson<WorkbenchAgentSettingsResponse>(`/api/workbench/agent-settings${query}`, {
+  return requestJson<WorkbenchAgentSettingsResponse>(workbenchAgentSettingsPath(includeAgents), {
     method: "PUT",
     body: JSON.stringify(settings)
   });
