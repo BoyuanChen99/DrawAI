@@ -212,6 +212,7 @@ const DEFAULT_WORKBENCH_AGENT_SETTINGS: WorkbenchAgentSettings = {
   selected_provider_id: "codex_sdk",
   model: "",
   reasoning_effort: "",
+  fast: false,
   timeout_seconds: 0,
   llm_model: "",
   llm_base_url: "",
@@ -2601,6 +2602,14 @@ function WorkbenchSettingsCenter({
                       />
                     </label>
                   </div>
+                  <label className="settings-toggle-row">
+                    <input
+                      type="checkbox"
+                      checked={draft.fast}
+                      onChange={(event) => setDraft((current) => ({ ...current, fast: event.target.checked }))}
+                    />
+                    <span>Fast 模式</span>
+                  </label>
                   {selectedAgent && <AgentValidationCard agent={selectedAgent} />}
                 </div>
               )}
@@ -3036,6 +3045,7 @@ function normalizeWorkbenchAgentDraft(settings: WorkbenchAgentSettings): Workben
     selected_provider_id: settings.selected_provider_id || DEFAULT_WORKBENCH_AGENT_SETTINGS.selected_provider_id,
     model: (settings.model || "").trim(),
     reasoning_effort: (settings.reasoning_effort || "").trim(),
+    fast: Boolean(settings.fast),
     timeout_seconds: Number.isFinite(timeout) && timeout > 0 ? Math.floor(timeout) : 0,
     llm_model: (settings.llm_model || "").trim(),
     llm_base_url: (settings.llm_base_url || "").trim().replace(/\/+$/, ""),

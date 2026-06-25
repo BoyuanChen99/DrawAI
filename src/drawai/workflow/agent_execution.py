@@ -153,6 +153,7 @@ def _execute_codex_sdk_agent(
     options = dict(request.prompt.options)
     model_name = _normalize_codex_model_name(options.get("model"))
     reasoning_effort = _codex_sdk_reasoning_effort(options.get("reasoning_effort"))
+    service_tier = _codex_service_tier(options)
     timeout_seconds = _timeout_seconds(options)
     trace_path = request.workdir / "codex_sdk_trace.jsonl"
     stdout_path = request.workdir / "codex_sdk_final_response.txt"
@@ -179,6 +180,7 @@ def _execute_codex_sdk_agent(
                         ephemeral=True,
                         model=model_name,
                         sandbox=sdk.Sandbox.full_access,
+                        service_tier=service_tier,
                     )
                     codex_inputs: list[Any] = [sdk.TextInput(request.prompt.text)]
                     image_paths = _image_input_paths(request)
@@ -199,6 +201,7 @@ def _execute_codex_sdk_agent(
                             "declared_outputs": list(request.prompt.outputs),
                             "model": model_name or "codex-default",
                             "reasoning_effort": reasoning_effort,
+                            "service_tier": service_tier,
                             "timeout_seconds": timeout_seconds,
                         },
                     )
@@ -217,6 +220,7 @@ def _execute_codex_sdk_agent(
                             effort=reasoning_effort,
                             model=model_name,
                             sandbox=sdk.Sandbox.full_access,
+                            service_tier=service_tier,
                         )
                     finally:
                         _stop_codex_session_log_mirror(
@@ -474,6 +478,7 @@ def _execute_generic_agent_cli_agent(
         "connection_id": agent,
         "model_name": str(options.get("model") or ""),
         "reasoning_effort": str(options.get("reasoning_effort") or ""),
+        "fast": _fast_mode(options),
         "timeout_seconds": _timeout_seconds(options),
         "cli": {
             "agent": agent,
@@ -526,6 +531,7 @@ def _execute_acp_agent(
         "connection_id": agent,
         "model_name": str(options.get("model") or ""),
         "reasoning_effort": str(options.get("reasoning_effort") or ""),
+        "fast": _fast_mode(options),
         "timeout_seconds": _timeout_seconds(options),
         "acp": {
             "agent": agent,
@@ -963,8 +969,11 @@ def _codex_image_args(request: AgentExecutionRequest) -> list[str]:
 def _codex_cli_config_args(options: Mapping[str, Any]) -> list[str]:
     raw_effort = options.get("reasoning_effort")
     reasoning_effort = _normalize_codex_reasoning_effort(raw_effort)
+    overrides = [f'model_reasoning_effort="{reasoning_effort}"']
+    if _fast_mode(options):
+        overrides.append('service_tier="fast"')
     args: list[str] = []
-    for override in controlled_codex_config_overrides([f'model_reasoning_effort="{reasoning_effort}"']):
+    for override in controlled_codex_config_overrides(overrides):
         args.extend(["-c", override])
     return args
 
@@ -1012,6 +1021,19 @@ def _codex_sdk_reasoning_effort(value: Any) -> str:
     if reasoning_effort == "minimal":
         return "low"
     return reasoning_effort
+
+
+def _codex_service_tier(options: Mapping[str, Any]) -> str | None:
+    return "fast" if _fast_mode(options) else None
+
+
+def _fast_mode(options: Mapping[str, Any]) -> bool:
+    raw = options.get("fast")
+    if raw in (None, ""):
+        return False
+    if isinstance(raw, bool):
+        return raw
+    raise ValueError("fast must be a boolean")
 
 
 def _append_trace(path: Path, payload: Mapping[str, Any]) -> None:

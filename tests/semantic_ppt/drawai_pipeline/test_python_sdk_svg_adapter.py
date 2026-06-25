@@ -1042,10 +1042,12 @@ def test_invoke_codex_python_sdk_accepts_configured_reasoning_effort(monkeypatch
         image_paths=image_path,
         prompt="Draw the image as SVG.",
         task_name="unit_test_reasoning_effort",
-        runtime_config={"model_name": "fake-model", "reasoning_effort": "high", "timeout_seconds": 1},
+        runtime_config={"model_name": "fake-model", "reasoning_effort": "high", "fast": True, "timeout_seconds": 1},
         trace_path=tmp_path / "trace.jsonl",
         isolated_cwd=tmp_path / "isolated",
     )
 
     assert seen["thread_start_kwargs"]["config"] == {"model_reasoning_effort": "high"}
+    assert seen["thread_start_kwargs"]["service_tier"] == "fast"
     assert seen["run_kwargs"]["effort"] == "high"
+    assert seen["run_kwargs"]["service_tier"] == "fast"

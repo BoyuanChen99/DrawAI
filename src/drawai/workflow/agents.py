@@ -919,6 +919,8 @@ def _validate_agent_config(config: Mapping[str, Any]) -> None:
         raise ValueError("drawai_tools must be an array of tool ids")
     if "page_spec_task_customized" in config and not isinstance(config["page_spec_task_customized"], bool):
         raise ValueError("page_spec_task_customized must be a boolean")
+    if config.get("fast") not in (None, "") and not isinstance(config["fast"], bool):
+        raise ValueError("fast must be a boolean")
     if "page_spec_processing_types" in config:
         _page_spec_processing_types(config)
     if "page_spec_processing_operations" in config:
@@ -941,6 +943,8 @@ def _agent_options(config: Mapping[str, Any]) -> Mapping[str, Any]:
     ):
         if key in config and config[key] not in (None, ""):
             options[key] = config[key]
+    if config.get("fast") is True:
+        options["fast"] = True
     if isinstance(config.get("extra_body"), Mapping):
         options["extra_body"] = dict(config["extra_body"])  # type: ignore[index]
     return options

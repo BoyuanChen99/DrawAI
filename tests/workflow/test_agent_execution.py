@@ -13,6 +13,7 @@ from drawai.workflow.agent_execution import (
     execute_agent_prompt,
     _copy_codex_session_log_snapshot,
     _execute_codex_cli_agent,
+    _execute_codex_sdk_agent,
     _execute_kimi_cli_agent,
     _execute_subprocess_agent,
     _timeout_seconds,
@@ -180,7 +181,7 @@ def test_codex_cli_agent_uses_isolated_codex_home(tmp_path: Path, monkeypatch: p
                 "description": "Result.",
             },
         ),
-        options={"reasoning_effort": "low"},
+        options={"reasoning_effort": "low", "fast": True},
     )
     request = AgentExecutionRequest(
         prompt=prompt,
@@ -224,12 +225,93 @@ def test_codex_cli_agent_uses_isolated_codex_home(tmp_path: Path, monkeypatch: p
     result = _execute_codex_cli_agent(request, prompt_path=prompt_path)
 
     assert "--ignore-rules" in captured["command"]
+    assert "-c" in captured["command"]
+    assert 'service_tier="fast"' in captured["command"]
     env_overrides = captured["env_overrides"]
     assert isinstance(env_overrides, dict)
     assert env_overrides["CODEX_HOME"] == str(isolated_home)
     assert env_overrides["HOME"] == str(isolated_home.parent)
     assert env_overrides.get("CODEX_THREAD_ID") is None
     assert result.session_log_path == workdir / "codex_cli_session_log"
+
+
+def test_codex_sdk_agent_uses_fast_service_tier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    run_root = tmp_path / "run"
+    workdir = run_root / "nodes" / "agent" / "runs" / "001"
+    workdir.mkdir(parents=True)
+    prompt_path = workdir / "prompt.md"
+    prompt = AgentPrompt(
+        preset_id="custom_agent",
+        provider_id="codex_sdk",
+        text="Return a concise response.",
+        inputs=(),
+        outputs=(),
+        options={"reasoning_effort": "low", "fast": True, "timeout_seconds": 1},
+    )
+    request = AgentExecutionRequest(
+        prompt=prompt,
+        workdir=workdir,
+        run_root=run_root,
+        node_id="agent",
+        node_type="agent",
+    )
+    isolated_home = tmp_path / "isolated_codex_home"
+    seen: dict[str, object] = {}
+
+    class IsolatedHome:
+        def __enter__(self) -> SimpleNamespace:
+            isolated_home.mkdir()
+            return SimpleNamespace(codex_home=isolated_home)
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    class FakeCodex:
+        def __init__(self, config: object) -> None:
+            seen["config"] = config
+
+        def __enter__(self) -> "FakeCodex":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def thread_start(self, **kwargs: object) -> object:
+            seen["thread_start_kwargs"] = kwargs
+            return object()
+
+    fake_sdk = SimpleNamespace(
+        ApprovalMode=SimpleNamespace(deny_all="deny_all"),
+        Sandbox=SimpleNamespace(full_access="full_access"),
+        Codex=FakeCodex,
+        CodexConfig=lambda **kwargs: kwargs,
+        TextInput=lambda text: ("text", text),
+        LocalImageInput=lambda path: ("image", path),
+    )
+
+    def fake_run_thread(_thread: object, run_input: object, **kwargs: object) -> SimpleNamespace:
+        seen["run_input"] = run_input
+        seen["run_kwargs"] = kwargs
+        return SimpleNamespace(final_response="ok")
+
+    monkeypatch.setattr("drawai.workflow.agent_execution._load_openai_codex_sdk", lambda: fake_sdk)
+    monkeypatch.setattr("drawai.workflow.agent_execution._isolated_codex_home", lambda _workdir: IsolatedHome())
+    monkeypatch.setattr("drawai.workflow.agent_execution._run_thread_with_timeout", fake_run_thread)
+    monkeypatch.setattr(
+        "drawai.workflow.agent_execution._start_codex_session_log_mirror",
+        lambda *_args, **_kwargs: (SimpleNamespace(set=lambda: None), SimpleNamespace(join=lambda timeout=None: None)),
+    )
+    monkeypatch.setattr("drawai.workflow.agent_execution._stop_codex_session_log_mirror", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "drawai.workflow.agent_execution._archive_codex_session_logs",
+        lambda _codex_home, archive_dir, task_name, sdk_turn_result=None: {"archive_dir": str(archive_dir)},
+    )
+
+    result = _execute_codex_sdk_agent(request, prompt_path=prompt_path)
+
+    assert result.provider_id == "codex_sdk"
+    assert seen["thread_start_kwargs"]["service_tier"] == "fast"  # type: ignore[index]
+    assert seen["run_kwargs"]["service_tier"] == "fast"  # type: ignore[index]
 
 
 def test_codex_session_log_snapshot_copies_live_runtime_files(tmp_path: Path) -> None:

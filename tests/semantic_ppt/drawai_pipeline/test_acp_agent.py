@@ -151,6 +151,18 @@ def test_acp_agent_presets_resolve_supported_default_commands() -> None:
         assert _agent_label(agent) == ACP_AGENT_LABELS[agent]
 
 
+def test_acp_agent_fast_mode_uses_qwen_bare_mode_only_when_supported() -> None:
+    assert _acp_agent_command({"provider": "acp-agent", "fast": True, "acp": {"agent": "qwen"}}, "qwen") == [
+        "qwen",
+        "--acp",
+        "--bare",
+    ]
+    assert _acp_agent_command({"provider": "acp-agent", "fast": True, "acp": {"agent": "gemini"}}, "gemini") == [
+        "gemini",
+        "--experimental-acp",
+    ]
+
+
 def test_acp_agent_writes_svg_via_client_filesystem(tmp_path: Path) -> None:
     image_path = tmp_path / "sample.png"
     image_path.write_bytes(

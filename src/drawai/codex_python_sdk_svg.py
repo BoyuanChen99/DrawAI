@@ -711,6 +711,15 @@ def _normalize_codex_reasoning_effort(value: Any) -> str:
     return text
 
 
+def _runtime_fast(runtime_config: Mapping[str, Any]) -> bool:
+    raw = runtime_config.get("fast")
+    if raw in (None, ""):
+        return False
+    if isinstance(raw, bool):
+        return raw
+    raise CodexPythonSdkSvgError("runtime_config.fast must be a boolean")
+
+
 def _load_openai_codex_sdk() -> Any:
     try:
         import openai_codex
@@ -742,6 +751,7 @@ class CodexPythonSdkSvgSession:
         self.reasoning_effort = _normalize_codex_reasoning_effort(
             settings.get("reasoning_effort", settings.get("model_reasoning_effort"))
         )
+        self.service_tier = "fast" if _runtime_fast(settings) else None
         self.timeout_seconds = model_runtime._runtime_timeout_seconds(settings)
         self.run_cwd = (
             Path(isolated_cwd)
@@ -790,6 +800,7 @@ class CodexPythonSdkSvgSession:
                 ephemeral=True,
                 model=self.model_name,
                 sandbox=self._sdk.Sandbox.full_access,
+                service_tier=self.service_tier,
             )
             raw_thread_id = getattr(self._thread, "id", None)
             self._thread_id = str(raw_thread_id) if raw_thread_id else None
@@ -881,6 +892,7 @@ class CodexPythonSdkSvgSession:
                 "thread_reused": turn_index > 1,
                 "model_name": self.model_name or "codex-default",
                 "reasoning_effort": self.reasoning_effort,
+                "service_tier": self.service_tier,
                 "timeout_seconds": self.timeout_seconds,
                 "images": image_traces,
                 "isolated_cwd": str(self.run_cwd),
@@ -904,6 +916,7 @@ class CodexPythonSdkSvgSession:
                 "effort": self.reasoning_effort,
                 "model": self.model_name,
                 "sandbox": self._sdk.Sandbox.full_access,
+                "service_tier": self.service_tier,
             }
             if output_schema is not None:
                 run_kwargs["output_schema"] = output_schema
@@ -995,6 +1008,7 @@ class CodexPythonSdkSvgSession:
                 "thread_id": self._thread_id,
                 "model_name": self.model_name or "codex-default",
                 "reasoning_effort": self.reasoning_effort,
+                "service_tier": self.service_tier,
                 "isolated_cwd": str(self.run_cwd),
                 "codex_home": self._prepared_codex_home.to_trace(),
                 "config_overrides": list(self.overrides),

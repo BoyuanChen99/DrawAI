@@ -761,7 +761,18 @@ def _acp_agent_command(runtime_config: Mapping[str, Any], agent: str) -> list[st
         raise AcpAgentError("runtime_config.acp.command must be a string or list of strings")
     if not command:
         raise AcpAgentError("runtime_config.acp.command must not be empty")
+    if _runtime_fast(runtime_config) and agent == "qwen" and "--bare" not in command:
+        command.append("--bare")
     return command
+
+
+def _runtime_fast(runtime_config: Mapping[str, Any]) -> bool:
+    raw = runtime_config.get("fast")
+    if raw in (None, ""):
+        return False
+    if isinstance(raw, bool):
+        return raw
+    raise AcpAgentError("runtime_config.fast must be a boolean")
 
 
 def _controlled_prompt(

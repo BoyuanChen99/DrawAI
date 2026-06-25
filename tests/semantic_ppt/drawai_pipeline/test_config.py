@@ -341,6 +341,7 @@ model_runtime:
   provider: acp-agent
   connection_id: kimi
   model_name: kimi-code/kimi-for-coding
+  fast: true
   acp:
     agent: kimi
     command:
@@ -357,6 +358,7 @@ model_runtime:
     assert cfg.model_runtime.provider == "acp-agent"
     assert cfg.model_runtime.connection_id == "kimi"
     assert cfg.model_runtime.model_name == "kimi-code/kimi-for-coding"
+    assert cfg.model_runtime.fast is True
     assert cfg.model_runtime.acp.agent == "kimi"
     assert cfg.model_runtime.acp.command == ("kimi", "acp")
     assert cfg.model_runtime.to_runtime_dict()["acp"] == {

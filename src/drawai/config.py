@@ -176,6 +176,7 @@ class ModelRuntimeConfig:
     connection_id: str = "codex-python-sdk-controlled"
     model_name: str = "gpt-5.5"
     reasoning_effort: str = "xhigh"
+    fast: bool = False
     image_model_name: str = ""
     base_url: str = ""
     api_key: str = ""
@@ -197,6 +198,7 @@ class ModelRuntimeConfig:
             "connection_id": self.connection_id,
             "model_name": self.model_name,
             "reasoning_effort": self.reasoning_effort,
+            "fast": self.fast,
             "image_model_name": self.image_model_name,
             "base_url": self.base_url,
             "api_key": self.api_key,
@@ -582,6 +584,10 @@ def _parse_model_runtime_config(raw: Any) -> ModelRuntimeConfig:
             data.get("reasoning_effort", ModelRuntimeConfig.reasoning_effort),
             "model_runtime.reasoning_effort",
         ).strip().lower(),
+        fast=_as_bool(
+            data.get("fast", ModelRuntimeConfig.fast),
+            "model_runtime.fast",
+        ),
         image_model_name=_as_str(
             data.get("image_model_name", ModelRuntimeConfig.image_model_name),
             "model_runtime.image_model_name",

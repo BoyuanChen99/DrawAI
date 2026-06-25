@@ -93,6 +93,7 @@ export interface WorkbenchAgentSettings {
   selected_provider_id: string;
   model: string;
   reasoning_effort: string;
+  fast: boolean;
   timeout_seconds: number;
   llm_model: string;
   llm_base_url: string;

@@ -312,13 +312,14 @@ def _agent_cli_invocation(
     raw = _agent_cli_command_raw(runtime_config, agent)
     command = _parse_command(raw)
     model_name = str(runtime_config.get("model_name") or "").strip()
+    fast = _runtime_fast(runtime_config)
     if agent == "kimi":
         return _kimi_invocation(command, model_name=model_name, prompt=prompt)
     if agent == "claude":
-        return _AgentCliInvocation(command=_claude_command(command, model_name=model_name), stdin=prompt)
+        return _AgentCliInvocation(command=_claude_command(command, model_name=model_name, fast=fast), stdin=prompt)
     if agent == "codex":
         return _AgentCliInvocation(
-            command=_codex_command(command, model_name=model_name, work_dir=work_dir, image_paths=image_paths),
+            command=_codex_command(command, model_name=model_name, work_dir=work_dir, image_paths=image_paths, fast=fast),
             stdin=prompt,
         )
     if agent == "openclaw":
@@ -402,9 +403,11 @@ def _kimi_invocation(command: list[str], *, model_name: str, prompt: str) -> _Ag
     return _AgentCliInvocation(command=command, stdin=None)
 
 
-def _claude_command(command: list[str], *, model_name: str) -> list[str]:
+def _claude_command(command: list[str], *, model_name: str, fast: bool = False) -> list[str]:
     if model_name and "--model" not in command:
         command.extend(["--model", model_name])
+    if fast and "--bare" not in command:
+        command.append("--bare")
     if "--print" not in command and "-p" not in command:
         command.append("--print")
     if "--permission-mode" not in command and "--dangerously-skip-permissions" not in command:
@@ -416,7 +419,14 @@ def _claude_command(command: list[str], *, model_name: str) -> list[str]:
     return command
 
 
-def _codex_command(command: list[str], *, model_name: str, work_dir: Path, image_paths: Sequence[Path]) -> list[str]:
+def _codex_command(
+    command: list[str],
+    *,
+    model_name: str,
+    work_dir: Path,
+    image_paths: Sequence[Path],
+    fast: bool = False,
+) -> list[str]:
     if model_name and "--model" not in command and "-m" not in command:
         command.extend(["--model", model_name])
     if "--cd" not in command and "-C" not in command:
@@ -427,6 +437,8 @@ def _codex_command(command: list[str], *, model_name: str, work_dir: Path, image
         command.append("--dangerously-bypass-approvals-and-sandbox")
     if "--color" not in command:
         command.extend(["--color", "never"])
+    if fast and not _has_codex_service_tier(command):
+        command.extend(["-c", 'service_tier="fast"'])
     for image_path in image_paths:
         command.extend(["-i", str(image_path)])
     if "-" not in command:
@@ -484,6 +496,19 @@ def _ensure_subcommand(command: list[str], subcommand: str) -> None:
 
 def _has_any_flag(command: Sequence[str], flags: Sequence[str]) -> bool:
     return any(flag in command for flag in flags)
+
+
+def _has_codex_service_tier(command: Sequence[str]) -> bool:
+    return any("service_tier" in item or "serviceTier" in item for item in command)
+
+
+def _runtime_fast(runtime_config: Mapping[str, Any]) -> bool:
+    raw = runtime_config.get("fast")
+    if raw in (None, ""):
+        return False
+    if isinstance(raw, bool):
+        return raw
+    raise AgentCliSvgError("runtime_config.fast must be a boolean")
 
 
 def _format_timeout_seconds(value: float) -> str:

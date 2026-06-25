@@ -1935,6 +1935,15 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                       />
                     </label>
                     <label>
+                      <span>Fast</span>
+                      <input
+                        type="checkbox"
+                        checked={selectedNode.config.fast === true}
+                        disabled={readOnly}
+                        onChange={(event) => updateSelectedNodeConfig({ fast: event.target.checked ? true : "" })}
+                      />
+                    </label>
+                    <label>
                       <span>推理强度</span>
                       <select
                         value={String(selectedNode.config.reasoning_effort || "")}
@@ -2559,7 +2568,7 @@ function selectedInputsForPrompt(node: WorkflowNode, inputs: AgentInputPreview[]
 }
 
 function agentRuntimeOptionsForNode(node: WorkflowNode): Array<[string, string]> {
-  return (["model", "profile", "timeout_seconds", "reasoning_effort"] as const)
+  return (["model", "profile", "fast", "timeout_seconds", "reasoning_effort"] as const)
     .map((key): [string, string] | null => {
       const value = node.config[key];
       if (value === undefined || value === null || value === "") return null;

@@ -130,6 +130,7 @@ def test_agent_cli_svg_runner_builds_claude_preset(monkeypatch, tmp_path: Path):
         runtime_config={
             "provider": "agent-cli",
             "model_name": "sonnet",
+            "fast": True,
             "cli": {"agent": "claude", "command": ["claude"]},
             "timeout_seconds": 5,
         },
@@ -142,6 +143,7 @@ def test_agent_cli_svg_runner_builds_claude_preset(monkeypatch, tmp_path: Path):
         "claude",
         "--model",
         "sonnet",
+        "--bare",
         "--print",
         "--permission-mode",
         "bypassPermissions",
@@ -173,6 +175,7 @@ def test_agent_cli_svg_runner_builds_codex_preset_with_images(monkeypatch, tmp_p
         runtime_config={
             "provider": "agent-cli",
             "model_name": "gpt-5.1-codex-max",
+            "fast": True,
             "cli": {"agent": "codex", "command": ["codex", "exec"]},
             "timeout_seconds": 5,
         },
@@ -192,6 +195,8 @@ def test_agent_cli_svg_runner_builds_codex_preset_with_images(monkeypatch, tmp_p
         "--dangerously-bypass-approvals-and-sandbox",
         "--color",
         "never",
+        "-c",
+        'service_tier="fast"',
         "-i",
         str(image_path),
         "-",

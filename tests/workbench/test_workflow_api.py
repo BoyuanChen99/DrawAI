@@ -191,6 +191,7 @@ def test_workbench_agent_settings_api_discovers_validates_and_saves_cli_provider
             "selected_provider_id": "kimi_cli",
             "model": "kimi-code/kimi-for-coding",
             "reasoning_effort": "high",
+            "fast": True,
             "timeout_seconds": 3600,
             "llm_model": "minimax/minimax-m3",
             "llm_base_url": "https://openrouter.ai/api/v1",
@@ -203,6 +204,7 @@ def test_workbench_agent_settings_api_discovers_validates_and_saves_cli_provider
     assert save_response.status_code == 200
     settings = save_response.json()["settings"]
     assert settings["selected_provider_id"] == "kimi_cli"
+    assert settings["fast"] is True
     assert settings["model"] == "kimi-code/kimi-for-coding"
     assert settings["reasoning_effort"] == "high"
     assert settings["timeout_seconds"] == 3600
@@ -974,6 +976,7 @@ def test_create_batch_applies_saved_workbench_agent_to_case_config(
             "selected_provider_id": "kimi_cli",
             "model": "kimi-code/kimi-for-coding",
             "reasoning_effort": "medium",
+            "fast": True,
             "timeout_seconds": 240,
         },
     )
@@ -1001,6 +1004,7 @@ def test_create_batch_applies_saved_workbench_agent_to_case_config(
     assert payload["model_runtime"]["connection_id"] == "kimi"
     assert payload["model_runtime"]["model_name"] == "kimi-code/kimi-for-coding"
     assert payload["model_runtime"]["reasoning_effort"] == "medium"
+    assert payload["model_runtime"]["fast"] is True
     assert payload["model_runtime"]["timeout_seconds"] == 240
     assert payload["model_runtime"]["cli"]["agent"] == "kimi"
     assert payload["model_runtime"]["cli"]["command"][0] == str(bin_dir / "kimi")

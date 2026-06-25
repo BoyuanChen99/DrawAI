@@ -39,6 +39,7 @@ class WorkbenchAgentSettings:
     selected_provider_id: str = DEFAULT_AGENT_PROVIDER_ID
     model: str = ""
     reasoning_effort: str = ""
+    fast: bool = False
     timeout_seconds: int = 0
     llm_model: str = ""
     llm_base_url: str = ""
@@ -196,6 +197,7 @@ def normalize_workbench_agent_settings(
         selected_provider_id=provider_id,
         model=str(data.get("model") or "").strip(),
         reasoning_effort=reasoning_effort,
+        fast=_settings_fast(data.get("fast")),
         timeout_seconds=timeout_seconds,
         llm_model=str(data.get("llm_model") or "").strip(),
         llm_base_url=str(data.get("llm_base_url") or "").strip().rstrip("/"),
@@ -264,6 +266,8 @@ def apply_workbench_agent_settings_to_node_config(
         config["model"] = settings.model
     if settings.reasoning_effort:
         config["reasoning_effort"] = settings.reasoning_effort
+    if settings.fast:
+        config["fast"] = True
     if settings.timeout_seconds:
         config["timeout_seconds"] = settings.timeout_seconds
     return config
@@ -296,9 +300,14 @@ def apply_workbench_llm_settings_to_node_config(
 def workbench_agent_runtime_options(settings: WorkbenchAgentSettings) -> dict[str, Any]:
     definition = AGENT_DEFINITIONS[settings.selected_provider_id]
     command = resolved_agent_command(settings.selected_provider_id)
+    options: dict[str, Any] = {"fast": True} if settings.fast else {}
     if definition.kind == "acp":
-        return {"acp_agent_command": command} if command else {}
-    return {"agent_cli_command": command} if command else {}
+        if command:
+            options["acp_agent_command"] = command
+        return options
+    if command:
+        options["agent_cli_command"] = command
+    return options
 
 
 def apply_workbench_agent_settings_to_config_payload(
@@ -354,6 +363,8 @@ def apply_workbench_agent_settings_to_config_payload(
         cli_config["command"] = resolved_agent_command(definition.provider_id)
     if settings.reasoning_effort:
         runtime_config["reasoning_effort"] = settings.reasoning_effort
+    if settings.fast:
+        runtime_config["fast"] = True
     if settings.timeout_seconds:
         runtime_config["timeout_seconds"] = settings.timeout_seconds
 
@@ -521,6 +532,14 @@ def _settings_timeout_seconds(raw: Any) -> int:
     if value < 0:
         raise ValueError("timeout_seconds must be positive")
     return value
+
+
+def _settings_fast(raw: Any) -> bool:
+    if raw in (None, ""):
+        return False
+    if isinstance(raw, bool):
+        return raw
+    raise ValueError("fast must be a boolean")
 
 
 def _mapping_child(parent: dict[str, Any], key: str) -> dict[str, Any]:
