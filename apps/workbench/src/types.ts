@@ -39,6 +39,55 @@ export interface RuntimeActivityStatus {
   running: number;
 }
 
+export type WorkbenchOverviewSeverity = "ok" | "warning" | "error";
+export type WorkbenchSettingsTargetCategory = "overview" | "api" | "agent" | "llm" | "processor";
+
+export interface WorkbenchStatusOverviewAction {
+  label: string;
+  category: WorkbenchSettingsTargetCategory;
+  target_id: string;
+  mode?: string;
+}
+
+export interface WorkbenchStatusOverviewIssue {
+  id: string;
+  severity: WorkbenchOverviewSeverity;
+  title: string;
+  message: string;
+  scope: string;
+  action?: WorkbenchStatusOverviewAction;
+}
+
+export interface WorkbenchStatusOverviewItem {
+  id: string;
+  label: string;
+  severity: WorkbenchOverviewSeverity;
+  value: string;
+  detail: string;
+}
+
+export interface WorkbenchStatusOverviewGroup {
+  id: string;
+  label: string;
+  severity: WorkbenchOverviewSeverity;
+  summary: string;
+  items: WorkbenchStatusOverviewItem[];
+}
+
+export interface WorkbenchStatusOverviewResponse {
+  schema: string;
+  workspace: string;
+  cloud_mode: boolean;
+  overall: {
+    severity: WorkbenchOverviewSeverity;
+    label: string;
+    error_count: number;
+    warning_count: number;
+  };
+  groups: WorkbenchStatusOverviewGroup[];
+  issues: WorkbenchStatusOverviewIssue[];
+}
+
 export interface WorkbenchAgentSettings {
   schema?: string;
   selected_provider_id: string;
