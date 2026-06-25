@@ -6893,14 +6893,21 @@ button.asset-status-unsupported {
   max-height: 236px;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(58px, auto);
+  align-content: start;
   gap: 8px;
   overflow: auto;
   padding-right: 2px;
 }
 
+.settings-provider-option-grid.choose {
+  max-height: min(438px, 46vh);
+}
+
 .settings-provider-option {
   --provider-color: #3168f5;
   min-width: 0;
+  min-height: 58px;
   display: grid;
   grid-template-columns: 38px minmax(0, 1fr);
   gap: 10px;
@@ -6912,6 +6919,10 @@ button.asset-status-unsupported {
   padding: 10px;
   text-align: left;
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.settings-provider-option-custom {
+  --provider-color: #3168f5;
 }
 
 .settings-provider-option:hover {
@@ -6957,6 +6968,17 @@ button.asset-status-unsupported {
   color: #172033;
 }
 
+.settings-provider-logo-custom {
+  border-color: rgba(49, 104, 245, 0.28);
+  background: linear-gradient(135deg, rgba(49, 104, 245, 0.12), #ffffff 66%);
+  color: var(--blue);
+}
+
+.settings-provider-logo-custom svg {
+  width: 20px;
+  height: 20px;
+}
+
 .settings-provider-option-copy {
   min-width: 0;
   display: grid;
@@ -6981,6 +7003,18 @@ button.asset-status-unsupported {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.settings-provider-option-empty {
+  min-height: 58px;
+  display: grid;
+  place-items: center;
+  grid-column: 1 / -1;
+  border: 1px dashed rgba(203, 213, 225, 0.95);
+  border-radius: 8px;
+  color: #667085;
+  font-size: 13px;
+  font-weight: 680;
 }
 
 .settings-model-card {
@@ -7386,5 +7420,9 @@ button.asset-status-unsupported {
 
   .settings-provider-option-grid {
     max-height: 206px;
+  }
+
+  .settings-provider-option-grid.choose {
+    max-height: 328px;
   }
 }

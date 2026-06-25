@@ -116,6 +116,7 @@ type CanvasMode = "select" | "add" | "polygon";
 type AssetEditorView = "extraction" | "processing";
 type NodeArtifactViewMode = "artifact" | "agent_log";
 type WorkbenchSettingsCategory = "api" | "agent" | "llm" | "processor";
+type ApiPresetDialogMode = "choose_provider" | "edit";
 type PipelineNodeState = DagRunNodeState;
 type AssetPlanChangeOptions = { track?: boolean };
 type V2FilterDropdownId = "elementTypes" | "processingTypes" | "statuses";
@@ -1479,6 +1480,8 @@ function WorkbenchSettingsCenter({
   const [settingsCategory, setSettingsCategory] = useState<WorkbenchSettingsCategory>("api");
   const [settingsDetailTarget, setSettingsDetailTarget] = useState<WorkbenchSettingsCategory | null>(null);
   const [selectedApiPresetIndex, setSelectedApiPresetIndex] = useState(0);
+  const [apiPresetDialogMode, setApiPresetDialogMode] = useState<ApiPresetDialogMode>("edit");
+  const [newApiPresetDraftIndex, setNewApiPresetDraftIndex] = useState<number | null>(null);
   const [apiTemplateSearch, setApiTemplateSearch] = useState("");
   const [selectedLlmPresetId, setSelectedLlmPresetId] = useState("");
   const [selectedProcessorId, setSelectedProcessorId] = useState("");
@@ -1565,25 +1568,34 @@ function WorkbenchSettingsCenter({
     setDraft((current) => ({ ...current, selected_provider_id: providerId }));
   };
 
-  const createApiPresetDraft = () => {
-    const nextPreset = blankApiPresetDraft(apiDrafts);
+  const createApiPresetDraft = (template?: ApiPresetTemplate) => {
+    const nextPreset = template ? apiPresetDraftFromTemplate(template, apiDrafts) : blankApiPresetDraft(apiDrafts);
     const nextIndex = apiDrafts.length;
     setApiDrafts((current) => [...current, nextPreset]);
     setSelectedApiPresetIndex(nextIndex);
+    setNewApiPresetDraftIndex(nextIndex);
+    setApiPresetDialogMode("edit");
     setApiTemplateSearch("");
     return nextIndex;
   };
 
-  const applyApiPresetTemplate = (template: ApiPresetTemplate) => {
-    if (!selectedApiPreset) return;
-    const previousId = selectedApiPreset.id;
-    const nextPreset = apiPresetDraftFromTemplate(
-      template,
-      apiDrafts.filter((_, presetIndex) => presetIndex !== selectedApiPresetIndex)
-    );
-    setApiDrafts((current) => current.map((preset, presetIndex) => (presetIndex === selectedApiPresetIndex ? nextPreset : preset)));
-    setSelectedLlmPresetId((current) => (current === previousId ? nextPreset.id : current));
-    setProcessorDrafts((current) => retargetProcessorApiPresetDrafts(current, previousId, nextPreset.id));
+  const closeSettingsDetail = () => {
+    if (settingsDetailTarget === "api" && newApiPresetDraftIndex !== null) {
+      const draftToRemove = apiDrafts[newApiPresetDraftIndex];
+      setApiDrafts((current) => current.filter((_, presetIndex) => presetIndex !== newApiPresetDraftIndex));
+      setSelectedApiPresetIndex((current) => {
+        if (current <= newApiPresetDraftIndex) return Math.max(0, current);
+        return Math.max(0, current - 1);
+      });
+      if (draftToRemove) {
+        setSelectedLlmPresetId((current) => (current === draftToRemove.id ? "" : current));
+        setProcessorDrafts((current) => retargetProcessorApiPresetDrafts(current, draftToRemove.id, ""));
+      }
+    }
+    setNewApiPresetDraftIndex(null);
+    setApiPresetDialogMode("edit");
+    setApiTemplateSearch("");
+    setSettingsDetailTarget(null);
   };
 
   const normalizedApiTemplateSearch = apiTemplateSearch.trim().toLowerCase();
@@ -1596,7 +1608,9 @@ function WorkbenchSettingsCenter({
     WORKBENCH_SETTINGS_NAV_SECTIONS[0].items[0];
   const settingsDetailTitle =
     settingsCategory === "api"
-      ? selectedApiPreset?.label || selectedApiPreset?.id || "API 预设"
+      ? apiPresetDialogMode === "choose_provider"
+        ? "选择供应商"
+        : selectedApiPreset?.label || selectedApiPreset?.id || "API 预设"
       : settingsCategory === "agent"
         ? selectedAgent?.label || "Agent"
         : settingsCategory === "llm"
@@ -1606,6 +1620,16 @@ function WorkbenchSettingsCenter({
   const openApiPresetSettings = (presetIndex: number) => {
     setSettingsCategory("api");
     setSelectedApiPresetIndex(presetIndex);
+    setNewApiPresetDraftIndex(null);
+    setApiPresetDialogMode("edit");
+    setApiTemplateSearch("");
+    setSettingsDetailTarget("api");
+  };
+
+  const beginApiPresetCreation = () => {
+    setSettingsCategory("api");
+    setNewApiPresetDraftIndex(null);
+    setApiPresetDialogMode("choose_provider");
     setApiTemplateSearch("");
     setSettingsDetailTarget("api");
   };
@@ -1661,6 +1685,7 @@ function WorkbenchSettingsCenter({
       setApiDrafts(nextApiDrafts);
       setProcessorDrafts({ ...(nextProcessorResponse.settings?.processors || {}) });
       setLlmExtraBodyText(formatWorkbenchAgentJsonObject(normalizedSettings.llm_extra_body));
+      setNewApiPresetDraftIndex(null);
       onSaved(imageGenConnectionFromApiPresets(nextApiDrafts, imageGenConnection));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -1709,8 +1734,8 @@ function WorkbenchSettingsCenter({
                           className={`settings-nav-item${settingsCategory === item.id ? " active" : ""}`}
                           aria-current={settingsCategory === item.id ? "page" : undefined}
                           onClick={() => {
+                            closeSettingsDetail();
                             setSettingsCategory(item.id);
-                            setSettingsDetailTarget(null);
                           }}
                         >
                           <span className="settings-nav-icon" aria-hidden="true">
@@ -1789,15 +1814,12 @@ function WorkbenchSettingsCenter({
                       <button
                         type="button"
                         className="settings-model-card settings-model-card-add"
-                        onClick={() => {
-                          const nextIndex = createApiPresetDraft();
-                          openApiPresetSettings(nextIndex);
-                        }}
+                        onClick={beginApiPresetCreation}
                       >
                         <span className="settings-add-icon" aria-hidden="true">
                           <PlusIcon />
                         </span>
-                        <strong>{apiDrafts.length === 0 ? "添加第一个 API 预设" : "新建空白预设"}</strong>
+                        <strong>新建空白预设</strong>
                         <span>API 预设</span>
                       </button>
                     </div>
@@ -1919,7 +1941,7 @@ function WorkbenchSettingsCenter({
                   )}
                 </div>
                 {settingsDetailTarget && (
-                  <div className="settings-detail-backdrop" role="presentation" onMouseDown={() => setSettingsDetailTarget(null)}>
+                  <div className="settings-detail-backdrop" role="presentation" onMouseDown={closeSettingsDetail}>
                     <section
                       className="settings-detail-modal"
                       role="dialog"
@@ -1932,7 +1954,7 @@ function WorkbenchSettingsCenter({
                           <span>{currentSettingsItem.label}</span>
                           <strong>{settingsDetailTitle}</strong>
                         </div>
-                        <button type="button" className="settings-detail-close" aria-label="关闭设置" onClick={() => setSettingsDetailTarget(null)}>
+                        <button type="button" className="settings-detail-close" aria-label="关闭设置" onClick={closeSettingsDetail}>
                           ×
                         </button>
                       </header>
@@ -1940,8 +1962,8 @@ function WorkbenchSettingsCenter({
               {settingsCategory === "api" && (
                 <div className="agent-settings-section">
                   <div className="agent-settings-section-title">
-                    <span>API 预设</span>
-                    {selectedApiPreset && (
+                    <span>{apiPresetDialogMode === "choose_provider" ? "选择供应商" : "API 预设"}</span>
+                    {selectedApiPreset && apiPresetDialogMode === "edit" && newApiPresetDraftIndex === null && (
                       <button
                         type="button"
                         className="link-button"
@@ -1959,49 +1981,61 @@ function WorkbenchSettingsCenter({
                       </button>
                     )}
                   </div>
-                  {selectedApiPreset ? (
-                    <>
-                      <div className="settings-provider-picker" aria-label="选择供应商模板">
-                        <div className="settings-provider-picker-head">
-                          <div>
-                            <span>供应商模板</span>
-                            <strong>{API_PRESET_TEMPLATES.length} 个内置供应商</strong>
-                          </div>
-                          <input
-                            className="settings-provider-search"
-                            value={apiTemplateSearch}
-                            onChange={(event) => setApiTemplateSearch(event.target.value)}
-                            placeholder="搜索供应商、模型或 endpoint"
-                            autoComplete="off"
-                          />
+                  {apiPresetDialogMode === "choose_provider" ? (
+                    <div className="settings-provider-picker choose" aria-label="选择供应商模板">
+                      <div className="settings-provider-picker-head">
+                        <div>
+                          <span>供应商模板</span>
+                          <strong>选择自定义或内置供应商</strong>
                         </div>
-                        <div className="settings-provider-option-grid">
-                          {filteredApiPresetTemplates.map((template) => {
-                            const activeTemplate = apiPresetTemplateForPreset(selectedApiPreset)?.id === template.id;
-                            return (
-                              <button
-                                type="button"
-                                key={template.id}
-                                className={`settings-provider-option${activeTemplate ? " active" : ""}`}
-                                onClick={() => applyApiPresetTemplate(template)}
-                              >
-                                <span
-                                  className="settings-provider-logo"
-                                  style={{ "--provider-color": template.accent_color } as CSSProperties}
-                                  aria-hidden="true"
-                                >
-                                  <img src={template.icon_url} alt="" />
-                                </span>
-                                <span className="settings-provider-option-copy">
-                                  <strong>{template.label}</strong>
-                                  <span>{template.badge_label} · {template.api_key_env || "本地免 Key"}</span>
-                                </span>
-                              </button>
-                            );
-                          })}
-                          {filteredApiPresetTemplates.length === 0 && <div className="settings-provider-option-empty">无匹配供应商</div>}
-                        </div>
+                        <input
+                          className="settings-provider-search"
+                          value={apiTemplateSearch}
+                          onChange={(event) => setApiTemplateSearch(event.target.value)}
+                          placeholder="搜索供应商、模型或 endpoint"
+                          autoComplete="off"
+                        />
                       </div>
+                      <div className="settings-provider-option-grid choose">
+                        <button
+                          type="button"
+                          className="settings-provider-option settings-provider-option-custom"
+                          onClick={() => createApiPresetDraft()}
+                        >
+                          <span className="settings-provider-logo settings-provider-logo-custom" aria-hidden="true">
+                            <PlusIcon />
+                          </span>
+                          <span className="settings-provider-option-copy">
+                            <strong>自定义</strong>
+                            <span>手动填写 endpoint 和模型</span>
+                          </span>
+                        </button>
+                        {filteredApiPresetTemplates.map((template) => (
+                          <button
+                            type="button"
+                            key={template.id}
+                            className="settings-provider-option"
+                            style={{ "--provider-color": template.accent_color } as CSSProperties}
+                            onClick={() => createApiPresetDraft(template)}
+                          >
+                            <span
+                              className="settings-provider-logo"
+                              style={{ "--provider-color": template.accent_color } as CSSProperties}
+                              aria-hidden="true"
+                            >
+                              <img src={template.icon_url} alt="" />
+                            </span>
+                            <span className="settings-provider-option-copy">
+                              <strong>{template.label}</strong>
+                              <span>{template.badge_label} · {template.api_key_env || "本地免 Key"}</span>
+                            </span>
+                          </button>
+                        ))}
+                        {filteredApiPresetTemplates.length === 0 && <div className="settings-provider-option-empty">无匹配供应商</div>}
+                      </div>
+                    </div>
+                  ) : selectedApiPreset ? (
+                    <>
                       <div className="settings-form-row">
                         <label className="settings-field">
                           <span>ID</span>
@@ -2312,12 +2346,14 @@ function WorkbenchSettingsCenter({
               )}
                       </div>
                       <footer className="settings-detail-modal-actions">
-                        <button type="button" onClick={() => setSettingsDetailTarget(null)} disabled={saving}>
+                        <button type="button" onClick={closeSettingsDetail} disabled={saving}>
                           取消
                         </button>
-                        <button type="button" className="primary" onClick={() => void saveSettings()} disabled={loading || saving}>
-                          {saving ? "保存中" : "保存"}
-                        </button>
+                        {!(settingsCategory === "api" && apiPresetDialogMode === "choose_provider") && (
+                          <button type="button" className="primary" onClick={() => void saveSettings()} disabled={loading || saving}>
+                            {saving ? "保存中" : "保存"}
+                          </button>
+                        )}
                       </footer>
                     </section>
                   </div>
