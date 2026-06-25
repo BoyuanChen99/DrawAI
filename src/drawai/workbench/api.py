@@ -47,6 +47,7 @@ from .processor_settings import (
     workbench_processor_settings_payload,
     write_workbench_processor_settings,
 )
+from .status_overview import workbench_status_overview_payload
 from ..codex_python_sdk_imagegen import (
     CodexPythonSdkImageGenError,
     CodexImageGenResult,
@@ -299,6 +300,15 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return workbench_processor_settings_payload(resolved_store.workspace)
+
+    @app.get("/api/workbench/status-overview")
+    def get_workbench_status_overview_api() -> dict[str, Any]:
+        runtime_services = _runtime_services_status(resolved_settings, runtime_probe=runtime_probe)
+        return workbench_status_overview_payload(
+            resolved_store.workspace,
+            settings=resolved_settings,
+            runtime_services=runtime_services,
+        )
 
     @app.post("/api/workflow/agent-prompt-preview")
     async def workflow_agent_prompt_preview_api(request: Request) -> dict[str, Any]:

@@ -22,6 +22,7 @@ import type {
   V2RunPackage,
   WorkbenchAgentSettings,
   WorkbenchAgentSettingsResponse,
+  WorkbenchStatusOverviewResponse,
   WorkflowNodeViewer
 } from "./types";
 
@@ -179,6 +180,10 @@ export function saveApiPresets(presets: ApiPreset[]): Promise<ApiPresetsResponse
 
 export function getProcessorSettings(): Promise<ProcessorSettingsResponse> {
   return requestJson<ProcessorSettingsResponse>("/api/workbench/processor-settings");
+}
+
+export function getWorkbenchStatusOverview(): Promise<WorkbenchStatusOverviewResponse> {
+  return requestJson<WorkbenchStatusOverviewResponse>("/api/workbench/status-overview");
 }
 
 export function saveProcessorSettings(processors: ProcessorSettingsResponse["settings"]["processors"]): Promise<ProcessorSettingsResponse> {

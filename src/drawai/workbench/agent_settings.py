@@ -206,8 +206,18 @@ def normalize_workbench_agent_settings(
     )
 
 
+def discover_workbench_agent(provider_id: str) -> dict[str, Any]:
+    if provider_id not in AGENT_DEFINITIONS:
+        supported = ", ".join(WORKBENCH_SELECTABLE_AGENT_PROVIDER_IDS)
+        raise ValueError(f"unsupported Workbench agent provider: {provider_id!r}. Expected one of: {supported}")
+    if provider_id not in WORKBENCH_SELECTABLE_AGENT_PROVIDER_IDS:
+        supported = ", ".join(WORKBENCH_SELECTABLE_AGENT_PROVIDER_IDS)
+        raise ValueError(f"Workbench agent provider is not selectable yet: {provider_id!r}. Expected one of: {supported}")
+    return _discover_agent(AGENT_DEFINITIONS[provider_id])
+
+
 def discover_workbench_agents() -> list[dict[str, Any]]:
-    return [_discover_agent(AGENT_DEFINITIONS[provider_id]) for provider_id in WORKBENCH_SELECTABLE_AGENT_PROVIDER_IDS]
+    return [discover_workbench_agent(provider_id) for provider_id in WORKBENCH_SELECTABLE_AGENT_PROVIDER_IDS]
 
 
 def workbench_agent_settings_payload(workspace: str | Path, *, include_agents: bool = True) -> dict[str, Any]:

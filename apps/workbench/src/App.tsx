@@ -20,6 +20,7 @@ import {
   getRunPackage,
   getSvgSource,
   getWorkbenchAgentSettings,
+  getWorkbenchStatusOverview,
   getWorkflowNodeViewer,
   getProcessorSettings,
   isDrawAiApiStatus,
@@ -108,6 +109,8 @@ import type {
   WorkbenchAgentDiscovery,
   WorkbenchAgentSettings,
   WorkbenchAgentSettingsResponse,
+  WorkbenchStatusOverviewAction,
+  WorkbenchStatusOverviewResponse,
   WorkflowNodeRunRecord,
   WorkflowNodeMetadata,
   WorkflowNodeViewer
@@ -119,7 +122,8 @@ type BoardMode = "generate" | "process" | "workflow";
 type CanvasMode = "select" | "add" | "polygon";
 type AssetEditorView = "extraction" | "processing";
 type NodeArtifactViewMode = "artifact" | "agent_log";
-type WorkbenchSettingsCategory = "api" | "agent" | "llm" | "processor";
+type WorkbenchSettingsCategory = "overview" | "api" | "agent" | "llm" | "processor";
+type WorkbenchSettingsDetailCategory = Exclude<WorkbenchSettingsCategory, "overview">;
 type ApiPresetDialogMode = "choose_provider" | "edit";
 type PipelineNodeState = DagRunNodeState;
 type AssetPlanChangeOptions = { track?: boolean };
@@ -182,6 +186,7 @@ const WORKBENCH_SETTINGS_NAV_SECTIONS: { label: string; items: WorkbenchSettings
   {
     label: "工作空间",
     items: [
+      { id: "overview", label: "总览", icon: "overview" },
       { id: "api", label: "模型供应商", icon: "api" },
       { id: "agent", label: "Agent", icon: "agent" },
       { id: "llm", label: "LLM 配置", icon: "llm" }
@@ -1773,6 +1778,8 @@ function WorkbenchSettingsCenter({
   onSaved: (connection?: ImageGenConnectionSettings) => void;
   onError: (message: string) => void;
 }) {
+  const [overviewResponse, setOverviewResponse] = useState<WorkbenchStatusOverviewResponse | null>(null);
+  const [overviewError, setOverviewError] = useState("");
   const [response, setResponse] = useState<WorkbenchAgentSettingsResponse | null>(null);
   const [apiResponse, setApiResponse] = useState<ApiPresetsResponse | null>(null);
   const [processorResponse, setProcessorResponse] = useState<ProcessorSettingsResponse | null>(null);
@@ -1785,8 +1792,8 @@ function WorkbenchSettingsCenter({
   const [agentsLoaded, setAgentsLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState("");
-  const [settingsCategory, setSettingsCategory] = useState<WorkbenchSettingsCategory>("api");
-  const [settingsDetailTarget, setSettingsDetailTarget] = useState<WorkbenchSettingsCategory | null>(null);
+  const [settingsCategory, setSettingsCategory] = useState<WorkbenchSettingsCategory>("overview");
+  const [settingsDetailTarget, setSettingsDetailTarget] = useState<WorkbenchSettingsDetailCategory | null>(null);
   const [selectedApiPresetIndex, setSelectedApiPresetIndex] = useState(0);
   const [apiPresetDialogMode, setApiPresetDialogMode] = useState<ApiPresetDialogMode>("edit");
   const [newApiPresetDraftIndex, setNewApiPresetDraftIndex] = useState<number | null>(null);
@@ -1798,13 +1805,18 @@ function WorkbenchSettingsCenter({
     setLoading(true);
     setLocalError("");
     try {
-      const [nextResponse, nextApiResponse, nextProcessorResponse] = await Promise.all([
+      const [nextOverview, nextResponse, nextApiResponse, nextProcessorResponse] = await Promise.all([
+        getWorkbenchStatusOverview()
+          .then((payload) => ({ payload, error: "" }))
+          .catch((err) => ({ payload: null, error: err instanceof Error ? err.message : String(err) })),
         getWorkbenchAgentSettings(false),
         getApiPresets(),
         getProcessorSettings()
       ]);
       const normalizedSettings = normalizeWorkbenchAgentDraft(nextResponse.settings);
       const nextApiDrafts = apiPresetsWithImageGenMigration(nextApiResponse.presets || [], imageGenConnection);
+      setOverviewResponse(nextOverview.payload);
+      setOverviewError(nextOverview.error);
       setResponse(nextResponse);
       setApiResponse(nextApiResponse);
       setProcessorResponse(nextProcessorResponse);
@@ -1877,8 +1889,11 @@ function WorkbenchSettingsCenter({
     setDraft((current) => ({ ...current, selected_provider_id: providerId }));
   };
 
-  const createApiPresetDraft = (template?: ApiPresetTemplate) => {
-    const nextPreset = template ? apiPresetDraftFromTemplate(template, apiDrafts) : blankApiPresetDraft(apiDrafts);
+  const createApiPresetDraft = (source?: ApiPresetTemplate | Partial<ApiPreset>) => {
+    const nextPreset =
+      source && "description" in source
+        ? apiPresetDraftFromTemplate(source, apiDrafts)
+        : { ...blankApiPresetDraft(apiDrafts), ...(source || {}) };
     const nextIndex = apiDrafts.length;
     setApiDrafts((current) => [...current, nextPreset]);
     setSelectedApiPresetIndex(nextIndex);
@@ -1925,10 +1940,12 @@ function WorkbenchSettingsCenter({
     WORKBENCH_SETTINGS_NAV_SECTIONS.flatMap((section) => section.items).find((item) => item.id === settingsCategory) ||
     WORKBENCH_SETTINGS_NAV_SECTIONS[0].items[0];
   const settingsDetailTitle =
-    settingsCategory === "api"
-      ? apiPresetDialogMode === "choose_provider"
-        ? "选择供应商"
-        : selectedApiPreset?.label || selectedApiPreset?.id || "API 预设"
+    settingsCategory === "overview"
+      ? "状态总览"
+      : settingsCategory === "api"
+        ? apiPresetDialogMode === "choose_provider"
+          ? "选择供应商"
+          : selectedApiPreset?.label || selectedApiPreset?.id || "API 预设"
       : settingsCategory === "agent"
         ? selectedAgent?.label || "Agent"
         : settingsCategory === "llm"
@@ -1970,6 +1987,56 @@ function WorkbenchSettingsCenter({
     setSettingsDetailTarget("processor");
   };
 
+  const openSettingsOverviewAction = (action?: WorkbenchStatusOverviewAction) => {
+    if (!action) return;
+    setSettingsDetailTarget(null);
+    if (action.category === "api") {
+      const targetIndex = apiDrafts.findIndex((preset) => preset.id === action.target_id);
+      if (targetIndex >= 0) {
+        openApiPresetSettings(targetIndex);
+        return;
+      }
+      if (action.mode === "create_images_api") {
+        createApiPresetDraft({
+          id: uniqueApiPresetId(apiDrafts, "images_api"),
+          label: "Images API",
+          type: "images_api",
+          model: "gpt-image-2"
+        });
+        setSettingsCategory("api");
+        setSettingsDetailTarget("api");
+        return;
+      }
+      if (action.mode === "create_llm_api") {
+        createApiPresetDraft({
+          id: uniqueApiPresetId(apiDrafts, "llm_api"),
+          label: "LLM API",
+          type: "llm_responses",
+          model: "gpt-5"
+        });
+        setSettingsCategory("api");
+        setSettingsDetailTarget("api");
+        return;
+      }
+      setSettingsCategory("api");
+      return;
+    }
+    if (action.category === "agent") {
+      openAgentSettings(action.target_id || draft.selected_provider_id);
+      return;
+    }
+    if (action.category === "llm") {
+      setSettingsCategory("llm");
+      if (action.target_id) setSelectedLlmPresetId(action.target_id);
+      return;
+    }
+    if (action.category === "processor") {
+      openProcessorSettings(action.target_id);
+      return;
+    }
+    setSettingsCategory("overview");
+  };
+
   const saveSettings = async () => {
     setSaving(true);
     setLocalError("");
@@ -2004,6 +2071,13 @@ function WorkbenchSettingsCenter({
       setProcessorDrafts({ ...(nextProcessorResponse.settings?.processors || {}) });
       setLlmExtraBodyText(formatWorkbenchAgentJsonObject(normalizedSettings.llm_extra_body));
       setNewApiPresetDraftIndex(null);
+      try {
+        const nextOverviewResponse = await getWorkbenchStatusOverview();
+        setOverviewResponse(nextOverviewResponse);
+        setOverviewError("");
+      } catch (err) {
+        setOverviewError(err instanceof Error ? err.message : String(err));
+      }
       onSaved(imageGenConnectionFromApiPresets(nextApiDrafts, imageGenConnection));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -2073,24 +2147,38 @@ function WorkbenchSettingsCenter({
                   <div className="settings-card-heading">
                     <span>{currentSettingsItem.label}</span>
                     <strong>
-                      {settingsCategory === "api"
-                        ? "模型与 API 预设"
-                        : settingsCategory === "agent"
-                          ? "Agent 运行配置"
-                          : settingsCategory === "llm"
-                            ? "默认 LLM 配置"
-                            : "处理器配置"}
+                      {settingsCategory === "overview"
+                        ? "状态与能力总览"
+                        : settingsCategory === "api"
+                          ? "模型与 API 预设"
+                          : settingsCategory === "agent"
+                            ? "Agent 运行配置"
+                            : settingsCategory === "llm"
+                              ? "默认 LLM 配置"
+                              : "处理器配置"}
                     </strong>
                     <p>
-                      {settingsCategory === "api"
-                        ? `${apiDrafts.length} 个 API 预设`
-                        : settingsCategory === "agent"
-                          ? `${agents.length} 个 Agent 供应方`
-                          : settingsCategory === "llm"
-                            ? `${llmPresets.length} 个 LLM 预设`
-                            : `${processorIds.length} 个处理器`}
+                      {settingsCategory === "overview"
+                        ? overviewResponse
+                          ? `${overviewResponse.overall.error_count} 个错误 · ${overviewResponse.overall.warning_count} 个提醒`
+                          : "读取当前 workspace 状态"
+                        : settingsCategory === "api"
+                          ? `${apiDrafts.length} 个 API 预设`
+                          : settingsCategory === "agent"
+                            ? `${agents.length} 个 Agent 供应方`
+                            : settingsCategory === "llm"
+                              ? `${llmPresets.length} 个 LLM 预设`
+                              : `${processorIds.length} 个处理器`}
                     </p>
                   </div>
+                  {settingsCategory === "overview" && (
+                    <SettingsOverviewPage
+                      overview={overviewResponse}
+                      loading={loading}
+                      error={overviewError}
+                      onAction={openSettingsOverviewAction}
+                    />
+                  )}
                   {settingsCategory === "api" && (
                     <div className="settings-model-grid" aria-label="API 预设">
                       {apiDrafts.map((preset, presetIndex) => {
@@ -2695,6 +2783,86 @@ function WorkbenchSettingsCenter({
             </div>
           </div>
         </div>
+      </section>
+    </div>
+  );
+}
+
+function SettingsOverviewPage({
+  overview,
+  loading,
+  error,
+  onAction
+}: {
+  overview: WorkbenchStatusOverviewResponse | null;
+  loading: boolean;
+  error: string;
+  onAction: (action?: WorkbenchStatusOverviewAction) => void;
+}) {
+  if (loading) return <div className="agent-settings-empty">加载中</div>;
+  if (error) return <div className="agent-settings-error">{error}</div>;
+  if (!overview) return <EmptyState label="暂无状态总览" />;
+  return (
+    <div className="settings-overview">
+      <section className={`settings-overview-summary ${overview.overall.severity}`}>
+        <div>
+          <span>当前状态</span>
+          <strong>{overview.overall.label}</strong>
+          <p>{overview.workspace}</p>
+        </div>
+        <dl>
+          <div>
+            <dt>错误</dt>
+            <dd>{overview.overall.error_count}</dd>
+          </div>
+          <div>
+            <dt>提醒</dt>
+            <dd>{overview.overall.warning_count}</dd>
+          </div>
+        </dl>
+      </section>
+      <div className="settings-overview-groups">
+        {overview.groups.map((group) => (
+          <article key={group.id} className={`settings-overview-group ${group.severity}`}>
+            <header>
+              <span>{group.label}</span>
+              <strong>{group.summary}</strong>
+            </header>
+            <div className="settings-overview-items">
+              {group.items.map((item) => (
+                <div key={item.id} className={`settings-overview-item ${item.severity}`}>
+                  <span>{item.label}</span>
+                  <strong>{item.value}</strong>
+                  <em title={item.detail}>{item.detail || "无补充信息"}</em>
+                </div>
+              ))}
+            </div>
+          </article>
+        ))}
+      </div>
+      <section className="settings-overview-issues">
+        <header>
+          <span>需要处理</span>
+          <strong>{overview.issues.length ? `${overview.issues.length} 项` : "无"}</strong>
+        </header>
+        {overview.issues.length === 0 ? (
+          <EmptyState label="当前配置已就绪" />
+        ) : (
+          overview.issues.map((issue) => (
+            <article key={issue.id} className={`settings-overview-issue ${issue.severity}`}>
+              <div>
+                <span>{issue.scope}</span>
+                <strong>{issue.title}</strong>
+                <p>{issue.message}</p>
+              </div>
+              {issue.action && (
+                <button type="button" className="settings-model-action" onClick={() => onAction(issue.action)}>
+                  {issue.action.label}
+                </button>
+              )}
+            </article>
+          ))
+        )}
       </section>
     </div>
   );
@@ -7124,6 +7292,16 @@ function BoardModeIcon({ mode }: { mode: BoardMode }) {
 }
 
 function SettingsNavIcon({ icon }: { icon: WorkbenchSettingsCategory }) {
+  if (icon === "overview") {
+    return (
+      <svg className="settings-nav-svg" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4.5 12.5a7.5 7.5 0 0 1 15 0" />
+        <path d="M6.7 17.4h10.6" />
+        <path d="m12 12.5 3.5-4" />
+        <path d="M7.5 12.5h1.2M15.3 12.5h1.2M12 8.3V7.1" />
+      </svg>
+    );
+  }
   if (icon === "api") {
     return (
       <svg className="settings-nav-svg" viewBox="0 0 24 24" aria-hidden="true">

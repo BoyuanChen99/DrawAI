@@ -2486,6 +2486,250 @@ def test_api_health_reports_runtime_services(tmp_path: Path) -> None:
     assert payload["runtime_activity"]["codex"] == {"limit": 5, "queued": 0, "running": 0}
 
 
+def test_api_status_overview_reports_ready_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    settings = _settings(tmp_path, base_config)
+    _write_json(
+        store.workspace / "settings" / "api_presets.json",
+        {
+            "schema": "drawai.workbench.api_presets.v1",
+            "presets": [
+                {
+                    "id": "openai_images",
+                    "label": "OpenAI Images",
+                    "type": "images_api",
+                    "base_url": "https://api.openai.com",
+                    "model": "gpt-image-2",
+                    "api_key_env": "OPENAI_API_KEY",
+                    "api_key": "",
+                },
+                {
+                    "id": "openai_llm",
+                    "label": "OpenAI LLM",
+                    "type": "llm_responses",
+                    "base_url": "https://api.openai.com",
+                    "model": "gpt-5",
+                    "api_key_env": "OPENAI_API_KEY",
+                    "api_key": "",
+                },
+            ],
+        },
+    )
+    _write_json(
+        store.workspace / "settings" / "agent.json",
+        {
+            "schema": "drawai.workbench.agent_settings.v1",
+            "selected_provider_id": "codex_sdk",
+            "model": "",
+            "reasoning_effort": "",
+            "timeout_seconds": 0,
+            "llm_model": "gpt-5",
+            "llm_base_url": "https://api.openai.com",
+            "llm_api_key": "",
+            "llm_api_key_env": "OPENAI_API_KEY",
+            "llm_wire_api": "responses",
+            "llm_extra_body": {},
+        },
+    )
+    _write_json(
+        store.workspace / "settings" / "processor.json",
+        {
+            "schema": "drawai.workbench.processor_settings.v1",
+            "processors": {
+                "image_generate": {
+                    "enabled": True,
+                    "driver_id": "openai_images_api",
+                    "api_preset_id": "openai_images",
+                    "operation": {
+                        "meaning": "Generate image assets.",
+                        "choose_when": "Choose when an element needs generated pixels.",
+                        "avoid_when": "Avoid when source pixels can be cropped.",
+                    },
+                },
+                "image_edit": {
+                    "enabled": True,
+                    "driver_id": "openai_images_api",
+                    "api_preset_id": "openai_images",
+                    "operation": {
+                        "meaning": "Edit image assets.",
+                        "choose_when": "Choose when an element needs edited pixels.",
+                        "avoid_when": "Avoid when source pixels can be cropped.",
+                    },
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "drawai.workbench.status_overview.discover_workbench_agent",
+        lambda provider_id: {
+            "provider_id": provider_id,
+            "label": "Codex SDK",
+            "kind": "sdk",
+            "available": True,
+            "status": "ok",
+            "detail": "ok",
+            "fix": "",
+            "auth": {"available": True, "detail": "ok"},
+        },
+    )
+    app = create_app(
+        settings,
+        store=store,
+        runner=WorkbenchRunner(store, settings),
+        runtime_probe=lambda name, base_url: {
+            "name": name,
+            "base_url": base_url,
+            "health_url": f"{base_url}/health",
+            "status": "online",
+        },
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/workbench/status-overview")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["schema"] == "drawai.workbench.status_overview.v1"
+    assert payload["overall"]["severity"] == "ok"
+    assert payload["overall"]["error_count"] == 0
+    assert payload["overall"]["warning_count"] == 0
+    assert payload["issues"] == []
+
+
+def test_api_status_overview_reports_runtime_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    settings = _settings(tmp_path, base_config)
+    monkeypatch.setattr(
+        "drawai.workbench.status_overview.discover_workbench_agent",
+        lambda provider_id: {
+            "provider_id": provider_id,
+            "label": "Codex SDK",
+            "available": True,
+            "status": "ok",
+            "auth": {"available": True},
+        },
+    )
+    app = create_app(
+        settings,
+        store=store,
+        runner=WorkbenchRunner(store, settings),
+        runtime_probe=lambda name, base_url: {
+            "name": name,
+            "base_url": base_url,
+            "health_url": f"{base_url}/health",
+            "status": "offline" if name == "ocr" else "online",
+            "error": "connection refused" if name == "ocr" else "",
+        },
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/workbench/status-overview")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["overall"]["severity"] == "error"
+    assert any(issue["id"] == "runtime.ocr.offline" for issue in payload["issues"])
+
+
+def test_api_status_overview_reports_missing_optional_image_capabilities(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    settings = _settings(tmp_path, base_config)
+    monkeypatch.setattr(
+        "drawai.workbench.status_overview.discover_workbench_agent",
+        lambda provider_id: {
+            "provider_id": provider_id,
+            "label": "Codex SDK",
+            "available": True,
+            "status": "ok",
+            "auth": {"available": True},
+        },
+    )
+    app = create_app(
+        settings,
+        store=store,
+        runner=WorkbenchRunner(store, settings),
+        runtime_probe=lambda name, base_url: {
+            "name": name,
+            "base_url": base_url,
+            "health_url": f"{base_url}/health",
+            "status": "online",
+        },
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/workbench/status-overview")
+
+    assert response.status_code == 200
+    payload = response.json()
+    issue_ids = {issue["id"] for issue in payload["issues"]}
+    assert "capability.image_generate.disabled" in issue_ids
+    assert "capability.image_edit.disabled" in issue_ids
+    assert payload["overall"]["severity"] == "warning"
+
+
+def test_api_status_overview_reports_invalid_enabled_processor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    settings = _settings(tmp_path, base_config)
+    _write_json(
+        store.workspace / "settings" / "processor.json",
+        {
+            "schema": "drawai.workbench.processor_settings.v1",
+            "processors": {
+                "image_generate": {
+                    "enabled": True,
+                    "driver_id": "openai_images_api",
+                    "api_preset_id": "",
+                    "operation": {
+                        "meaning": "Generate image assets.",
+                        "choose_when": "Choose when an element needs generated pixels.",
+                        "avoid_when": "Avoid when source pixels can be cropped.",
+                    },
+                }
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "drawai.workbench.status_overview.discover_workbench_agent",
+        lambda provider_id: {
+            "provider_id": provider_id,
+            "label": "Codex SDK",
+            "available": True,
+            "status": "ok",
+            "auth": {"available": True},
+        },
+    )
+    app = create_app(
+        settings,
+        store=store,
+        runner=WorkbenchRunner(store, settings),
+        runtime_probe=lambda name, base_url: {
+            "name": name,
+            "base_url": base_url,
+            "health_url": f"{base_url}/health",
+            "status": "online",
+        },
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/workbench/status-overview")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["overall"]["severity"] == "error"
+    assert any(
+        issue["id"] == "settings.processor.invalid" and issue["action"]["target_id"] == "image_generate"
+        for issue in payload["issues"]
+    )
+
+
 def test_api_lists_slide_template_cards(tmp_path: Path) -> None:
     store = WorkbenchStore(tmp_path / "workspace")
     base_config = _base_config(tmp_path)
