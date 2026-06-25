@@ -319,8 +319,11 @@ export default function App() {
   async function selectBatch(batchId: string): Promise<BatchDetail> {
     const detail = await getBatch(batchId);
     setActiveBatch(detail);
-    if (detail.cases.length > 0 && !detail.cases.some((item) => item.case_id === activeCase?.case.case_id)) {
-      await selectCase(detail.cases[0].case_id);
+    if (activeCase && !detail.cases.some((item) => item.case_id === activeCase.case.case_id)) {
+      setActiveCase(null);
+      setCaseProgress(null);
+      setNodeArtifactViewer(null);
+      clearAssetEditingState();
     }
     return detail;
   }
@@ -484,6 +487,13 @@ export default function App() {
       setAssetPlan(null);
       return { detail, hasAssetPlan: false, compatibility: "none" };
     }
+  }
+
+  function closeCaseDetailPanel() {
+    setActiveCase(null);
+    setCaseProgress(null);
+    setNodeArtifactViewer(null);
+    clearAssetEditingState();
   }
 
   useEffect(() => {
@@ -836,9 +846,7 @@ export default function App() {
       return;
     }
     setActiveBatch(null);
-    setActiveCase(null);
-    setCaseProgress(null);
-    clearAssetEditingState();
+    closeCaseDetailPanel();
   }
 
   async function runTaskBatch(batchId: string) {
@@ -1036,14 +1044,7 @@ export default function App() {
     autoSelectedBatchId.current = detail.batch.batch_id;
     setBatches((items) => [detail.batch, ...items.filter((item) => item.batch_id !== detail.batch.batch_id)]);
     setActiveBatch(detail);
-    const firstCase = detail.cases[0];
-    if (firstCase) {
-      await selectCase(firstCase.case_id);
-    } else {
-      setActiveCase(null);
-      setCaseProgress(null);
-      clearAssetEditingState();
-    }
+    closeCaseDetailPanel();
   }
 
   return (
@@ -1161,6 +1162,7 @@ export default function App() {
               onSelectBatch={(batchId) => selectBatch(batchId).catch((err) => setError(err.message))}
               onFocusCase={(caseId) => selectCase(caseId).then(() => undefined).catch((err) => setError(err.message))}
               onSelectCase={(caseId) => openCaseFromTask(caseId).catch((err) => setError(err.message))}
+              onCloseCaseDetail={closeCaseDetailPanel}
               onRunFromAssets={() => runFromAssets().catch((err) => setError(err instanceof Error ? err.message : String(err)))}
               onRetryCase={(item) => retryFailedCase(item).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
               onRerunAnalysis={(item) => rerunAnalysisForCase(item).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
@@ -1309,6 +1311,7 @@ function BoardWorkspace({
   onSelectBatch,
   onFocusCase,
   onSelectCase,
+  onCloseCaseDetail,
   onRunFromAssets,
   onRetryCase,
   onRerunAnalysis,
@@ -1355,6 +1358,7 @@ function BoardWorkspace({
   onSelectBatch: (batchId: string) => void;
   onFocusCase: (caseId: string) => void | Promise<void>;
   onSelectCase: (caseId: string) => void;
+  onCloseCaseDetail: () => void;
   onRunFromAssets: () => void;
   onRetryCase: (item: CaseRecord) => void;
   onRerunAnalysis: (item: CaseRecord) => void;
@@ -1371,8 +1375,38 @@ function BoardWorkspace({
   onForkV2FromSource: () => void;
   onOpenWorkflowNodeArtifact: (caseId: string, nodeId: string) => void;
 }) {
+  const [detailClosing, setDetailClosing] = useState(false);
+  const detailCloseTimerRef = useRef<number | null>(null);
+  const detailOpen = Boolean(activeCase);
+
+  useEffect(() => {
+    setDetailClosing(false);
+    if (detailCloseTimerRef.current !== null) {
+      window.clearTimeout(detailCloseTimerRef.current);
+      detailCloseTimerRef.current = null;
+    }
+  }, [activeCase?.case.case_id]);
+
+  useEffect(() => {
+    return () => {
+      if (detailCloseTimerRef.current !== null) {
+        window.clearTimeout(detailCloseTimerRef.current);
+      }
+    };
+  }, []);
+
+  function closeDetailPanel() {
+    if (!activeCase || detailClosing) return;
+    setDetailClosing(true);
+    detailCloseTimerRef.current = window.setTimeout(() => {
+      detailCloseTimerRef.current = null;
+      setDetailClosing(false);
+      onCloseCaseDetail();
+    }, 260);
+  }
+
   return (
-    <main className="board-workspace">
+    <main className={`board-workspace ${detailOpen ? "case-detail-open" : "case-detail-closed"} ${detailClosing ? "case-detail-closing" : ""}`}>
       <div className="board-grid">
         <TaskSelectionWorkspace
           batches={batches}
@@ -1403,29 +1437,33 @@ function BoardWorkspace({
           onDownloadPptx={onDownloadPptx}
           onDownloadBatchPptx={onDownloadBatchPptx}
         />
-        <TaskDetailPanel
-          caseDetail={activeCase}
-          progress={caseProgress}
-          workflowTemplateId={activeBatch?.batch.workflow_template_id || ""}
-          runCompatibility={runCompatibility}
-          runPackage={runPackage}
-          v2Elements={v2Elements}
-          selectedV2ElementId={selectedV2ElementId}
-          selectedAssetPackage={selectedAssetPackage}
-          v2PackageError={v2PackageError}
-          v2AssetLoadingElementId={v2AssetLoadingElementId}
-          v2ActionPending={v2ActionPending}
-          onOpenCaseAssets={onOpenCaseAssets}
-          onOpenWorkflowNodeArtifact={onOpenWorkflowNodeArtifact}
-          runInProgress={runInProgress}
-          canRunFromAssets={canRunFromAssets}
-          caseActionPendingId={caseActionPendingId}
-          onRunFromAssets={onRunFromAssets}
-          onRerunStage={onRerunStage}
-          onSetWorkflowBreakpoint={onSetWorkflowBreakpoint}
-          onClearWorkflowBreakpoint={onClearWorkflowBreakpoint}
-          onContinueWorkflow={onContinueWorkflow}
-        />
+        {detailOpen && (
+          <TaskDetailPanel
+            caseDetail={activeCase}
+            progress={caseProgress}
+            workflowTemplateId={activeBatch?.batch.workflow_template_id || ""}
+            runCompatibility={runCompatibility}
+            runPackage={runPackage}
+            v2Elements={v2Elements}
+            selectedV2ElementId={selectedV2ElementId}
+            selectedAssetPackage={selectedAssetPackage}
+            v2PackageError={v2PackageError}
+            v2AssetLoadingElementId={v2AssetLoadingElementId}
+            v2ActionPending={v2ActionPending}
+            closing={detailClosing}
+            onClose={closeDetailPanel}
+            onOpenCaseAssets={onOpenCaseAssets}
+            onOpenWorkflowNodeArtifact={onOpenWorkflowNodeArtifact}
+            runInProgress={runInProgress}
+            canRunFromAssets={canRunFromAssets}
+            caseActionPendingId={caseActionPendingId}
+            onRunFromAssets={onRunFromAssets}
+            onRerunStage={onRerunStage}
+            onSetWorkflowBreakpoint={onSetWorkflowBreakpoint}
+            onClearWorkflowBreakpoint={onClearWorkflowBreakpoint}
+            onContinueWorkflow={onContinueWorkflow}
+          />
+        )}
       </div>
     </main>
   );
@@ -2692,6 +2730,8 @@ function TaskDetailPanel({
   v2PackageError,
   v2AssetLoadingElementId,
   v2ActionPending,
+  closing,
+  onClose,
   onOpenCaseAssets,
   onOpenWorkflowNodeArtifact,
   runInProgress,
@@ -2714,6 +2754,8 @@ function TaskDetailPanel({
   v2PackageError: string;
   v2AssetLoadingElementId: string;
   v2ActionPending: string;
+  closing: boolean;
+  onClose: () => void;
   onOpenCaseAssets: (caseId: string) => void;
   onOpenWorkflowNodeArtifact: (caseId: string, nodeId: string) => void;
   runInProgress: boolean;
@@ -2727,7 +2769,7 @@ function TaskDetailPanel({
 }) {
   if (!caseDetail) {
     return (
-      <aside className="task-detail-panel">
+      <aside className={`task-detail-panel${closing ? " closing" : ""}`}>
         <EmptyState label="从任务里选择一张图" />
       </aside>
     );
@@ -2735,7 +2777,10 @@ function TaskDetailPanel({
   const currentCase = currentCaseRecord(caseDetail.case, progress?.case);
   const currentDetail = { ...caseDetail, case: currentCase };
   return (
-    <aside className="task-detail-panel">
+    <aside className={`task-detail-panel${closing ? " closing" : ""}`} aria-live="polite">
+      <button type="button" className="task-detail-close" aria-label="关闭 DAG 面板" onClick={onClose}>
+        <ClosePanelIcon />
+      </button>
       <DagRunPanel
         caseDetail={currentDetail}
         progress={progress}
@@ -6765,6 +6810,14 @@ function PlusIcon() {
   return (
     <svg className="plus-icon" viewBox="0 0 20 20" aria-hidden="true">
       <path d="M10 4.6v10.8M4.6 10h10.8" />
+    </svg>
+  );
+}
+
+function ClosePanelIcon() {
+  return (
+    <svg className="panel-close-icon" viewBox="0 0 20 20" aria-hidden="true">
+      <path d="m5.4 5.4 9.2 9.2M14.6 5.4l-9.2 9.2" />
     </svg>
   );
 }
