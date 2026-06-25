@@ -19,7 +19,6 @@ from .agent_prompt_defaults import (
     SVG_GENERATION_TASK,
     normalize_page_spec_processing_types,
 )
-from .agents import DEFAULT_AGENT_TIMEOUT_SECONDS, SVG_AGENT_TIMEOUT_SECONDS
 from .schema import (
     WORKFLOW_TEMPLATE_SCHEMA,
     WorkflowEdge,
@@ -180,9 +179,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                 ),
                 config={
                     "preset_id": "page_spec_refine",
-                    "provider_id": "codex_sdk",
-                    "reasoning_effort": "high",
-                    "timeout_seconds": DEFAULT_AGENT_TIMEOUT_SECONDS,
+                    "provider_id": "default",
                     "page_spec_processing_types": list(DEFAULT_PAGE_SPEC_REFINE_PROCESSING_TYPES),
                     "task": PAGE_SPEC_REFINE_TASK,
                     "constraints": list(PAGE_SPEC_REFINE_CONSTRAINTS),
@@ -263,9 +260,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
                 ),
                 config={
                     "preset_id": "svg_generation",
-                    "provider_id": "codex_sdk",
-                    "reasoning_effort": "xhigh",
-                    "timeout_seconds": SVG_AGENT_TIMEOUT_SECONDS,
+                    "provider_id": "default",
                     "task": SVG_GENERATION_TASK,
                     "constraints": list(SVG_GENERATION_CONSTRAINTS),
                     "drawai_tools": ["format", "page-spec-assets", "svg-validate"],
@@ -358,7 +353,7 @@ def default_drawai_workflow_template() -> WorkflowTemplate:
         defaults={
             "builtin": True,
             "read_only": True,
-            "agent_provider_id": "codex_sdk",
+            "agent_provider_id": "default",
         },
     )
 
@@ -671,19 +666,12 @@ def _normalized_node_config(node_type: str, config: dict[str, Any]) -> dict[str,
     raw_constraints = normalized.get("constraints")
     if raw_constraints in (None, "", []):
         normalized["constraints"] = list(_AGENT_CONSTRAINT_DEFAULTS[preset_id])
-    if preset_id in {"run0_element_refine", "page_spec_refine"}:
-        normalized.setdefault("reasoning_effort", "high")
     if preset_id == "page_spec_refine":
         normalized["page_spec_processing_types"] = list(
             normalize_page_spec_processing_types(
                 normalized.get("page_spec_processing_types")
             )
         )
-    if preset_id in _AGENT_TASK_DEFAULTS:
-        default_timeout = (
-            SVG_AGENT_TIMEOUT_SECONDS if preset_id == "svg_generation" else DEFAULT_AGENT_TIMEOUT_SECONDS
-        )
-        normalized.setdefault("timeout_seconds", default_timeout)
     return normalized
 
 

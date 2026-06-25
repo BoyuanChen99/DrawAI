@@ -128,6 +128,14 @@ RERUN_STAGE_ALIASES = {
     "package_run": "export",
 }
 
+WORKBENCH_DEFAULT_AGENT_PROVIDER_ID = "default"
+_WORKBENCH_AGENT_SETTINGS_APPLIED = "_workbench_agent_settings_applied"
+
+
+def _uses_workbench_default_agent_settings(node_config: Mapping[str, Any]) -> bool:
+    provider_id = str(node_config.get("provider_id") or "").strip()
+    return provider_id in {"", WORKBENCH_DEFAULT_AGENT_PROVIDER_ID}
+
 
 def _agent_provider_concurrency_limit(
     provider_id: str,
@@ -605,10 +613,12 @@ class WorkbenchRunner:
         agent_settings: WorkbenchAgentSettings,
     ) -> tuple[Mapping[str, Any], ...]:
         preset_id = str(context.node.config.get("preset_id") or "custom_agent")
-        node_config = apply_workbench_agent_settings_to_node_config(
-            {**dict(context.node.config), "node_id": context.node.node_id},
-            agent_settings,
-        )
+        node_config = {**dict(context.node.config), "node_id": context.node.node_id}
+        use_workbench_settings = bool(
+            node_config.pop(_WORKBENCH_AGENT_SETTINGS_APPLIED, False)
+        ) or _uses_workbench_default_agent_settings(node_config)
+        if use_workbench_settings:
+            node_config = apply_workbench_agent_settings_to_node_config(node_config, agent_settings)
         tool_command_prefix = resolve_drawai_tool_command_prefix(_repo_root(), cwd=context.run_root)
         prompt = render_agent_prompt(
             agent_preset_by_id(preset_id),
@@ -623,7 +633,7 @@ class WorkbenchRunner:
                 "drawai_tool_command_prefix": tool_command_prefix,
             },
         )
-        runtime_options = workbench_agent_runtime_options(agent_settings)
+        runtime_options = workbench_agent_runtime_options(agent_settings) if use_workbench_settings else {}
         if runtime_options:
             prompt = replace(prompt, options={**dict(prompt.options), **runtime_options})
         runtime_config = (
@@ -1499,11 +1509,15 @@ def _workflow_template_with_agent_settings(
                 )
             )
         else:
+            config = dict(base_config)
+            if _uses_workbench_default_agent_settings(config):
+                config = apply_workbench_agent_settings_to_node_config(config, settings)
+                config[_WORKBENCH_AGENT_SETTINGS_APPLIED] = True
             nodes.append(
                 replace(
                     node,
                     node_type="agent",
-                    config=apply_workbench_agent_settings_to_node_config(base_config, settings),
+                    config=config,
                 )
             )
     return replace(template, nodes=tuple(nodes))

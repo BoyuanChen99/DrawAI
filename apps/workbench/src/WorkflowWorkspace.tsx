@@ -144,8 +144,8 @@ const WORKFLOW_TEMPLATE_SCHEMA = "drawai.workflow_template.v1";
 const BUILTIN_WORKFLOW_FOLDER_ID = "builtin";
 const CUSTOM_WORKFLOW_FOLDER_ID = "custom";
 const WORKFLOW_FOLDERS_STORAGE_KEY = "drawai.workflow.folders";
-const DEFAULT_AGENT_TIMEOUT_SECONDS = 1800;
-const SVG_AGENT_TIMEOUT_SECONDS = 7200;
+const WORKBENCH_DEFAULT_AGENT_PROVIDER_ID = "default";
+const WORKBENCH_DEFAULT_AGENT_PROVIDER_LABEL = "默认（跟随 Workbench 设置）";
 const DEFAULT_WORKFLOW_FOLDERS: WorkflowFolder[] = [
   { folder_id: BUILTIN_WORKFLOW_FOLDER_ID, name: "DrawAI默认工作流", builtin: true },
   { folder_id: CUSTOM_WORKFLOW_FOLDER_ID, name: "自定义工作流" }
@@ -395,9 +395,7 @@ const NODE_PRESETS: NodePreset[] = [
     outputs: [port("semantic_svg", "Semantic SVG", ["semantic_svg"], "drawai.semantic_svg.v1", false, "single", "deliverable")],
     config: {
       preset_id: "svg_generation",
-      provider_id: "codex_sdk",
-      reasoning_effort: "xhigh",
-      timeout_seconds: SVG_AGENT_TIMEOUT_SECONDS,
+      provider_id: WORKBENCH_DEFAULT_AGENT_PROVIDER_ID,
       task: AGENT_DEFAULT_TASKS.svg_generation,
       constraints: AGENT_DEFAULT_CONSTRAINTS.svg_generation,
       drawai_tools: ["format", "page-spec-assets", "svg-validate"],
@@ -422,8 +420,7 @@ const NODE_PRESETS: NodePreset[] = [
     outputs: [port("image", "Image", ["image"], "drawai.image.v1", false)],
     config: {
       preset_id: "custom_agent",
-      provider_id: "codex_sdk",
-      timeout_seconds: DEFAULT_AGENT_TIMEOUT_SECONDS,
+      provider_id: WORKBENCH_DEFAULT_AGENT_PROVIDER_ID,
       task: AGENT_DEFAULT_TASKS.custom_agent,
       constraints: AGENT_DEFAULT_CONSTRAINTS.custom_agent,
       outputs: [
@@ -483,9 +480,7 @@ const NODE_PRESETS: NodePreset[] = [
     outputs: [port("page_spec", "Page Spec", ["page_spec"], "drawai.page_spec.v1", false)],
     config: {
       preset_id: "page_spec_refine",
-      provider_id: "codex_sdk",
-      reasoning_effort: "high",
-      timeout_seconds: DEFAULT_AGENT_TIMEOUT_SECONDS,
+      provider_id: WORKBENCH_DEFAULT_AGENT_PROVIDER_ID,
       page_spec_processing_types: [...DEFAULT_PAGE_SPEC_PROCESSING_TYPES],
       task: AGENT_DEFAULT_TASKS.page_spec_refine,
       constraints: AGENT_DEFAULT_CONSTRAINTS.page_spec_refine,
@@ -527,9 +522,7 @@ const NODE_PRESETS: NodePreset[] = [
     outputs: [port("semantic_svg", "Semantic SVG", ["semantic_svg"], "drawai.semantic_svg.v1", false, "single", "deliverable")],
     config: {
       preset_id: "svg_generation",
-      provider_id: "codex_sdk",
-      reasoning_effort: "xhigh",
-      timeout_seconds: SVG_AGENT_TIMEOUT_SECONDS,
+      provider_id: WORKBENCH_DEFAULT_AGENT_PROVIDER_ID,
       task: AGENT_DEFAULT_TASKS.svg_generation,
       constraints: AGENT_DEFAULT_CONSTRAINTS.svg_generation,
       drawai_tools: ["format", "page-spec-assets", "svg-validate"],
@@ -1901,6 +1894,9 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                           disabled={readOnly}
                           onChange={(event) => updateSelectedNodeConfig({ provider_id: event.target.value })}
                         >
+                          <option value={WORKBENCH_DEFAULT_AGENT_PROVIDER_ID}>
+                            {WORKBENCH_DEFAULT_AGENT_PROVIDER_LABEL}
+                          </option>
                           {providers.map((provider) => (
                             <option value={provider.provider_id} key={provider.provider_id}>
                               {provider.label}
@@ -2126,7 +2122,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                 <div className="workflow-prompt-preview">
                   <div>
                     <span>最终 Prompt</span>
-                    <strong>{String(selectedNode.config.provider_id || defaultAgentProvider(selectedNode))}</strong>
+                    <strong>{agentProviderDisplayLabel(defaultAgentProvider(selectedNode))}</strong>
                   </div>
                   <pre>{selectedAgentPromptText}</pre>
                 </div>
@@ -2466,7 +2462,11 @@ function agentPresetId(node: WorkflowNode): string {
 }
 
 function defaultAgentProvider(node: WorkflowNode): string {
-  return String(node.config.provider_id || "codex_sdk");
+  return String(node.config.provider_id || WORKBENCH_DEFAULT_AGENT_PROVIDER_ID);
+}
+
+function agentProviderDisplayLabel(providerId: string): string {
+  return providerId === WORKBENCH_DEFAULT_AGENT_PROVIDER_ID ? WORKBENCH_DEFAULT_AGENT_PROVIDER_LABEL : providerId;
 }
 
 function agentTaskText(node: WorkflowNode): string {
@@ -2586,7 +2586,7 @@ function workflowAgentPromptText(node: WorkflowNode, inputs: AgentInputPreview[]
   const options = agentRuntimeOptionsForNode(node);
   const lines = [
     "## Agent Runtime Settings",
-    `- Provider: ${providerId}`,
+    `- Provider: ${agentProviderDisplayLabel(providerId)}`,
     "- Workflow run root: <workflow_run_root>",
     `- Current node workdir: <workflow_run_root>/nodes/${node.node_id}/runs/<attempt_id>`,
     "- Agent process cwd: <workflow_run_root>",
@@ -2701,7 +2701,7 @@ function workflowLlmPromptText(node: WorkflowNode, inputs: AgentInputPreview[]):
   const options = agentRuntimeOptionsForNode(node);
   const lines = [
     "## LLM Runtime Settings",
-    `- Provider: ${providerId}`,
+    `- Provider: ${agentProviderDisplayLabel(providerId)}`,
     "- Workflow run root: <workflow_run_root>",
     `- Current node workdir: <workflow_run_root>/nodes/${node.node_id}/runs/<attempt_id>`,
     `- Node run manifest path: <workflow_run_root>/nodes/${node.node_id}/runs/<attempt_id>/node_run.json`,
