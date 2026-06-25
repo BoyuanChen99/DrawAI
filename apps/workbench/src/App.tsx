@@ -1,4 +1,5 @@
 import { DragEvent, MouseEvent, PointerEvent, WheelEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import {
   approveAssets,
@@ -37,6 +38,13 @@ import {
 } from "./api";
 import ImageGenStudio, { type ImageGenConnectionSettings } from "./ImageGenStudio";
 import WorkflowWorkspace from "./WorkflowWorkspace";
+import {
+  API_PRESET_TEMPLATES,
+  apiPresetDraftFromTemplate,
+  blankApiPresetDraft,
+  uniqueApiPresetId,
+  type ApiPresetTemplate
+} from "./apiPresetTemplates";
 import { buildWorkflowPreviewLayout, type WorkflowPreviewLayout } from "./workflowPreviewLayout";
 import { WorkflowNodeIcon } from "./workflowNodeIcons";
 import {
@@ -1554,8 +1562,8 @@ function WorkbenchSettingsCenter({
     setDraft((current) => ({ ...current, selected_provider_id: providerId }));
   };
 
-  const createApiPresetDraft = () => {
-    const nextPreset = newApiPresetDraft(apiDrafts);
+  const createApiPresetDraft = (template?: ApiPresetTemplate) => {
+    const nextPreset = template ? apiPresetDraftFromTemplate(template, apiDrafts) : blankApiPresetDraft(apiDrafts);
     const nextIndex = apiDrafts.length;
     setApiDrafts((current) => [...current, nextPreset]);
     setSelectedApiPresetIndex(nextIndex);
@@ -1610,7 +1618,7 @@ function WorkbenchSettingsCenter({
         agentPayload.llm_model = selectedLlmPreset.model;
         agentPayload.llm_base_url = selectedLlmPreset.base_url;
         agentPayload.llm_api_key = selectedLlmPreset.api_key;
-        agentPayload.llm_api_key_env = selectedLlmPreset.api_key_env || "OPENAI_API_KEY";
+        agentPayload.llm_api_key_env = selectedLlmPreset.api_key_env;
         agentPayload.llm_wire_api = selectedLlmPreset.type === "llm_responses" ? "responses" : "chat_completions";
       }
       const normalizedApiDrafts = normalizeApiPresetDrafts(apiDrafts);
@@ -1710,7 +1718,7 @@ function WorkbenchSettingsCenter({
                     </strong>
                     <p>
                       {settingsCategory === "api"
-                        ? `${apiDrafts.length} 个 API 预设`
+                        ? `${apiDrafts.length} 个 API 预设 · ${API_PRESET_TEMPLATES.length} 个内置模板`
                         : settingsCategory === "agent"
                           ? `${agents.length} 个 Agent 供应方`
                           : settingsCategory === "llm"
@@ -1719,51 +1727,107 @@ function WorkbenchSettingsCenter({
                     </p>
                   </div>
                   {settingsCategory === "api" && (
-                    <div className="settings-model-grid" aria-label="API 预设">
-                      {apiDrafts.map((preset, presetIndex) => (
-                        <article
-                          key={`${presetIndex}:${preset.id}`}
-                          className={`settings-model-card${selectedApiPresetIndex === presetIndex ? " active" : ""}`}
-                        >
-                          <div className="settings-model-card-head">
-                            <span className="settings-model-icon" aria-hidden="true">
-                              <SettingsNavIcon icon="api" />
+                    <>
+                      <section className="settings-template-section" aria-label="内置模型供应商模板">
+                        <div className="settings-template-heading">
+                          <span>内置模板</span>
+                          <strong>模型供应商</strong>
+                        </div>
+                        <div className="settings-provider-template-grid">
+                          {API_PRESET_TEMPLATES.map((template) => (
+                            <button
+                              type="button"
+                              key={template.id}
+                              className="settings-provider-template-card"
+                              onClick={() => {
+                                const nextIndex = createApiPresetDraft(template);
+                                openApiPresetSettings(nextIndex);
+                              }}
+                            >
+                              <div className="settings-provider-template-head">
+                                <span
+                                  className="settings-provider-logo"
+                                  style={{ "--provider-color": template.accent_color } as CSSProperties}
+                                  aria-hidden="true"
+                                >
+                                  {template.icon_text}
+                                </span>
+                                <div>
+                                  <strong>{template.label}</strong>
+                                  <span>{template.type === "images_api" ? "Images API" : template.type === "llm_responses" ? "Responses" : "Chat Completions"}</span>
+                                </div>
+                              </div>
+                              <p>{template.description}</p>
+                              <dl className="settings-provider-template-meta">
+                                <div>
+                                  <dt>模型</dt>
+                                  <dd>{template.model}</dd>
+                                </div>
+                                <div>
+                                  <dt>Base URL</dt>
+                                  <dd>{template.base_url}</dd>
+                                </div>
+                              </dl>
+                              <div className="settings-provider-template-foot">
+                                <span>{template.badge_label}</span>
+                                <span>{template.api_key_env || "本地免 Key"}</span>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </section>
+                      <section className="settings-template-section" aria-label="API 预设">
+                        <div className="settings-template-heading">
+                          <span>当前配置</span>
+                          <strong>API 预设</strong>
+                        </div>
+                        <div className="settings-model-grid">
+                          {apiDrafts.map((preset, presetIndex) => (
+                            <article
+                              key={`${presetIndex}:${preset.id}`}
+                              className={`settings-model-card${selectedApiPresetIndex === presetIndex ? " active" : ""}`}
+                            >
+                              <div className="settings-model-card-head">
+                                <span className="settings-model-icon" aria-hidden="true">
+                                  <SettingsNavIcon icon="api" />
+                                </span>
+                                <div>
+                                  <strong>{preset.label || preset.id}</strong>
+                                  <span>{preset.type}</span>
+                                </div>
+                              </div>
+                              <dl className="settings-model-meta">
+                                <div>
+                                  <dt>模型</dt>
+                                  <dd>{preset.model || "未设置"}</dd>
+                                </div>
+                                <div>
+                                  <dt>Base URL</dt>
+                                  <dd>{preset.base_url || "未设置"}</dd>
+                                </div>
+                              </dl>
+                              <button type="button" className="settings-model-action" onClick={() => openApiPresetSettings(presetIndex)}>
+                                设置
+                              </button>
+                            </article>
+                          ))}
+                          <button
+                            type="button"
+                            className="settings-model-card settings-model-card-add"
+                            onClick={() => {
+                              const nextIndex = createApiPresetDraft();
+                              openApiPresetSettings(nextIndex);
+                            }}
+                          >
+                            <span className="settings-add-icon" aria-hidden="true">
+                              <PlusIcon />
                             </span>
-                            <div>
-                              <strong>{preset.label || preset.id}</strong>
-                              <span>{preset.type}</span>
-                            </div>
-                          </div>
-                          <dl className="settings-model-meta">
-                            <div>
-                              <dt>模型</dt>
-                              <dd>{preset.model || "未设置"}</dd>
-                            </div>
-                            <div>
-                              <dt>Base URL</dt>
-                              <dd>{preset.base_url || "未设置"}</dd>
-                            </div>
-                          </dl>
-                          <button type="button" className="settings-model-action" onClick={() => openApiPresetSettings(presetIndex)}>
-                            设置
+                            <strong>{apiDrafts.length === 0 ? "添加第一个 API 预设" : "新建空白预设"}</strong>
+                            <span>API 预设</span>
                           </button>
-                        </article>
-                      ))}
-                      <button
-                        type="button"
-                        className="settings-model-card settings-model-card-add"
-                        onClick={() => {
-                          const nextIndex = createApiPresetDraft();
-                          openApiPresetSettings(nextIndex);
-                        }}
-                      >
-                        <span className="settings-add-icon" aria-hidden="true">
-                          <PlusIcon />
-                        </span>
-                        <strong>{apiDrafts.length === 0 ? "添加第一个 API 预设" : "新建 API 预设"}</strong>
-                        <span>API 预设</span>
-                      </button>
-                    </div>
+                        </div>
+                      </section>
+                    </>
                   )}
                   {settingsCategory === "agent" && (
                     <div className="settings-model-grid" aria-label="本地 Agent">
@@ -2309,28 +2373,6 @@ function normalizeApiPresetDrafts(presets: ApiPreset[]): ApiPreset[] {
   }));
 }
 
-function newApiPresetDraft(existing: ApiPreset[]): ApiPreset {
-  return {
-    id: uniqueApiPresetId(existing, "api_preset"),
-    label: "新建 API 预设",
-    type: "images_api",
-    base_url: "https://api.openai.com",
-    model: "gpt-image-2",
-    api_key_env: "OPENAI_API_KEY",
-    api_key: ""
-  };
-}
-
-function uniqueApiPresetId(existing: ApiPreset[], base: string): string {
-  const taken = new Set(existing.map((preset) => preset.id));
-  if (!taken.has(base)) return base;
-  for (let index = 2; index < 1000; index += 1) {
-    const candidate = `${base}_${index}`;
-    if (!taken.has(candidate)) return candidate;
-  }
-  return `${base}_${Date.now()}`;
-}
-
 function updateApiPresetDraft(
   setter: (updater: (current: ApiPreset[]) => ApiPreset[]) => void,
   presetIndex: number,
@@ -2442,7 +2484,7 @@ function normalizeWorkbenchAgentDraft(settings: WorkbenchAgentSettings): Workben
     llm_model: (settings.llm_model || "").trim(),
     llm_base_url: (settings.llm_base_url || "").trim().replace(/\/+$/, ""),
     llm_api_key: (settings.llm_api_key || "").trim(),
-    llm_api_key_env: (settings.llm_api_key_env || "OPENAI_API_KEY").trim(),
+    llm_api_key_env: (settings.llm_api_key_env ?? "OPENAI_API_KEY").trim(),
     llm_wire_api: settings.llm_wire_api === "responses" ? "responses" : "chat_completions",
     llm_extra_body: { ...llmExtraBody }
   };

@@ -6843,6 +6843,174 @@ button.asset-status-unsupported {
   gap: 12px;
 }
 
+.settings-template-section {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.settings-template-heading {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.settings-template-heading span {
+  color: #667085;
+  font-size: 12px;
+  font-weight: 740;
+}
+
+.settings-template-heading strong {
+  color: #263244;
+  font-size: 15px;
+  font-weight: 780;
+}
+
+.settings-provider-template-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.settings-provider-template-card {
+  --provider-color: #3168f5;
+  min-width: 0;
+  min-height: 184px;
+  display: grid;
+  grid-template-rows: auto minmax(42px, auto) minmax(0, 1fr) auto;
+  gap: 11px;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--provider-color) 8%, #ffffff), #ffffff 42%),
+    #ffffff;
+  color: #344052;
+  padding: 16px;
+  text-align: left;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.settings-provider-template-card:hover {
+  border-color: color-mix(in srgb, var(--provider-color) 42%, #d8e0eb);
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+  transform: translateY(-1px);
+}
+
+.settings-provider-template-card:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--provider-color) 28%, transparent);
+  outline-offset: 2px;
+}
+
+.settings-provider-template-head {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.settings-provider-logo {
+  width: 42px;
+  height: 42px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--provider-color);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 820;
+  letter-spacing: 0;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), 0 8px 18px color-mix(in srgb, var(--provider-color) 20%, transparent);
+}
+
+.settings-provider-template-head > div {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.settings-provider-template-head strong {
+  min-width: 0;
+  color: #263244;
+  font-size: 16px;
+  font-weight: 780;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-provider-template-head span {
+  min-width: 0;
+  color: #667085;
+  font-size: 12px;
+  font-weight: 680;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-provider-template-card p {
+  margin: 0;
+  color: #5d6676;
+  font-size: 13px;
+  font-weight: 610;
+  line-height: 1.42;
+}
+
+.settings-provider-template-meta {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  margin: 0;
+}
+
+.settings-provider-template-meta div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.settings-provider-template-meta dt {
+  color: #7b8494;
+  font-size: 11px;
+  font-weight: 740;
+}
+
+.settings-provider-template-meta dd {
+  min-width: 0;
+  margin: 0;
+  color: #344052;
+  font-size: 12px;
+  font-weight: 660;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-provider-template-foot {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.settings-provider-template-foot span {
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  background: rgba(248, 250, 252, 0.94);
+  color: #667085;
+  padding: 0 9px;
+  font-size: 11px;
+  font-weight: 720;
+}
+
 .settings-model-card {
   min-width: 0;
   min-height: 166px;
@@ -7198,6 +7366,10 @@ button.asset-status-unsupported {
   .settings-model-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+
+  .settings-provider-template-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 @media (max-width: 680px) {
@@ -7233,5 +7405,14 @@ button.asset-status-unsupported {
   .workbench-agent-settings-dialog .agent-settings-shell,
   .workbench-agent-settings-dialog .agent-settings-shell.category-llm {
     padding: 18px;
+  }
+
+  .settings-template-heading {
+    display: grid;
+    gap: 4px;
+  }
+
+  .settings-provider-template-card {
+    min-height: 0;
   }
 }
