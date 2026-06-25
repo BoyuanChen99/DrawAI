@@ -857,7 +857,7 @@ select:focus {
   position: relative;
   overflow: hidden;
   background: rgba(248, 250, 252, 0.72);
-  padding: 12px;
+  padding: 0;
 }
 
 .task-detail-panel {
@@ -979,7 +979,7 @@ select:focus {
   gap: 28px;
   overflow: auto;
   scroll-snap-type: none;
-  padding: 24px 24px 132px;
+  padding: 104px 24px 132px;
 }
 
 .board-workspace.case-detail-open .task-list {
@@ -991,6 +991,212 @@ select:focus {
   overflow-x: hidden;
   overflow-y: auto;
   scroll-snap-type: none;
+  padding-top: 24px;
+}
+
+.task-batch-status-shell {
+  position: absolute;
+  top: 18px;
+  left: 24px;
+  right: 24px;
+  z-index: 26;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  transform: translateY(0);
+  opacity: 1;
+  transition: transform 320ms cubic-bezier(0.16, 1, 0.3, 1), opacity 220ms ease;
+  will-change: transform, opacity;
+}
+
+.board-workspace.case-detail-open .task-batch-status-shell {
+  transform: translateY(-86px);
+  opacity: 0;
+  pointer-events: none;
+}
+
+.task-batch-status-bar {
+  width: min(100%, 1120px);
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  align-items: center;
+  gap: 16px;
+  border: 1px solid rgba(203, 213, 225, 0.82);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--ink);
+  padding: 7px 10px 7px 18px;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.1);
+  backdrop-filter: blur(16px);
+  pointer-events: auto;
+}
+
+.task-batch-status-bar.status-failed {
+  border-color: rgba(239, 68, 68, 0.24);
+  box-shadow: 0 18px 42px rgba(127, 29, 29, 0.1);
+}
+
+.task-batch-file {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+}
+
+.task-batch-status-dot {
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  background: #94a3b8;
+  box-shadow: 0 0 0 5px rgba(148, 163, 184, 0.14);
+}
+
+.task-batch-status-bar.status-running .task-batch-status-dot,
+.task-batch-status-bar.status-waiting_review .task-batch-status-dot {
+  background: #2563eb;
+  box-shadow: 0 0 0 5px rgba(37, 99, 235, 0.12);
+}
+
+.task-batch-status-bar.status-completed .task-batch-status-dot {
+  background: #059669;
+  box-shadow: 0 0 0 5px rgba(5, 150, 105, 0.13);
+}
+
+.task-batch-status-bar.status-failed .task-batch-status-dot {
+  background: #dc2626;
+  box-shadow: 0 0 0 5px rgba(220, 38, 38, 0.13);
+}
+
+.task-batch-file > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.task-batch-file span:not(.task-batch-status-dot) {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.task-batch-file strong {
+  min-width: 0;
+  display: block;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-batch-overview {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.task-batch-overview em {
+  color: #64748b;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 560;
+}
+
+.task-batch-actions {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.task-batch-action {
+  min-width: 0;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 999px;
+  background: #f8fafc;
+  color: #334155;
+  padding: 0 13px;
+  font-size: 13px;
+  font-weight: 650;
+  box-shadow: none;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease;
+}
+
+.task-batch-action:hover:not(:disabled) {
+  border-color: rgba(49, 104, 245, 0.24);
+  background: #eef4ff;
+  color: var(--blue);
+  transform: translateY(-1px);
+}
+
+.task-batch-action.primary {
+  border-color: rgba(49, 104, 245, 0.24);
+  background: var(--blue);
+  color: #ffffff;
+}
+
+.task-batch-action.primary:hover:not(:disabled) {
+  border-color: rgba(49, 104, 245, 0.36);
+  background: #2458db;
+  color: #ffffff;
+}
+
+.task-batch-action.dark {
+  border-color: rgba(15, 23, 42, 0.2);
+  background: #172033;
+  color: #ffffff;
+}
+
+.task-batch-action.dark:hover:not(:disabled) {
+  border-color: rgba(15, 23, 42, 0.3);
+  background: #020617;
+  color: #ffffff;
+}
+
+.task-batch-action.select-toggle.active {
+  border-color: rgba(220, 38, 38, 0.18);
+  background: #fff1f2;
+  color: #be123c;
+}
+
+.task-batch-action:disabled {
+  border-color: rgba(148, 163, 184, 0.16);
+  background: #edf2f7;
+  color: #94a3b8;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.task-batch-action .play-icon,
+.task-batch-action .retry-icon,
+.task-batch-action .download-icon,
+.task-batch-action .select-cards-icon,
+.task-batch-action .panel-close-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.task-batch-action .play-icon {
+  transform: translateX(1px);
+}
+
+.task-batch-action .button-spinner {
+  width: 15px;
+  height: 15px;
 }
 
 .batch-download-floating {
@@ -1102,6 +1308,16 @@ select:focus {
   border-color: rgba(49, 104, 245, 0.48);
   background: #fbfdff;
   box-shadow: inset 0 0 0 1px rgba(49, 104, 245, 0.08), 0 10px 24px rgba(49, 104, 245, 0.09);
+}
+
+.task-row.selecting {
+  cursor: pointer;
+}
+
+.task-row.multi-selected {
+  border-color: rgba(49, 104, 245, 0.62);
+  background: #f8fbff;
+  box-shadow: inset 0 0 0 1px rgba(49, 104, 245, 0.16), 0 12px 26px rgba(49, 104, 245, 0.12);
 }
 
 .batch-row:hover {
@@ -1349,12 +1565,44 @@ select:focus {
   z-index: 12;
 }
 
+.task-select-mark {
+  position: absolute;
+  top: 52px;
+  left: 24px;
+  z-index: 6;
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  color: transparent;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
+  pointer-events: none;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease;
+}
+
+.task-row.multi-selected .task-select-mark {
+  border-color: rgba(49, 104, 245, 0.46);
+  background: var(--blue);
+  color: #ffffff;
+  transform: scale(1.04);
+}
+
 .task-row.editor-ready {
   cursor: pointer;
 }
 
 .task-row.not-editor-ready {
   cursor: pointer;
+}
+
+.task-row.selecting .task-thumb-shade,
+.task-row.selecting .task-thumb-actions {
+  opacity: 0;
+  pointer-events: none;
+  transform: none;
 }
 
 .task-row.editor-ready:hover .task-thumb {
@@ -1480,6 +1728,15 @@ select:focus {
 .task-thumb:focus-within .task-thumb-actions {
   transform: translateY(0);
   pointer-events: auto;
+}
+
+.task-row.selecting .task-thumb:hover .task-thumb-shade,
+.task-row.selecting .task-thumb:focus-within .task-thumb-shade,
+.task-row.selecting .task-thumb:hover .task-thumb-actions,
+.task-row.selecting .task-thumb:focus-within .task-thumb-actions {
+  opacity: 0;
+  pointer-events: none;
+  transform: none;
 }
 
 .task-thumb-action {
@@ -1893,7 +2150,9 @@ select:focus {
 }
 
 .view-result-icon,
-.breakpoint-icon {
+.breakpoint-icon,
+.select-cards-icon,
+.selection-check-icon {
   width: 18px;
   height: 18px;
   fill: none;
@@ -1901,6 +2160,12 @@ select:focus {
   stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
+}
+
+.selection-check-icon {
+  width: 17px;
+  height: 17px;
+  stroke-width: 2.3;
 }
 
 .task-list .empty-state {
@@ -2002,6 +2267,19 @@ select:focus {
   .board-workspace.case-detail-open .board-grid {
     grid-template-columns: minmax(680px, 0.94fr) minmax(520px, 1.06fr);
   }
+
+  .task-batch-status-bar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+  }
+
+  .task-batch-overview {
+    display: none;
+  }
+
+  .task-batch-action {
+    padding: 0 11px;
+  }
 }
 
 @media (max-width: 980px) {
@@ -2019,6 +2297,31 @@ select:focus {
     inset: 0;
     z-index: 40;
     border-left: 0;
+  }
+
+  .task-batch-status-shell {
+    left: 14px;
+    right: 14px;
+  }
+
+  .task-batch-status-bar {
+    min-height: 52px;
+    padding: 6px 8px 6px 14px;
+  }
+
+  .task-batch-actions {
+    gap: 6px;
+  }
+
+  .task-batch-action {
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
+    padding: 0;
+  }
+
+  .task-batch-action span {
+    display: none;
   }
 }
 

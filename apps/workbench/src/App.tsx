@@ -906,6 +906,40 @@ export default function App() {
     }
   }
 
+  async function rerunAnalysisForCases(items: Array<Pick<CaseRecord, "case_id" | "batch_id">>) {
+    const seen = new Set<string>();
+    const targets = items.filter((item) => {
+      if (!item || seen.has(item.case_id)) return false;
+      seen.add(item.case_id);
+      return true;
+    });
+    if (targets.length === 0 || assetsRunPendingCaseId) return;
+    const activeCaseId = activeCase?.case.case_id || "";
+    const refreshActiveCase = Boolean(activeCaseId && targets.some((item) => item.case_id === activeCaseId));
+    let latestBatchId = targets[0].batch_id;
+    try {
+      for (const target of targets) {
+        latestBatchId = target.batch_id;
+        setAssetsRunPendingCaseId(target.case_id);
+        const optimisticCase = currentCaseForOptimisticUpdate(target);
+        if (optimisticCase) {
+          mergeCaseStatus(optimisticRunCaseStatus(optimisticCase, "analysis"));
+        }
+        const response = await runCaseStage(target.case_id, "analysis");
+        latestBatchId = response.case.batch_id;
+        mergeCaseStatus(response.case);
+      }
+      await selectBatch(latestBatchId);
+      if (refreshActiveCase) {
+        await selectCase(activeCaseId);
+      }
+      await refreshBatches();
+      setActiveView("board");
+    } finally {
+      setAssetsRunPendingCaseId("");
+    }
+  }
+
   async function rerunStageForCase(item: Pick<CaseRecord, "case_id" | "batch_id">, stage: WorkbenchRerunStage) {
     if (!item || assetsRunPendingCaseId) return;
     setAssetsRunPendingCaseId(item.case_id);
@@ -1169,6 +1203,7 @@ export default function App() {
               onRunFromAssets={() => runFromAssets().catch((err) => setError(err instanceof Error ? err.message : String(err)))}
               onRetryCase={(item) => retryFailedCase(item).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
               onRerunAnalysis={(item) => rerunAnalysisForCase(item).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+              onRerunCases={(items) => rerunAnalysisForCases(items).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
               onRerunStage={(item, stage) => rerunStageForCase(item, stage).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
               onSetWorkflowBreakpoint={(item, nodeId) => setBreakpointForCase(item, nodeId).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
               onClearWorkflowBreakpoint={(item) => clearBreakpointForCase(item).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
@@ -1318,6 +1353,7 @@ function BoardWorkspace({
   onRunFromAssets,
   onRetryCase,
   onRerunAnalysis,
+  onRerunCases,
   onRerunStage,
   onSetWorkflowBreakpoint,
   onClearWorkflowBreakpoint,
@@ -1365,6 +1401,7 @@ function BoardWorkspace({
   onRunFromAssets: () => void;
   onRetryCase: (item: CaseRecord) => void;
   onRerunAnalysis: (item: CaseRecord) => void;
+  onRerunCases: (items: CaseRecord[]) => void;
   onRerunStage: (item: Pick<CaseRecord, "case_id" | "batch_id">, stage: WorkbenchRerunStage) => void;
   onSetWorkflowBreakpoint: (item: Pick<CaseRecord, "case_id" | "batch_id">, nodeId: string) => void;
   onClearWorkflowBreakpoint: (item: Pick<CaseRecord, "case_id" | "batch_id">) => void;
@@ -1469,6 +1506,8 @@ function BoardWorkspace({
           onRunFromAssets={onRunFromAssets}
           onRetryCase={onRetryCase}
           onRerunAnalysis={onRerunAnalysis}
+          onRerunCases={onRerunCases}
+          onContinueWorkflow={onContinueWorkflow}
           onExportPptx={onExportPptx}
           onDownloadPptx={onDownloadPptx}
           onDownloadBatchPptx={onDownloadBatchPptx}
@@ -4935,6 +4974,8 @@ function TaskSelectionWorkspace({
   onRunFromAssets,
   onRetryCase,
   onRerunAnalysis,
+  onRerunCases,
+  onContinueWorkflow,
   onExportPptx,
   onDownloadPptx,
   onDownloadBatchPptx
@@ -4963,6 +5004,8 @@ function TaskSelectionWorkspace({
   onRunFromAssets: () => void;
   onRetryCase: (item: CaseRecord) => void;
   onRerunAnalysis: (item: CaseRecord) => void;
+  onRerunCases: (items: CaseRecord[]) => void | Promise<void>;
+  onContinueWorkflow: (item: Pick<CaseRecord, "case_id" | "batch_id">) => void;
   onExportPptx: (caseId: string) => Promise<ArtifactRecord[]>;
   onDownloadPptx: (caseId: string, artifact: ArtifactRecord) => void | Promise<void>;
   onDownloadBatchPptx: (batchId: string) => void | Promise<void>;
@@ -4972,6 +5015,8 @@ function TaskSelectionWorkspace({
   const [batchContextMenu, setBatchContextMenu] = useState<BatchContextMenuState | null>(null);
   const [caseArtifacts, setCaseArtifacts] = useState<Record<string, ArtifactRecord[]>>({});
   const [artifactLoading, setArtifactLoading] = useState<Record<string, boolean>>({});
+  const [caseSelectionMode, setCaseSelectionMode] = useState(false);
+  const [selectedCaseIds, setSelectedCaseIds] = useState<string[]>([]);
   const contextCase = contextMenu ? cases.find((item) => item.case_id === contextMenu.caseId) || null : null;
   const contextSelected = Boolean(contextCase && activeCase?.case.case_id === contextCase.case_id);
   const contextCompatibility = contextSelected ? runCompatibility : contextCase?.compatibility_mode || "none";
@@ -4990,6 +5035,36 @@ function TaskSelectionWorkspace({
   const batchContextBusy = Boolean(batchContextMenu && (batchContextMenu.running || batchRunPendingId === batchContextMenu.batchId));
   const batchDownloadReady = Boolean(activeBatch && cases.length > 0 && cases.every((item) => item.status === "completed"));
   const batchDownloadPending = Boolean(activeBatch && batchPptxDownloadPendingId === activeBatch.batch.batch_id);
+  const selectedCaseIdSet = useMemo(() => new Set(selectedCaseIds), [selectedCaseIds]);
+  const selectedCases = useMemo(() => cases.filter((item) => selectedCaseIdSet.has(item.case_id)), [cases, selectedCaseIdSet]);
+  const pausedBreakpointCases = useMemo(() => cases.filter((item) => isCasePausedAtWorkflowBreakpoint(item)), [cases]);
+  const continueTarget =
+    pausedBreakpointCases.find((item) => item.case_id === activeCase?.case.case_id) ||
+    pausedBreakpointCases[0] ||
+    null;
+  const continuePending = Boolean(continueTarget && caseActionPendingId === continueTarget.case_id);
+  const batchActionBusy = Boolean(
+    caseActionPendingId ||
+      (activeBatch && (batchRunPendingId === activeBatch.batch.batch_id || activeBatch.batch.status === "running"))
+  );
+  const rerunTargets = caseSelectionMode ? selectedCases : cases;
+  const rerunDisabled = !activeBatch || rerunTargets.length === 0 || batchActionBusy;
+  const continueDisabled = !continueTarget || batchActionBusy;
+  const selectionCount = selectedCaseIds.length;
+  const statusSummary = activeBatch ? batchStatusSummary(activeBatch.batch, cases) : "";
+
+  useEffect(() => {
+    setCaseSelectionMode(false);
+    setSelectedCaseIds([]);
+  }, [activeBatch?.batch.batch_id]);
+
+  useEffect(() => {
+    const caseIds = new Set(cases.map((item) => item.case_id));
+    setSelectedCaseIds((current) => {
+      const next = current.filter((caseId) => caseIds.has(caseId));
+      return next.length === current.length ? current : next;
+    });
+  }, [cases]);
 
   useEffect(() => {
     if (!contextMenu && !batchContextMenu) return;
@@ -5108,6 +5183,34 @@ function TaskSelectionWorkspace({
     onRunBatch(batch.batch_id);
   }
 
+  function toggleCaseSelection(caseId: string) {
+    setSelectedCaseIds((current) => (current.includes(caseId) ? current.filter((item) => item !== caseId) : [...current, caseId]));
+  }
+
+  function toggleSelectionMode() {
+    setCaseSelectionMode((current) => {
+      if (current) {
+        setSelectedCaseIds([]);
+        return false;
+      }
+      return true;
+    });
+  }
+
+  async function regenerateRerunTargets() {
+    if (rerunDisabled) return;
+    await onRerunCases(rerunTargets);
+    if (caseSelectionMode) {
+      setSelectedCaseIds([]);
+      setCaseSelectionMode(false);
+    }
+  }
+
+  function continueBreakpointTarget() {
+    if (continueDisabled || !continueTarget) return;
+    onContinueWorkflow(continueTarget);
+  }
+
   return (
     <main className="task-selection-workspace">
       <section className="batch-rail">
@@ -5156,9 +5259,73 @@ function TaskSelectionWorkspace({
       </section>
 
       <section className="case-lane">
+        {activeBatch && (
+          <div className={`task-batch-status-shell${caseSelectionMode ? " selecting" : ""}`}>
+            <div className={`task-batch-status-bar status-${activeBatch.batch.status}`}>
+              <div className="task-batch-file">
+                <span className="task-batch-status-dot" aria-hidden="true" />
+                <div>
+                  <span>文件名</span>
+                  <strong title={activeBatch.batch.name}>{activeBatch.batch.name}</strong>
+                </div>
+              </div>
+              <div className="task-batch-overview">
+                <span className={`status-pill status-${activeBatch.batch.status}`}>{humanize(activeBatch.batch.status)}</span>
+                <em>{statusSummary}</em>
+              </div>
+              <div className="task-batch-actions" onClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
+                <button
+                  type="button"
+                  className="task-batch-action"
+                  disabled={continueDisabled}
+                  title={continueTarget ? `继续 ${continueTarget.name}` : "没有等待断点的卡片"}
+                  onClick={continueBreakpointTarget}
+                >
+                  {continuePending ? <ButtonSpinner /> : <PlayIcon />}
+                  <span>继续</span>
+                </button>
+                <button
+                  type="button"
+                  className="task-batch-action primary"
+                  disabled={rerunDisabled}
+                  title={caseSelectionMode ? (selectionCount > 0 ? `重新生成选中的 ${selectionCount} 张` : "先选择要重新生成的卡片") : "重新生成全部卡片"}
+                  onClick={() => {
+                    void regenerateRerunTargets();
+                  }}
+                >
+                  {caseActionPendingId ? <ButtonSpinner /> : <RetryIcon />}
+                  <span>{caseSelectionMode && selectionCount > 0 ? `重新生成 ${selectionCount}` : "重新生成"}</span>
+                </button>
+                <button
+                  type="button"
+                  className="task-batch-action dark"
+                  disabled={!batchDownloadReady || batchDownloadPending}
+                  title={batchDownloadReady ? "下载合并 PPTX" : "全部完成后可下载合并 PPTX"}
+                  onClick={() => {
+                    void onDownloadBatchPptx(activeBatch.batch.batch_id);
+                  }}
+                >
+                  {batchDownloadPending ? <ButtonSpinner /> : <DownloadIcon />}
+                  <span>下载</span>
+                </button>
+                <button
+                  type="button"
+                  className={`task-batch-action select-toggle${caseSelectionMode ? " active" : ""}`}
+                  title={caseSelectionMode ? "退出多选" : "选择要重新生成的卡片"}
+                  aria-pressed={caseSelectionMode}
+                  onClick={toggleSelectionMode}
+                >
+                  {caseSelectionMode ? <ClosePanelIcon /> : <SelectCardsIcon />}
+                  <span>{caseSelectionMode ? "退出" : "多选"}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         <div className="task-list">
           {cases.map((item) => {
             const selected = activeCase?.case.case_id === item.case_id;
+            const multiSelected = selectedCaseIdSet.has(item.case_id);
             const rowPreviewUrl = item.preview_url || "";
             const editorReady = Boolean(item.editor_ready);
             const actionsEnabled = selected;
@@ -5183,10 +5350,17 @@ function TaskSelectionWorkspace({
               <article
                 key={item.case_id}
                 data-case-card-id={item.case_id}
-                className={`task-row ${selected ? "active" : ""} ${item.status === "failed" ? "failed" : ""} ${editorReady ? "editor-ready" : "not-editor-ready"}`}
+                className={`task-row ${selected ? "active" : ""} ${multiSelected ? "multi-selected" : ""} ${caseSelectionMode ? "selecting" : ""} ${item.status === "failed" ? "failed" : ""} ${editorReady ? "editor-ready" : "not-editor-ready"}`}
                 role="button"
                 tabIndex={0}
-                onClick={() => onSelectCase(item.case_id)}
+                aria-pressed={caseSelectionMode ? multiSelected : selected}
+                onClick={() => {
+                  if (caseSelectionMode) {
+                    toggleCaseSelection(item.case_id);
+                    return;
+                  }
+                  onSelectCase(item.case_id);
+                }}
                 onContextMenu={(event) => {
                   void openTaskContextMenu(event, item);
                 }}
@@ -5194,10 +5368,19 @@ function TaskSelectionWorkspace({
                   if (event.target !== event.currentTarget) return;
                   if (event.key === "Enter" || event.key === " ") {
                     event.preventDefault();
+                    if (caseSelectionMode) {
+                      toggleCaseSelection(item.case_id);
+                      return;
+                    }
                     onSelectCase(item.case_id);
                   }
                 }}
               >
+                {caseSelectionMode && (
+                  <span className={`task-select-mark${multiSelected ? " checked" : ""}`} aria-hidden="true">
+                    <SelectionCheckIcon />
+                  </span>
+                )}
                 <div className="task-row-top">
                   <span className={`status-pill status-${item.status}`}>{humanize(item.status)}</span>
                   <em>{humanize(item.stage || item.phase)}</em>
@@ -5291,19 +5474,6 @@ function TaskSelectionWorkspace({
           {!activeBatch && <EmptyState label="选择一个任务" />}
           {activeBatch && cases.length === 0 && <EmptyState label="这个任务里还没有图片" />}
         </div>
-        <button
-          type="button"
-          className={`batch-download-floating${batchDownloadReady ? " ready" : ""}${batchDownloadPending ? " running" : ""}`}
-          title={batchDownloadReady ? "下载合并 PPTX" : "全部完成后可批量下载 PPTX"}
-          aria-label={batchDownloadReady ? "下载合并 PPTX" : "全部完成后可批量下载 PPTX"}
-          disabled={!activeBatch || !batchDownloadReady || batchDownloadPending}
-          onClick={() => {
-            if (!activeBatch) return;
-            void onDownloadBatchPptx(activeBatch.batch.batch_id);
-          }}
-        >
-          {batchDownloadPending ? <ButtonSpinner /> : <DownloadIcon />}
-        </button>
       </section>
       {batchContextMenu && (
         <div
@@ -6905,6 +7075,24 @@ function DownloadIcon() {
   );
 }
 
+function SelectCardsIcon() {
+  return (
+    <svg className="select-cards-icon" viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M5.1 6.2h8.7a1.3 1.3 0 0 1 1.3 1.3v7.1a1.3 1.3 0 0 1-1.3 1.3H5.1a1.3 1.3 0 0 1-1.3-1.3V7.5a1.3 1.3 0 0 1 1.3-1.3Z" />
+      <path d="M6.4 3.9h8.1a1.7 1.7 0 0 1 1.7 1.7v6.5" />
+      <path d="m6.8 11.1 1.8 1.8 3.8-4" />
+    </svg>
+  );
+}
+
+function SelectionCheckIcon() {
+  return (
+    <svg className="selection-check-icon" viewBox="0 0 20 20" aria-hidden="true">
+      <path d="m5.3 10.2 3 3.1 6.4-6.7" />
+    </svg>
+  );
+}
+
 function UploadIcon() {
   return (
     <svg className="upload-icon" viewBox="0 0 28 28" aria-hidden="true">
@@ -7317,6 +7505,29 @@ function caseInitials(value: string): string {
 
 function caseCountTotal(counts: Record<string, number>): number {
   return Object.values(counts || {}).reduce((total, value) => total + value, 0);
+}
+
+function batchStatusSummary(batch: BatchRecord, cases: CaseRecord[]): string {
+  const counts = cases.length > 0
+    ? cases.reduce<Record<string, number>>((next, item) => {
+        next[item.status] = (next[item.status] || 0) + 1;
+        return next;
+      }, {})
+    : batch.case_counts || {};
+  const total = cases.length || caseCountTotal(counts);
+  const completed = counts.completed || 0;
+  const failed = counts.failed || 0;
+  const running = (counts.analysis_running || 0) + (counts.svg_running || 0);
+  const waitingBreakpoint = cases.filter((item) => isCasePausedAtWorkflowBreakpoint(item)).length;
+  if (waitingBreakpoint > 0) return `${waitingBreakpoint} 张等待断点继续`;
+  if (failed > 0) return `${failed} 张失败 / ${total} 张`;
+  if (running > 0) return `${running} 张运行中 / ${total} 张`;
+  if (total > 0) return `${completed} / ${total} 张完成`;
+  return "暂无图片";
+}
+
+function isCasePausedAtWorkflowBreakpoint(item: Pick<CaseRecord, "status" | "stage" | "workflow_breakpoint_node_id">): boolean {
+  return Boolean(item.workflow_breakpoint_node_id && item.status === "assets_review" && item.stage === item.workflow_breakpoint_node_id);
 }
 
 function loadImageGenConnectionSettings(): ImageGenConnectionSettings {
