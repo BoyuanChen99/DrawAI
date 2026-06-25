@@ -134,6 +134,23 @@ const CASE_DETAIL_LAYOUT_MS = 420;
 const CASE_CARD_LAYOUT_MS = 560;
 const CASE_CARD_LAYOUT_ANIMATION_ID = "case-card-layout";
 
+type TaskDetailExitSnapshot = {
+  caseDetail: CaseDetail;
+  progress: CaseProgress | null;
+  workflowTemplateId: string;
+  runCompatibility: RunCompatibilityMode;
+  runPackage: V2RunPackage | null;
+  v2Elements: V2ElementPlan[];
+  selectedV2ElementId: string;
+  selectedAssetPackage: V2AssetPackage | null;
+  v2PackageError: string;
+  v2AssetLoadingElementId: string;
+  v2ActionPending: string;
+  runInProgress: boolean;
+  canRunFromAssets: boolean;
+  caseActionPendingId: string;
+};
+
 type DragState =
   | { kind: "move"; id: string; startX: number; startY: number; bbox: [number, number, number, number]; geometry?: AssetGeometry }
   | { kind: "resize"; id: string; handle: string; startX: number; startY: number; bbox: [number, number, number, number]; geometry?: AssetGeometry }
@@ -1418,6 +1435,7 @@ function BoardWorkspace({
   onOpenWorkflowNodeArtifact: (caseId: string, nodeId: string) => void;
 }) {
   const [detailClosing, setDetailClosing] = useState(false);
+  const [detailExitSnapshot, setDetailExitSnapshot] = useState<TaskDetailExitSnapshot | null>(null);
   const boardRef = useRef<HTMLElement | null>(null);
   const detailCloseTimerRef = useRef<number | null>(null);
   const previousCaseCardRectsRef = useRef<Map<string, DOMRect>>(new Map());
@@ -1425,6 +1443,25 @@ function BoardWorkspace({
   const closedTaskListScrollTopRef = useRef(0);
   const detailOpen = Boolean(activeCase);
   const caseLayoutKey = detailOpen ? `open:${activeCase?.case.case_id || ""}` : "closed";
+  const activeDetailSnapshot = activeCase
+    ? {
+        caseDetail: activeCase,
+        progress: caseProgress,
+        workflowTemplateId: activeBatch?.batch.workflow_template_id || "",
+        runCompatibility,
+        runPackage,
+        v2Elements,
+        selectedV2ElementId,
+        selectedAssetPackage,
+        v2PackageError,
+        v2AssetLoadingElementId,
+        v2ActionPending,
+        runInProgress,
+        canRunFromAssets,
+        caseActionPendingId
+      }
+    : null;
+  const renderedDetailSnapshot = activeDetailSnapshot || detailExitSnapshot;
 
   useLayoutEffect(() => {
     const root = boardRef.current;
@@ -1494,7 +1531,9 @@ function BoardWorkspace({
   });
 
   useEffect(() => {
+    if (!activeCase) return;
     setDetailClosing(false);
+    setDetailExitSnapshot(null);
     if (detailCloseTimerRef.current !== null) {
       window.clearTimeout(detailCloseTimerRef.current);
       detailCloseTimerRef.current = null;
@@ -1510,12 +1549,14 @@ function BoardWorkspace({
   }, []);
 
   function closeDetailPanel() {
-    if (!activeCase || detailClosing) return;
+    if (!activeDetailSnapshot || detailClosing) return;
+    setDetailExitSnapshot(activeDetailSnapshot);
     setDetailClosing(true);
+    onCloseCaseDetail();
     detailCloseTimerRef.current = window.setTimeout(() => {
       detailCloseTimerRef.current = null;
       setDetailClosing(false);
-      onCloseCaseDetail();
+      setDetailExitSnapshot(null);
     }, CASE_DETAIL_LAYOUT_MS);
   }
 
@@ -1553,26 +1594,26 @@ function BoardWorkspace({
           onDownloadPptx={onDownloadPptx}
           onDownloadBatchPptx={onDownloadBatchPptx}
         />
-        {detailOpen && (
+        {renderedDetailSnapshot && (
           <TaskDetailPanel
-            caseDetail={activeCase}
-            progress={caseProgress}
-            workflowTemplateId={activeBatch?.batch.workflow_template_id || ""}
-            runCompatibility={runCompatibility}
-            runPackage={runPackage}
-            v2Elements={v2Elements}
-            selectedV2ElementId={selectedV2ElementId}
-            selectedAssetPackage={selectedAssetPackage}
-            v2PackageError={v2PackageError}
-            v2AssetLoadingElementId={v2AssetLoadingElementId}
-            v2ActionPending={v2ActionPending}
-            closing={detailClosing}
+            caseDetail={renderedDetailSnapshot.caseDetail}
+            progress={renderedDetailSnapshot.progress}
+            workflowTemplateId={renderedDetailSnapshot.workflowTemplateId}
+            runCompatibility={renderedDetailSnapshot.runCompatibility}
+            runPackage={renderedDetailSnapshot.runPackage}
+            v2Elements={renderedDetailSnapshot.v2Elements}
+            selectedV2ElementId={renderedDetailSnapshot.selectedV2ElementId}
+            selectedAssetPackage={renderedDetailSnapshot.selectedAssetPackage}
+            v2PackageError={renderedDetailSnapshot.v2PackageError}
+            v2AssetLoadingElementId={renderedDetailSnapshot.v2AssetLoadingElementId}
+            v2ActionPending={renderedDetailSnapshot.v2ActionPending}
+            closing={detailClosing && !activeCase}
             onClose={closeDetailPanel}
             onOpenCaseAssets={onOpenCaseAssets}
             onOpenWorkflowNodeArtifact={onOpenWorkflowNodeArtifact}
-            runInProgress={runInProgress}
-            canRunFromAssets={canRunFromAssets}
-            caseActionPendingId={caseActionPendingId}
+            runInProgress={renderedDetailSnapshot.runInProgress}
+            canRunFromAssets={renderedDetailSnapshot.canRunFromAssets}
+            caseActionPendingId={renderedDetailSnapshot.caseActionPendingId}
             onRunFromAssets={onRunFromAssets}
             onRerunStage={onRerunStage}
             onSetWorkflowBreakpoint={onSetWorkflowBreakpoint}

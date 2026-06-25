@@ -2184,6 +2184,16 @@ select:focus {
 }
 
 .task-detail-panel.closing {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 70;
+  width: min(760px, max(620px, 52%));
+  max-width: calc(100% - 272px);
+  border-left: 1px solid rgba(203, 213, 225, 0.98);
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: -28px 0 60px rgba(15, 23, 42, 0.12);
   animation: task-detail-panel-out 360ms cubic-bezier(0.4, 0, 0.2, 1) both;
   pointer-events: none;
 }
@@ -2296,6 +2306,13 @@ select:focus {
     position: absolute;
     inset: 0;
     z-index: 40;
+    border-left: 0;
+  }
+
+  .task-detail-panel.closing {
+    inset: 0;
+    width: auto;
+    max-width: none;
     border-left: 0;
   }
 
