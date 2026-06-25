@@ -6247,6 +6247,7 @@ button.asset-status-unsupported {
 
 .image-overlay-wrap {
   position: relative;
+  isolation: isolate;
   width: min(100%, 1180px);
   margin: 0 auto 70px;
   border: 1px solid rgba(15, 23, 42, 0.14);
