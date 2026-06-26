@@ -1573,25 +1573,40 @@ select:focus {
   color: #b45309;
 }
 
+.batch-row-main .status-pill,
 .task-row .status-pill {
   color: #ffffff;
   font-weight: 650;
 }
 
+.batch-row-main .status-queued,
+.batch-row-main .status-canceled,
+.task-row .status-queued,
+.task-row .status-canceled {
+  background: #475569;
+}
+
+.batch-row-main .status-failed,
 .task-row .status-failed {
   background: #dc2626;
 }
 
+.batch-row-main .status-running,
+.batch-row-main .status-analysis_running,
+.batch-row-main .status-svg_running,
 .task-row .status-running,
 .task-row .status-analysis_running,
 .task-row .status-svg_running {
   background: #2563eb;
 }
 
+.batch-row-main .status-completed,
 .task-row .status-completed {
   background: #059669;
 }
 
+.batch-row-main .status-assets_review,
+.batch-row-main .status-waiting_review,
 .task-row .status-assets_review,
 .task-row .status-waiting_review {
   background: #d97706;
