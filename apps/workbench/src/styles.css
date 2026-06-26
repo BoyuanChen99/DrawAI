@@ -1017,7 +1017,7 @@ select:focus {
 
 .task-batch-status-bar {
   width: min(100%, 820px);
-  min-height: 30px;
+  min-height: 40px;
   display: grid;
   grid-template-columns: minmax(180px, 0.78fr) auto auto;
   align-items: center;
@@ -1026,7 +1026,7 @@ select:focus {
   border-radius: 999px;
   background: rgba(248, 250, 252, 0.9);
   color: #475569;
-  padding: 2px 6px 2px 12px;
+  padding: 3px 8px 3px 12px;
   box-shadow: 0 10px 26px rgba(15, 23, 42, 0.06);
   backdrop-filter: blur(16px);
   pointer-events: auto;
@@ -1115,89 +1115,129 @@ select:focus {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 5px;
+  gap: 6px;
 }
 
 .task-batch-action {
   box-sizing: border-box;
-  flex: 0 0 24px;
-  width: 24px;
-  min-width: 24px;
-  max-width: 24px;
-  height: 24px;
-  min-height: 24px;
-  max-height: 24px;
+  position: relative;
+  flex: 0 0 34px;
+  width: 34px;
+  min-width: 34px;
+  max-width: 34px;
+  height: 34px;
+  min-height: 34px;
+  max-height: 34px;
   aspect-ratio: 1 / 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgba(148, 163, 184, 0.24);
-  border-radius: 999px;
-  background: #f8fafc;
-  color: #334155;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: #737a80;
   padding: 0;
   font-size: 13px;
   font-weight: 650;
   line-height: 1;
   box-shadow: none;
-  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease;
+  opacity: 1;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, transform 140ms ease, opacity 140ms ease;
 }
 
-.task-batch-action:hover:not(:disabled) {
-  border-color: rgba(49, 104, 245, 0.24);
-  background: #eef4ff;
-  color: var(--blue);
-  transform: translateY(-1px);
+.task-batch-action:hover:not(:disabled),
+.task-batch-action:focus-visible,
+.task-batch-action:active,
+.task-batch-action.select-toggle.active {
+  border-color: transparent;
+  background: #f1f3f5;
+  color: #1f2328;
+  transform: none;
+}
+
+.task-batch-action:focus-visible {
+  outline: 2px solid rgba(49, 104, 245, 0.26);
+  outline-offset: 2px;
 }
 
 .task-batch-action.primary {
-  border-color: rgba(49, 104, 245, 0.24);
-  background: var(--blue);
-  color: #ffffff;
+  border-color: transparent;
+  background: transparent;
+  color: #737a80;
 }
 
 .task-batch-action.primary:hover:not(:disabled) {
-  border-color: rgba(49, 104, 245, 0.36);
-  background: #2458db;
-  color: #ffffff;
+  border-color: transparent;
+  background: #f1f3f5;
+  color: #1f2328;
 }
 
 .task-batch-action.dark {
-  border-color: rgba(15, 23, 42, 0.2);
-  background: #172033;
-  color: #ffffff;
+  border-color: transparent;
+  background: transparent;
+  color: #737a80;
 }
 
 .task-batch-action.dark:hover:not(:disabled) {
-  border-color: rgba(15, 23, 42, 0.3);
-  background: #020617;
-  color: #ffffff;
+  border-color: transparent;
+  background: #f1f3f5;
+  color: #1f2328;
 }
 
 .task-batch-action.danger {
-  border-color: rgba(220, 38, 38, 0.22);
-  background: #fff5f5;
-  color: #b91c1c;
+  border-color: transparent;
+  background: transparent;
+  color: #737a80;
 }
 
 .task-batch-action.danger:hover:not(:disabled) {
-  border-color: rgba(220, 38, 38, 0.36);
-  background: #fee2e2;
-  color: #991b1b;
+  border-color: transparent;
+  background: #f1f3f5;
+  color: #b91c1c;
 }
 
 .task-batch-action.select-toggle.active {
-  border-color: rgba(220, 38, 38, 0.18);
-  background: #fff1f2;
-  color: #be123c;
+  border-color: transparent;
+  background: #f1f3f5;
+  color: #1f2328;
 }
 
 .task-batch-action:disabled {
-  border-color: rgba(148, 163, 184, 0.16);
-  background: #edf2f7;
+  border-color: transparent;
+  background: transparent;
   color: #94a3b8;
   cursor: not-allowed;
   transform: none;
+}
+
+.task-batch-action[data-tooltip]::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  z-index: 60;
+  width: max-content;
+  max-width: 220px;
+  padding: 7px 11px;
+  border: 1px solid rgba(203, 213, 225, 0.8);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.98);
+  color: #1f2937;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.2;
+  white-space: nowrap;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.12);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-50%) translateY(-2px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.task-batch-action:hover:not(:disabled)::after,
+.task-batch-action:focus-visible::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
 }
 
 .task-batch-action .play-icon,
@@ -1206,8 +1246,8 @@ select:focus {
 .task-batch-action .download-icon,
 .task-batch-action .select-cards-icon,
 .task-batch-action .panel-close-icon {
-  width: 13px;
-  height: 13px;
+  width: 17px;
+  height: 17px;
 }
 
 .task-batch-action .play-icon {
@@ -1215,8 +1255,8 @@ select:focus {
 }
 
 .task-batch-action .button-spinner {
-  width: 12px;
-  height: 12px;
+  width: 15px;
+  height: 15px;
 }
 
 .batch-download-floating {
@@ -2367,21 +2407,21 @@ select:focus {
   }
 
   .task-batch-status-bar {
-    min-height: 30px;
-    padding: 2px 6px 2px 12px;
+    min-height: 40px;
+    padding: 3px 8px 3px 12px;
   }
 
   .task-batch-actions {
-    gap: 5px;
+    gap: 6px;
   }
 
   .task-batch-action {
-    width: 24px;
-    min-width: 24px;
-    max-width: 24px;
-    height: 24px;
-    min-height: 24px;
-    max-height: 24px;
+    width: 34px;
+    min-width: 34px;
+    max-width: 34px;
+    height: 34px;
+    min-height: 34px;
+    max-height: 34px;
     padding: 0;
   }
 

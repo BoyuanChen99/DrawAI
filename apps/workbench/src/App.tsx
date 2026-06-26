@@ -5692,6 +5692,9 @@ function TaskSelectionWorkspace({
     : "重新生成全部卡片";
   const downloadActionLabel = batchDownloadReady ? "下载合并 PPTX" : "全部完成后可下载合并 PPTX";
   const selectionToggleLabel = caseSelectionMode ? "退出多选" : "选择要重新生成的卡片";
+  const cancelTooltipLabel = caseSelectionMode && cancelTargets.length > 0 ? `终止 ${cancelTargets.length} 个任务` : "终止任务";
+  const rerunTooltipLabel = caseSelectionMode && selectionCount > 0 ? `重新生成 ${selectionCount} 个任务` : "重新生成";
+  const selectionTooltipLabel = caseSelectionMode ? "退出多选" : "多选任务";
 
   useEffect(() => {
     setCaseSelectionMode(false);
@@ -5925,8 +5928,8 @@ function TaskSelectionWorkspace({
                   type="button"
                   className="task-batch-action danger"
                   disabled={cancelDisabled}
-                  title={cancelActionLabel}
                   aria-label={cancelActionLabel}
+                  data-tooltip={cancelTooltipLabel}
                   onClick={() => {
                     void cancelSelectedTargets();
                   }}
@@ -5937,8 +5940,8 @@ function TaskSelectionWorkspace({
                   type="button"
                   className="task-batch-action"
                   disabled={continueDisabled}
-                  title={continueActionLabel}
                   aria-label={continueActionLabel}
+                  data-tooltip="继续任务"
                   onClick={continueBreakpointTarget}
                 >
                   {continuePending ? <ButtonSpinner /> : <PlayIcon />}
@@ -5947,8 +5950,8 @@ function TaskSelectionWorkspace({
                   type="button"
                   className="task-batch-action primary"
                   disabled={rerunDisabled}
-                  title={rerunActionLabel}
                   aria-label={rerunActionLabel}
+                  data-tooltip={rerunTooltipLabel}
                   onClick={() => {
                     void regenerateRerunTargets();
                   }}
@@ -5959,8 +5962,8 @@ function TaskSelectionWorkspace({
                   type="button"
                   className="task-batch-action dark"
                   disabled={!batchDownloadReady || batchDownloadPending}
-                  title={downloadActionLabel}
                   aria-label={downloadActionLabel}
+                  data-tooltip="下载 PPTX"
                   onClick={() => {
                     void onDownloadBatchPptx(activeBatch.batch.batch_id);
                   }}
@@ -5970,8 +5973,8 @@ function TaskSelectionWorkspace({
                 <button
                   type="button"
                   className={`task-batch-action select-toggle${caseSelectionMode ? " active" : ""}`}
-                  title={selectionToggleLabel}
                   aria-label={selectionToggleLabel}
+                  data-tooltip={selectionTooltipLabel}
                   aria-pressed={caseSelectionMode}
                   onClick={toggleSelectionMode}
                 >
