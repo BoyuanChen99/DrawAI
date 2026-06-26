@@ -2264,15 +2264,12 @@ function WorkbenchSettingsCenter({
                       availableAgentCount={agentPickerChoices.length}
                       selectedLlmPreset={selectedLlmPreset}
                       llmPresetCount={llmPresets.length}
-                      selectedImageGenMethod={selectedImageGenMethod}
-                      imageGenMethodCount={imageGenMethodCardsList.length}
                       processorDefinitions={processorDefinitions}
                       processorDrafts={processorDrafts}
                       processorIds={processorIds}
                       saving={saving}
                       onChooseAgent={() => setAgentPickerOpen(true)}
                       onChooseLlm={() => openLlmSettings(selectedLlmPresetId)}
-                      onChooseImageGen={beginImageGenMethodSelection}
                       onOpenProcessorSettings={() => {
                         setSelectedProcessorId(selectedProcessorId || processorIds[0] || "");
                         setSettingsDetailTarget(null);
@@ -3208,15 +3205,12 @@ function SettingsOverviewPage({
   availableAgentCount,
   selectedLlmPreset,
   llmPresetCount,
-  selectedImageGenMethod,
-  imageGenMethodCount,
   processorDefinitions,
   processorDrafts,
   processorIds,
   saving,
   onChooseAgent,
   onChooseLlm,
-  onChooseImageGen,
   onOpenProcessorSettings
 }: {
   overview: WorkbenchStatusOverviewResponse | null;
@@ -3227,15 +3221,12 @@ function SettingsOverviewPage({
   availableAgentCount: number;
   selectedLlmPreset: ApiPreset | null;
   llmPresetCount: number;
-  selectedImageGenMethod: ImageGenMethodCard | null;
-  imageGenMethodCount: number;
   processorDefinitions: ProcessorSettingsResponse["definitions"]["processors"];
   processorDrafts: ProcessorSettingsResponse["settings"]["processors"];
   processorIds: string[];
   saving: boolean;
   onChooseAgent: () => void;
   onChooseLlm: () => void;
-  onChooseImageGen: () => void;
   onOpenProcessorSettings: () => void;
 }) {
   if (loading) return <div className="agent-settings-empty">加载中</div>;
@@ -3243,19 +3234,6 @@ function SettingsOverviewPage({
   const selectedAgentIcon = selectedAgent ? agentProviderIconForId(selectedAgent.provider_id) : null;
   const selectedLlmPresetTemplate = selectedLlmPreset ? apiPresetTemplateForPreset(selectedLlmPreset) : null;
   const llmSeverity = selectedLlmPreset ? "ok" : "warning";
-  const imageGenSeverity = selectedImageGenMethod?.available ? "ok" : "warning";
-  const selectedImageGenPresetTemplate =
-    selectedImageGenMethod?.kind === "api_preset"
-      ? apiPresetTemplateForPreset({
-          id: selectedImageGenMethod.apiPresetId,
-          label: selectedImageGenMethod.label,
-          type: "images_api",
-          base_url: selectedImageGenMethod.baseUrl,
-          model: selectedImageGenMethod.model,
-          api_key_env: "",
-          api_key: ""
-        })
-      : null;
   const statusSeverity = error ? "warning" : overview?.overall.severity || "ok";
   const statusLabel = error || overview?.overall.label || "状态已读取";
   const enabledOverviewProcessors = processorIds.filter((processorId) => processorDrafts[processorId]?.enabled);
@@ -3315,27 +3293,6 @@ function SettingsOverviewPage({
               <span>默认 LLM 配置</span>
               <strong>{selectedLlmPreset?.label || selectedLlmPreset?.id || "未选择"}</strong>
               <em>{selectedLlmPreset ? selectedLlmPreset.model || selectedLlmPreset.type : `${llmPresetCount} 个预设可选`}</em>
-            </span>
-            <span className="settings-overview-engine-action">选择</span>
-          </button>
-          <button
-            type="button"
-            className={`settings-overview-engine ${imageGenSeverity}`}
-            aria-label="选择图像生成方式"
-            onClick={onChooseImageGen}
-            disabled={saving}
-          >
-            <span
-              className={`settings-overview-engine-icon${selectedImageGenPresetTemplate ? " settings-provider-logo-mini" : ""}`}
-              style={selectedImageGenPresetTemplate ? ({ "--provider-color": selectedImageGenPresetTemplate.accent_color } as CSSProperties) : undefined}
-              aria-hidden="true"
-            >
-              {selectedImageGenPresetTemplate ? <img src={selectedImageGenPresetTemplate.icon_url} alt="" /> : <SettingsNavIcon icon="imagegen" />}
-            </span>
-            <span className="settings-overview-engine-copy">
-              <span>图像生成</span>
-              <strong>{selectedImageGenMethod?.label || "未选择"}</strong>
-              <em>{selectedImageGenMethod ? selectedImageGenMethod.model || selectedImageGenMethod.detail : `${imageGenMethodCount} 个方式可选`}</em>
             </span>
             <span className="settings-overview-engine-action">选择</span>
           </button>

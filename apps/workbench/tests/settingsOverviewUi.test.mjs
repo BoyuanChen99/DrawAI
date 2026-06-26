@@ -5,6 +5,8 @@ import test from "node:test";
 test("settings overview is split into engine choices and node settings", () => {
   const source = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
   const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+  const overviewCallBlock = source.match(/<SettingsOverviewPage[\s\S]*?\/>/)?.[0] || "";
+  const overviewFunctionBlock = source.match(/function SettingsOverviewPage\([\s\S]*?\n}\n\nfunction apiPresetsWithImageGenMigration/)?.[0] || "";
 
   assert.match(source, /selectedLlmPreset=\{selectedLlmPreset\}/);
   assert.match(source, /processorDefinitions=\{processorDefinitions\}/);
@@ -23,6 +25,8 @@ test("settings overview is split into engine choices and node settings", () => {
   assert.match(source, /aria-label="打开处理器设置"/);
   assert.doesNotMatch(source, /settings-overview-hero/);
   assert.doesNotMatch(source, /settings-overview-lanes/);
+  assert.doesNotMatch(overviewCallBlock, /selectedImageGenMethod|imageGenMethodCount|onChooseImageGen/);
+  assert.doesNotMatch(overviewFunctionBlock, /选择图像生成方式|selectedImageGenMethod|imageGenMethodCount|onChooseImageGen/);
 
   assert.match(css, /\.settings-overview-section\s*\{/);
   assert.match(css, /\.settings-overview-engines\s*\{/);
