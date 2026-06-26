@@ -6524,6 +6524,7 @@ function NewBatchForm({
   const selectedCount = uploadFileRows.filter((row) => selectedUploadIds.has(row.id)).length;
   const allUploadsSelected = uploadFileRows.length > 0 && selectedCount === uploadFileRows.length;
   const selectedAgent = agentChoices.find((agent) => agent.provider_id === agentSettingsDraft.selected_provider_id) || null;
+  const selectedAgentIcon = selectedAgent ? agentProviderIconForId(selectedAgent.provider_id) : null;
   const llmThinking = llmThinkingEnabled(agentSettingsDraft.llm_extra_body);
 
   useEffect(() => {
@@ -6661,37 +6662,51 @@ function NewBatchForm({
         {pendingUpload ? (
           <div className="upload-confirmation">
             <section className="upload-task-files" aria-label="上传文件">
-              <div className="upload-panel-head">
-                <div>
-                  <span>文件</span>
-                  <strong>{uploadFileRows.length} 个文件</strong>
-                  <em>解析到 {pendingUpload.images.length} 张图片</em>
-                </div>
-                <input
-                  ref={continueFileInputRef}
-                  type="file"
-                  multiple
-                  accept=".png,.jpg,.jpeg,.webp,.zip,image/png,image/jpeg,image/webp,application/zip"
-                  disabled={preparingUpload || submitting}
-                  onChange={(event) => {
-                    const files = selectedUploadFilesFromFileList(event.currentTarget.files);
-                    event.currentTarget.value = "";
-                    void submitFiles(files, { append: true });
-                  }}
-                />
-              </div>
-              <div className="upload-file-toolbar">
-                <button type="button" disabled={uploadFileRows.length === 0 || submitting} onClick={toggleAllUploads}>
-                  {allUploadsSelected ? "取消全选" : "全选"}
-                </button>
-                <button type="button" disabled={selectedCount === 0 || submitting} onClick={deleteSelectedUploads}>
-                  删除
-                </button>
-                <button type="button" disabled={preparingUpload || submitting} onClick={() => continueFileInputRef.current?.click()}>
-                  {preparingUpload ? "解析中" : "继续上传"}
-                </button>
-              </div>
               <div className="upload-file-list" role="list" aria-label="已选择文件">
+                <div className="upload-file-toolbar">
+                  <input
+                    ref={continueFileInputRef}
+                    type="file"
+                    multiple
+                    accept=".png,.jpg,.jpeg,.webp,.zip,image/png,image/jpeg,image/webp,application/zip"
+                    disabled={preparingUpload || submitting}
+                    onChange={(event) => {
+                      const files = selectedUploadFilesFromFileList(event.currentTarget.files);
+                      event.currentTarget.value = "";
+                      void submitFiles(files, { append: true });
+                    }}
+                  />
+                  <button
+                    type="button"
+                    className={allUploadsSelected ? "upload-file-icon-button active" : "upload-file-icon-button"}
+                    disabled={uploadFileRows.length === 0 || submitting}
+                    aria-label={allUploadsSelected ? "取消全选" : "全选"}
+                    title={allUploadsSelected ? "取消全选" : "全选"}
+                    onClick={toggleAllUploads}
+                  >
+                    <UploadSelectAllIcon />
+                  </button>
+                  <button
+                    type="button"
+                    className={selectedCount > 0 ? "upload-file-icon-button active" : "upload-file-icon-button"}
+                    disabled={selectedCount === 0 || submitting}
+                    aria-label="删除选中文件"
+                    title="删除选中文件"
+                    onClick={deleteSelectedUploads}
+                  >
+                    <UploadTrashIcon />
+                  </button>
+                  <button
+                    type="button"
+                    className="upload-file-icon-button"
+                    disabled={preparingUpload || submitting}
+                    aria-label={preparingUpload ? "解析中" : "继续上传"}
+                    title={preparingUpload ? "解析中" : "继续上传"}
+                    onClick={() => continueFileInputRef.current?.click()}
+                  >
+                    <UploadMoreIcon />
+                  </button>
+                </div>
                 {uploadFileRows.map((row) => (
                   <label className={selectedUploadIds.has(row.id) ? "upload-file-row selected" : "upload-file-row"} role="listitem" key={row.id}>
                     <input
@@ -6716,7 +6731,7 @@ function NewBatchForm({
                 <div>
                   <span>任务</span>
                   <strong>运行设置</strong>
-                  <em>{selectedExecutionMode === "agent" ? "Agent Engine" : "LLM Engine"}</em>
+                  <em>{selectedExecutionMode === "agent" ? "Agent 引擎" : "LLM 引擎"}</em>
                 </div>
                 <button
                   type="button"
@@ -6742,7 +6757,7 @@ function NewBatchForm({
                   />
                 </label>
                 <label className="settings-field">
-                  <span>Workflow</span>
+                  <span>工作流</span>
                   <select
                     value={selectedWorkflowTemplateId}
                     disabled={submitting || workflowTemplates.length === 0}
@@ -6756,18 +6771,33 @@ function NewBatchForm({
                   </select>
                 </label>
                 <div className="upload-engine-field">
-                  <span>Engine</span>
+                  <span>引擎</span>
                   <button
                     type="button"
                     className="upload-engine-trigger"
                     disabled={submitting}
                     onClick={() => setEnginePickerOpen((current) => !current)}
                   >
-                    <strong>{selectedExecutionMode === "agent" ? "Agent" : "LLM"}</strong>
-                    <em>{selectedExecutionMode === "agent" ? selectedAgent?.label || agentSettingsDraft.selected_provider_id : agentSettingsDraft.llm_model || "未选择模型"}</em>
+                    {selectedExecutionMode === "agent" ? (
+                      <span
+                        className={`upload-engine-logo settings-provider-logo${selectedAgentIcon ? "" : " settings-provider-logo-custom"}`}
+                        style={selectedAgentIcon ? ({ "--provider-color": selectedAgentIcon.accent_color } as CSSProperties) : undefined}
+                        aria-hidden="true"
+                      >
+                        {selectedAgentIcon ? <img src={selectedAgentIcon.icon_url} alt="" /> : <SettingsNavIcon icon="agent" />}
+                      </span>
+                    ) : (
+                      <span className="upload-engine-logo settings-provider-logo settings-provider-logo-custom" aria-hidden="true">
+                        <SettingsNavIcon icon="llm" />
+                      </span>
+                    )}
+                    <span className="upload-engine-copy">
+                      <strong>{selectedExecutionMode === "agent" ? "Agent 引擎" : "LLM 引擎"}</strong>
+                      <em>{selectedExecutionMode === "agent" ? selectedAgent?.label || agentSettingsDraft.selected_provider_id : agentSettingsDraft.llm_model || "未选择模型"}</em>
+                    </span>
                   </button>
                   {enginePickerOpen && (
-                    <div className="upload-engine-popover" role="dialog" aria-label="选择 Engine">
+                    <div className="upload-engine-popover" role="dialog" aria-label="选择引擎">
                       <button
                         type="button"
                         className={selectedExecutionMode === "agent" ? "upload-engine-card active" : "upload-engine-card"}
@@ -6776,8 +6806,17 @@ function NewBatchForm({
                           setEnginePickerOpen(false);
                         }}
                       >
-                        <strong>Agent</strong>
-                        <span>{selectedAgent?.label || agentSettingsDraft.selected_provider_id}</span>
+                        <span
+                          className={`upload-engine-logo settings-provider-logo${selectedAgentIcon ? "" : " settings-provider-logo-custom"}`}
+                          style={selectedAgentIcon ? ({ "--provider-color": selectedAgentIcon.accent_color } as CSSProperties) : undefined}
+                          aria-hidden="true"
+                        >
+                          {selectedAgentIcon ? <img src={selectedAgentIcon.icon_url} alt="" /> : <SettingsNavIcon icon="agent" />}
+                        </span>
+                        <span className="upload-engine-copy">
+                          <strong>Agent 模式</strong>
+                          <em>{selectedAgent?.label || agentSettingsDraft.selected_provider_id}</em>
+                        </span>
                       </button>
                       <button
                         type="button"
@@ -6787,8 +6826,13 @@ function NewBatchForm({
                           setEnginePickerOpen(false);
                         }}
                       >
-                        <strong>LLM</strong>
-                        <span>{agentSettingsDraft.llm_model || "OpenAI compatible"}</span>
+                        <span className="upload-engine-logo settings-provider-logo settings-provider-logo-custom" aria-hidden="true">
+                          <SettingsNavIcon icon="llm" />
+                        </span>
+                        <span className="upload-engine-copy">
+                          <strong>LLM 模式</strong>
+                          <em>{agentSettingsDraft.llm_model || "OpenAI compatible"}</em>
+                        </span>
                       </button>
                     </div>
                   )}
@@ -8141,6 +8185,36 @@ function SelectionCheckIcon() {
   return (
     <svg className="selection-check-icon" viewBox="0 0 20 20" aria-hidden="true">
       <path d="m5.3 10.2 3 3.1 6.4-6.7" />
+    </svg>
+  );
+}
+
+function UploadSelectAllIcon() {
+  return (
+    <svg className="upload-file-toolbar-icon" viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M5.2 4.2h9.6a1 1 0 0 1 1 1v9.6a1 1 0 0 1-1 1H5.2a1 1 0 0 1-1-1V5.2a1 1 0 0 1 1-1Z" />
+      <path d="m6.9 10.1 2.2 2.2 4.3-4.6" />
+    </svg>
+  );
+}
+
+function UploadTrashIcon() {
+  return (
+    <svg className="upload-file-toolbar-icon" viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M5.2 6.3h9.6" />
+      <path d="M8.3 6.3V4.8h3.4v1.5" />
+      <path d="M6.6 8.1 7.2 15h5.6l.6-6.9" />
+      <path d="M9 9.4v3.9M11 9.4v3.9" />
+    </svg>
+  );
+}
+
+function UploadMoreIcon() {
+  return (
+    <svg className="upload-file-toolbar-icon" viewBox="0 0 20 20" aria-hidden="true">
+      <path d="M10 14.8V5.2" />
+      <path d="M6.6 8.4 10 5l3.4 3.4" />
+      <path d="M4.8 15.3h10.4" />
     </svg>
   );
 }
