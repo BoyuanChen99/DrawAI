@@ -153,6 +153,7 @@ type BatchContextMenuState = { batchId: string; batchName: string; caseCount: nu
 type TaskDialogTarget = { batchId: string; name: string };
 type WorkbenchSettingsNavItem = { id: WorkbenchSettingsCategory; label: string; icon: WorkbenchSettingsCategory };
 type WorkbenchSettingsNavSection = { label?: string; items: WorkbenchSettingsNavItem[] };
+type UploadEngineMode = Extract<BatchExecutionMode, "agent" | "llm">;
 
 const CASE_DETAIL_LAYOUT_MS = 420;
 const CASE_CARD_LAYOUT_MS = 560;
@@ -6485,22 +6486,40 @@ function NewBatchForm({
   const [submitting, setSubmitting] = useState(false);
   const [preparingUpload, setPreparingUpload] = useState(false);
   const [pendingUpload, setPendingUpload] = useState<UploadConfirmation | null>(null);
-  const [manualAssetReview, setManualAssetReview] = useState(false);
+  const [selectedUploadIds, setSelectedUploadIds] = useState<Set<string>>(() => new Set());
+  const [taskTitle, setTaskTitle] = useState("");
   const [workflowTemplates, setWorkflowTemplates] = useState<WorkflowTemplate[]>([]);
   const [selectedWorkflowTemplateId, setSelectedWorkflowTemplateId] = useState("default_drawai_dag");
-  const [selectedExecutionMode, setSelectedExecutionMode] = useState<BatchExecutionMode>("default");
+  const [selectedExecutionMode, setSelectedExecutionMode] = useState<UploadEngineMode>("agent");
+  const [agentSettingsDraft, setAgentSettingsDraft] = useState<WorkbenchAgentSettings>(DEFAULT_WORKBENCH_AGENT_SETTINGS);
+  const [agentChoices, setAgentChoices] = useState<WorkbenchAgentDiscovery[]>([]);
+  const [enginePickerOpen, setEnginePickerOpen] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const continueFileInputRef = useRef<HTMLInputElement>(null);
+  const uploadFileRows = useMemo(() => pendingUpload?.files.map((item) => ({
+    id: uploadFileId(item),
+    item,
+    label: uploadFileLabel(item),
+    kind: uploadFileKind(item),
+    size: formatBytes(item.file.size)
+  })) || [], [pendingUpload]);
+  const selectedCount = uploadFileRows.filter((row) => selectedUploadIds.has(row.id)).length;
+  const allUploadsSelected = uploadFileRows.length > 0 && selectedCount === uploadFileRows.length;
+  const selectedAgent = agentChoices.find((agent) => agent.provider_id === agentSettingsDraft.selected_provider_id) || null;
+  const llmThinking = llmThinkingEnabled(agentSettingsDraft.llm_extra_body);
 
   useEffect(() => {
     let canceled = false;
-    listWorkflowTemplates()
-      .then((response) => {
+    Promise.all([listWorkflowTemplates(), getWorkbenchAgentSettings(true)])
+      .then(([workflowResponse, agentResponse]) => {
         if (canceled) return;
-        setWorkflowTemplates(response.templates);
-        if (!response.templates.some((template) => template.template_id === selectedWorkflowTemplateId)) {
-          setSelectedWorkflowTemplateId(response.templates[0]?.template_id || "default_drawai_dag");
+        setWorkflowTemplates(workflowResponse.templates);
+        if (!workflowResponse.templates.some((template) => template.template_id === selectedWorkflowTemplateId)) {
+          setSelectedWorkflowTemplateId(workflowResponse.templates[0]?.template_id || "default_drawai_dag");
         }
+        setAgentSettingsDraft(normalizeWorkbenchAgentDraft(agentResponse.settings));
+        setAgentChoices(agentResponse.agents.filter((agent) => agent.available));
       })
       .catch((err) => {
         if (!canceled) onError(err instanceof Error ? err.message : String(err));
@@ -6510,15 +6529,24 @@ function NewBatchForm({
     };
   }, []);
 
+  useEffect(() => {
+    if (!pendingUpload) {
+      setSelectedUploadIds(new Set());
+      return;
+    }
+    const validIds = new Set(pendingUpload.files.map((item) => uploadFileId(item)));
+    setSelectedUploadIds((current) => new Set([...current].filter((id) => validIds.has(id))));
+  }, [pendingUpload]);
+
   async function handleDrop(event: DragEvent<HTMLElement>) {
     event.preventDefault();
     event.stopPropagation();
     setDragActive(false);
     const dropped = await selectedUploadFilesFromDrop(event);
-    await submitFiles(dropped);
+    await submitFiles(dropped, { append: Boolean(pendingUpload) });
   }
 
-  async function submitFiles(droppedFiles: SelectedUploadFile[]) {
+  async function submitFiles(droppedFiles: SelectedUploadFile[], options: { append?: boolean } = {}) {
     const supported = droppedFiles.filter((item) => isSupportedUpload(item.file));
     if (droppedFiles.length === 0 || supported.length === 0) {
       setUploadError("请拖入图片、ZIP 文件，或包含图片的文件夹。");
@@ -6528,12 +6556,16 @@ function NewBatchForm({
     try {
       setPreparingUpload(true);
       setUploadError("");
-      const confirmation = await buildUploadConfirmation(supported);
+      const uploadFiles = options.append && pendingUpload ? mergeUploadFiles(pendingUpload.files, supported) : supported;
+      const confirmation = await buildUploadConfirmation(uploadFiles);
       if (confirmation.images.length === 0) {
         setUploadError("没有解析到支持的图片。请上传 PNG、JPG、WEBP，或包含这些图片的 ZIP。");
         return;
       }
       setPendingUpload(confirmation);
+      if (!options.append || !taskTitle.trim()) {
+        setTaskTitle(uploadTaskTitleFromConfirmation(confirmation));
+      }
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -6541,19 +6573,61 @@ function NewBatchForm({
     }
   }
 
+  async function rebuildPendingUpload(files: SelectedUploadFile[]) {
+    if (files.length === 0) {
+      setPendingUpload(null);
+      setTaskTitle("");
+      setUploadError("");
+      return;
+    }
+    const confirmation = await buildUploadConfirmation(files);
+    if (confirmation.images.length === 0) {
+      setPendingUpload(null);
+      setTaskTitle("");
+      setUploadError("没有剩余支持的图片。");
+      return;
+    }
+    setPendingUpload(confirmation);
+  }
+
+  function toggleUploadSelection(id: string) {
+    setSelectedUploadIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleAllUploads() {
+    setSelectedUploadIds(allUploadsSelected ? new Set() : new Set(uploadFileRows.map((row) => row.id)));
+  }
+
+  function deleteSelectedUploads() {
+    if (!pendingUpload || selectedUploadIds.size === 0) return;
+    const nextFiles = pendingUpload.files.filter((item) => !selectedUploadIds.has(uploadFileId(item)));
+    setSelectedUploadIds(new Set());
+    void rebuildPendingUpload(nextFiles);
+  }
+
   async function confirmUpload() {
     if (!pendingUpload || submitting) return;
+    const normalizedAgentSettings = normalizeWorkbenchAgentDraft(agentSettingsDraft);
+    if (selectedExecutionMode === "llm" && !normalizedAgentSettings.llm_model.trim()) {
+      setUploadError("LLM 模式需要填写模型。");
+      return;
+    }
     try {
       setSubmitting(true);
       setUploadError("");
-      const executionMode: BatchExecutionMode = selectedExecutionMode === "llm" ? "default" : selectedExecutionMode;
       const form = new FormData();
-      form.set("name", pendingUpload.title);
+      form.set("name", taskTitle.trim() || uploadTaskTitleFromConfirmation(pendingUpload));
       form.set("input_mode", "upload");
       form.set("max_concurrent_cases", "10");
-      form.set("auto_run_svg_after_analysis", manualAssetReview ? "false" : "true");
+      form.set("auto_run_svg_after_analysis", "true");
       form.set("workflow_template_id", selectedWorkflowTemplateId);
-      form.set("execution_mode", executionMode);
+      form.set("execution_mode", selectedExecutionMode);
+      form.set("agent_settings", JSON.stringify(normalizedAgentSettings));
       pendingUpload.files.forEach((item) => form.append("files", item.file, item.relativePath));
       const detail = await createUploadBatch(form);
       await onCreated(detail);
@@ -6569,99 +6643,262 @@ function NewBatchForm({
       <div className="new-batch-source">
         {pendingUpload ? (
           <div className="upload-confirmation">
-            <div className="upload-confirmation-head">
-              <div>
-                <span>上传确认</span>
-                <strong>解析到 {pendingUpload.images.length} 张图片</strong>
-              </div>
-              <button type="button" className="upload-reset-button" disabled={submitting} onClick={() => setPendingUpload(null)}>
-                重新选择
-              </button>
-            </div>
-            <div className="upload-image-list" role="list" aria-label="已解析图片">
-              {pendingUpload.images.map((image, index) => (
-                <div className="upload-image-row" role="listitem" key={`${image.kind}-${image.source}-${image.name}-${index}`}>
-                  <span>{index + 1}</span>
-                  <strong>{image.name}</strong>
-                  <em>{image.kind === "zip" ? `来自 ${image.source}` : "直接上传"}</em>
+            <section className="upload-task-files" aria-label="上传文件">
+              <div className="upload-panel-head">
+                <div>
+                  <span>文件</span>
+                  <strong>{uploadFileRows.length} 个文件</strong>
+                  <em>解析到 {pendingUpload.images.length} 张图片</em>
                 </div>
-              ))}
-            </div>
-            {pendingUpload.zipErrors.length > 0 && (
-              <div className="upload-zip-warnings">
-                {pendingUpload.zipErrors.map((warning) => <span key={warning}>{warning}</span>)}
+                <input
+                  ref={continueFileInputRef}
+                  type="file"
+                  multiple
+                  accept=".png,.jpg,.jpeg,.webp,.zip,image/png,image/jpeg,image/webp,application/zip"
+                  disabled={preparingUpload || submitting}
+                  onChange={(event) => {
+                    const files = selectedUploadFilesFromFileList(event.currentTarget.files);
+                    event.currentTarget.value = "";
+                    void submitFiles(files, { append: true });
+                  }}
+                />
               </div>
-            )}
-            <label className="upload-workflow-select">
-              <span>Workflow</span>
-              <select
-                value={selectedWorkflowTemplateId}
-                disabled={submitting || workflowTemplates.length === 0}
-                onChange={(event) => setSelectedWorkflowTemplateId(event.currentTarget.value)}
-              >
-                {workflowTemplates.map((template) => (
-                  <option value={template.template_id} key={template.template_id}>
-                    {template.name}
-                  </option>
+              <div className="upload-file-toolbar">
+                <button type="button" disabled={uploadFileRows.length === 0 || submitting} onClick={toggleAllUploads}>
+                  {allUploadsSelected ? "取消全选" : "全选"}
+                </button>
+                <button type="button" disabled={selectedCount === 0 || submitting} onClick={deleteSelectedUploads}>
+                  删除
+                </button>
+                <button type="button" disabled={preparingUpload || submitting} onClick={() => continueFileInputRef.current?.click()}>
+                  {preparingUpload ? "解析中" : "继续上传"}
+                </button>
+              </div>
+              <div className="upload-file-list" role="list" aria-label="已选择文件">
+                {uploadFileRows.map((row) => (
+                  <label className={selectedUploadIds.has(row.id) ? "upload-file-row selected" : "upload-file-row"} role="listitem" key={row.id}>
+                    <input
+                      type="checkbox"
+                      checked={selectedUploadIds.has(row.id)}
+                      disabled={submitting}
+                      onChange={() => toggleUploadSelection(row.id)}
+                    />
+                    <span>{row.kind}</span>
+                    <strong>{row.label}</strong>
+                    <em>{row.size}</em>
+                  </label>
                 ))}
-              </select>
-            </label>
-            <div className="upload-execution-mode">
-              <span>运行</span>
-              <div className="upload-runtime-toggle" role="radiogroup" aria-label="运行方式">
+              </div>
+              {pendingUpload.zipErrors.length > 0 && (
+                <div className="upload-zip-warnings">
+                  {pendingUpload.zipErrors.map((warning) => <span key={warning}>{warning}</span>)}
+                </div>
+              )}
+            </section>
+            <section className="upload-task-settings" aria-label="任务运行设置">
+              <div className="upload-panel-head">
+                <div>
+                  <span>任务</span>
+                  <strong>运行设置</strong>
+                  <em>{selectedExecutionMode === "agent" ? "Agent Engine" : "LLM Engine"}</em>
+                </div>
                 <button
                   type="button"
-                  role="radio"
-                  aria-checked={selectedExecutionMode === "default"}
-                  className={selectedExecutionMode === "default" ? "active" : ""}
+                  className="upload-reset-button"
                   disabled={submitting}
-                  onClick={() => setSelectedExecutionMode("default")}
+                  onClick={() => {
+                    setPendingUpload(null);
+                    setTaskTitle("");
+                  }}
                 >
-                  默认
+                  重新选择
                 </button>
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={selectedExecutionMode === "agent"}
-                  className={selectedExecutionMode === "agent" ? "active" : ""}
-                  disabled={submitting}
-                  onClick={() => setSelectedExecutionMode("agent")}
-                >
-                  Agent
-                </button>
-                <span className="upload-runtime-disabled-option" title="暂不支持">
+              </div>
+              <div className="upload-settings-fields">
+                <label className="settings-field upload-title-field">
+                  <span>任务标题</span>
+                  <input
+                    value={taskTitle}
+                    disabled={submitting}
+                    onChange={(event) => setTaskTitle(event.target.value)}
+                    placeholder={uploadTaskTitleFromConfirmation(pendingUpload)}
+                    autoComplete="off"
+                  />
+                </label>
+                <label className="settings-field">
+                  <span>Workflow</span>
+                  <select
+                    value={selectedWorkflowTemplateId}
+                    disabled={submitting || workflowTemplates.length === 0}
+                    onChange={(event) => setSelectedWorkflowTemplateId(event.currentTarget.value)}
+                  >
+                    {workflowTemplates.map((template) => (
+                      <option value={template.template_id} key={template.template_id}>
+                        {template.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="upload-engine-field">
+                  <span>Engine</span>
                   <button
                     type="button"
-                    role="radio"
-                    aria-checked={selectedExecutionMode === "llm"}
-                    className={selectedExecutionMode === "llm" ? "active" : ""}
-                    disabled
-                    aria-disabled="true"
+                    className="upload-engine-trigger"
+                    disabled={submitting}
+                    onClick={() => setEnginePickerOpen((current) => !current)}
                   >
-                    LLM
+                    <strong>{selectedExecutionMode === "agent" ? "Agent" : "LLM"}</strong>
+                    <em>{selectedExecutionMode === "agent" ? selectedAgent?.label || agentSettingsDraft.selected_provider_id : agentSettingsDraft.llm_model || "未选择模型"}</em>
                   </button>
-                </span>
+                  {enginePickerOpen && (
+                    <div className="upload-engine-popover" role="dialog" aria-label="选择 Engine">
+                      <button
+                        type="button"
+                        className={selectedExecutionMode === "agent" ? "upload-engine-card active" : "upload-engine-card"}
+                        onClick={() => {
+                          setSelectedExecutionMode("agent");
+                          setEnginePickerOpen(false);
+                        }}
+                      >
+                        <strong>Agent</strong>
+                        <span>{selectedAgent?.label || agentSettingsDraft.selected_provider_id}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className={selectedExecutionMode === "llm" ? "upload-engine-card active" : "upload-engine-card"}
+                        onClick={() => {
+                          setSelectedExecutionMode("llm");
+                          setEnginePickerOpen(false);
+                        }}
+                      >
+                        <strong>LLM</strong>
+                        <span>{agentSettingsDraft.llm_model || "OpenAI compatible"}</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
+                {selectedExecutionMode === "agent" ? (
+                  <div className="upload-engine-settings">
+                    <label className="settings-field">
+                      <span>Agent</span>
+                      <select
+                        value={agentSettingsDraft.selected_provider_id}
+                        disabled={submitting || agentChoices.length === 0}
+                        onChange={(event) => setAgentSettingsDraft((current) => ({ ...current, selected_provider_id: event.target.value }))}
+                      >
+                        {agentChoices.length === 0 && <option value={agentSettingsDraft.selected_provider_id}>{agentSettingsDraft.selected_provider_id}</option>}
+                        {agentChoices.map((agent) => (
+                          <option key={agent.provider_id} value={agent.provider_id}>{agent.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <div className="settings-form-row">
+                      <label className="settings-field">
+                        <span>模型</span>
+                        <input
+                          value={agentSettingsDraft.model}
+                          disabled={submitting}
+                          onChange={(event) => setAgentSettingsDraft((current) => ({ ...current, model: event.target.value }))}
+                          placeholder="留空使用默认"
+                          autoComplete="off"
+                        />
+                      </label>
+                      <label className="settings-field">
+                        <span>推理强度</span>
+                        <select
+                          value={agentSettingsDraft.reasoning_effort}
+                          disabled={submitting}
+                          onChange={(event) => setAgentSettingsDraft((current) => ({ ...current, reasoning_effort: event.target.value }))}
+                        >
+                          <option value="">默认</option>
+                          <option value="none">none</option>
+                          <option value="minimal">minimal</option>
+                          <option value="low">low</option>
+                          <option value="medium">medium</option>
+                          <option value="high">high</option>
+                          <option value="xhigh">xhigh</option>
+                        </select>
+                      </label>
+                    </div>
+                    <label className="settings-toggle-row">
+                      <input
+                        type="checkbox"
+                        checked={agentSettingsDraft.fast}
+                        disabled={submitting}
+                        onChange={(event) => setAgentSettingsDraft((current) => ({ ...current, fast: event.target.checked }))}
+                      />
+                      <span>Fast 模式</span>
+                    </label>
+                  </div>
+                ) : (
+                  <div className="upload-engine-settings">
+                    <label className="settings-field">
+                      <span>模型</span>
+                      <input
+                        value={agentSettingsDraft.llm_model}
+                        disabled={submitting}
+                        onChange={(event) => setAgentSettingsDraft((current) => ({ ...current, llm_model: event.target.value }))}
+                        placeholder="例如 qwen3-vl-plus"
+                        autoComplete="off"
+                      />
+                    </label>
+                    <label className="settings-field">
+                      <span>Base URL</span>
+                      <input
+                        value={agentSettingsDraft.llm_base_url}
+                        disabled={submitting}
+                        onChange={(event) => setAgentSettingsDraft((current) => ({ ...current, llm_base_url: event.target.value }))}
+                        placeholder="https://api.openai.com/v1"
+                        autoComplete="off"
+                      />
+                    </label>
+                    <div className="settings-form-row">
+                      <label className="settings-field">
+                        <span>API Key Env</span>
+                        <input
+                          value={agentSettingsDraft.llm_api_key_env}
+                          disabled={submitting}
+                          onChange={(event) => setAgentSettingsDraft((current) => ({ ...current, llm_api_key_env: event.target.value }))}
+                          placeholder="OPENAI_API_KEY"
+                          autoComplete="off"
+                        />
+                      </label>
+                      <label className="settings-field">
+                        <span>API 格式</span>
+                        <select
+                          value={agentSettingsDraft.llm_wire_api}
+                          disabled={submitting}
+                          onChange={(event) => setAgentSettingsDraft((current) => ({ ...current, llm_wire_api: event.target.value === "responses" ? "responses" : "chat_completions" }))}
+                        >
+                          <option value="chat_completions">Chat Completions</option>
+                          <option value="responses">Responses</option>
+                        </select>
+                      </label>
+                    </div>
+                    <label className="settings-toggle-row">
+                      <input
+                        type="checkbox"
+                        checked={llmThinking}
+                        disabled={submitting}
+                        onChange={(event) => setAgentSettingsDraft((current) => ({
+                          ...current,
+                          llm_extra_body: llmExtraBodyWithThinking(current.llm_extra_body, event.target.checked)
+                        }))}
+                      />
+                      <span>Thinking</span>
+                    </label>
+                  </div>
+                )}
               </div>
-            </div>
-            <label className="upload-review-toggle">
-              <input
-                type="checkbox"
-                checked={manualAssetReview}
-                disabled={submitting}
-                onChange={(event) => setManualAssetReview(event.currentTarget.checked)}
-              />
-              <span>
-                <strong>手动确认素材</strong>
-                <em>{manualAssetReview ? "预处理后停在素材确认环节。" : "系统会从预处理一直执行到最终导出。"}</em>
-              </span>
-            </label>
-            <div className="upload-confirmation-actions">
-              <button type="button" disabled={submitting} onClick={() => setPendingUpload(null)}>取消</button>
+              {uploadError && <p className="upload-error">{uploadError}</p>}
+              <div className="upload-confirmation-actions">
+                <button type="button" disabled={submitting} onClick={() => setPendingUpload(null)}>取消</button>
               <button type="button" className="primary" disabled={submitting} onClick={() => void confirmUpload()}>
                 {submitting && <ButtonSpinner />}
-                {submitting ? "提交中" : manualAssetReview ? "提交并手动确认" : "提交并自动运行"}
+                {submitting ? "提交中" : "提交"}
               </button>
-            </div>
+              </div>
+            </section>
           </div>
         ) : (
           <div
@@ -6709,6 +6946,72 @@ function NewBatchForm({
       </div>
     </section>
   );
+}
+
+function uploadFileId(item: SelectedUploadFile): string {
+  return [
+    uploadFileLabel(item),
+    item.file.name,
+    item.file.size,
+    item.file.lastModified
+  ].join("\0");
+}
+
+function uploadFileLabel(item: SelectedUploadFile): string {
+  return (item.relativePath || item.file.name).replace(/\\/g, "/").replace(/^\/+/, "") || item.file.name;
+}
+
+function uploadFileKind(item: SelectedUploadFile): string {
+  return item.file.name.toLowerCase().endsWith(".zip") ? "ZIP" : "Image";
+}
+
+function mergeUploadFiles(current: SelectedUploadFile[], incoming: SelectedUploadFile[]): SelectedUploadFile[] {
+  const merged = [...current];
+  const seen = new Set(current.map((item) => uploadFileId(item)));
+  for (const item of incoming) {
+    const id = uploadFileId(item);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    merged.push(item);
+  }
+  return merged;
+}
+
+function uploadTaskTitleFromConfirmation(confirmation: UploadConfirmation): string {
+  const title = (confirmation.title || confirmation.images[0]?.name || "DrawAI 任务").trim();
+  return stripUploadFileExtension(title) || "DrawAI 任务";
+}
+
+function stripUploadFileExtension(value: string): string {
+  const clean = value.replace(/\\/g, "/").split("/").filter(Boolean).pop() || value;
+  return clean.replace(/\.(png|jpe?g|webp|zip)$/i, "");
+}
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let size = value;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  return `${size >= 10 || unitIndex === 0 ? Math.round(size) : size.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function llmThinkingEnabled(extraBody: Record<string, unknown>): boolean {
+  const reasoning = extraBody.reasoning;
+  if (isWorkbenchAgentJsonObject(reasoning)) return reasoning.enabled === true;
+  return false;
+}
+
+function llmExtraBodyWithThinking(extraBody: Record<string, unknown>, enabled: boolean): Record<string, unknown> {
+  const reasoning = isWorkbenchAgentJsonObject(extraBody.reasoning) ? { ...extraBody.reasoning } : {};
+  reasoning.enabled = enabled;
+  return {
+    ...extraBody,
+    reasoning
+  };
 }
 
 function BackendStatusIndicator({ health, healthError }: { health: HealthResponse | null; healthError: string }) {

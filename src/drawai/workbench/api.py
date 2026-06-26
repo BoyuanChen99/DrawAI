@@ -28,6 +28,7 @@ from ..artifacts import write_json
 from .assets import process_asset_plan_elements, read_asset_draft, validate_asset_plan, write_asset_draft
 from .agent_settings import (
     discover_workbench_agents,
+    normalize_workbench_agent_settings,
     read_workbench_agent_settings,
     workbench_agent_settings_payload,
     write_workbench_agent_settings,
@@ -48,7 +49,6 @@ from .image_processor_providers import images_api_edit_provider as _shared_image
 from .processor_settings import (
     PROCESSOR_DRIVER_DEFINITIONS,
     ProcessorSetting,
-    read_workbench_processor_settings,
     require_processor_configured,
     resolved_processor_operation_config_from_settings,
     workbench_processor_settings_payload,
@@ -437,7 +437,7 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"workflow template is not available: {workflow_template_id}") from exc
         execution_mode = _batch_execution_mode(payload.get("execution_mode"))
         try:
-            agent_settings = read_workbench_agent_settings(resolved_store.workspace)
+            agent_settings = _batch_agent_settings(payload.get("agent_settings"), resolved_store.workspace)
             settings_snapshot = case_settings_snapshot_from_workspace(
                 resolved_store.workspace,
                 agent_settings=agent_settings,
@@ -4050,6 +4050,23 @@ def _batch_execution_mode(value: Any) -> BatchExecutionMode:
     if mode not in {"default", "agent", "llm"}:
         raise HTTPException(status_code=400, detail="execution_mode must be default, agent, or llm")
     return mode  # type: ignore[return-value]
+
+
+def _batch_agent_settings(value: Any, workspace: str | Path):
+    if value in (None, ""):
+        return read_workbench_agent_settings(workspace)
+    payload = value
+    if isinstance(value, str):
+        try:
+            payload = json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="agent_settings must be valid JSON") from exc
+    if not isinstance(payload, Mapping):
+        raise HTTPException(status_code=400, detail="agent_settings must be a JSON object")
+    try:
+        return normalize_workbench_agent_settings(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _optional_positive_float_env(name: str) -> float | None:

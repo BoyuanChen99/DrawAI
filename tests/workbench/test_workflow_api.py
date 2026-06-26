@@ -1010,6 +1010,50 @@ def test_create_batch_applies_saved_workbench_agent_to_case_config(
     assert payload["model_runtime"]["cli"]["command"][0] == str(bin_dir / "kimi")
 
 
+def test_create_batch_can_use_task_scoped_agent_settings(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    _write_executable(bin_dir / "kimi", "echo 'kimi 1.2.3'\n")
+    monkeypatch.setenv("PATH", str(bin_dir))
+    client = _client(tmp_path)
+    source = tmp_path / "single.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+
+    response = client.post(
+        "/api/batches",
+        json={
+            "name": "task scoped settings",
+            "input_mode": "local_dir",
+            "local_dir": str(source),
+            "auto_run_svg_after_analysis": True,
+            "max_concurrent_cases": 1,
+            "base_config_path": str(_base_config(tmp_path)),
+            "execution_mode": "agent",
+            "agent_settings": {
+                "selected_provider_id": "kimi_cli",
+                "model": "kimi-code/kimi-for-coding",
+                "reasoning_effort": "high",
+                "fast": True,
+                "timeout_seconds": 300,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    config_path = Path(response.json()["cases"][0]["config_path"])
+    payload = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert payload["model_runtime"]["connection_id"] == "kimi"
+    assert payload["model_runtime"]["model_name"] == "kimi-code/kimi-for-coding"
+    assert payload["model_runtime"]["reasoning_effort"] == "high"
+    assert payload["model_runtime"]["fast"] is True
+    snapshot_path = Path(response.json()["cases"][0]["run_root"]) / "reports" / "workbench" / "settings_snapshot.json"
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert snapshot["agent_settings"]["selected_provider_id"] == "kimi_cli"
+    assert snapshot["agent_settings"]["model"] == "kimi-code/kimi-for-coding"
+
+
 def test_submitted_case_keeps_agent_and_processor_settings_snapshot(
     tmp_path: Path,
     monkeypatch,
