@@ -5923,7 +5923,10 @@ function TaskSelectionWorkspace({
                 }}
               >
                 <div className="batch-row-main">
-                  <strong>{batch.name}</strong>
+                  <div className="batch-row-title">
+                    <time className="batch-created-at" dateTime={batch.created_at}>{submittedTimeText(batch.created_at)}</time>
+                    <strong>{batch.name}</strong>
+                  </div>
                   <span className={`status-pill status-${batch.status}`}>{humanize(batch.status)}</span>
                 </div>
               </article>
