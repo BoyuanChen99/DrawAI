@@ -1602,6 +1602,138 @@ def test_api_workflow_node_viewer_summarizes_agent_logs_without_runtime_deltas(t
     assert [item["event_type"] for item in logs["runtime_log_tail"]] == ["response.output_item.done"]
 
 
+def test_api_workflow_node_viewer_reads_kimi_cli_trace_events(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    settings = _settings(tmp_path, base_config)
+    app = create_app(settings, store=store, runner=WorkbenchRunner(store, settings))
+    client = TestClient(app)
+    batch = store.create_batch(
+        name="kimi trace batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    run_dir = Path(case.run_root) / "nodes" / "page_spec_refine" / "runs" / "001"
+    _write_json(
+        run_dir / "node_run.json",
+        {
+            "schema": "drawai.workflow_node_run.v1",
+            "node_id": "page_spec_refine",
+            "node_type": "agent",
+            "attempt_id": "001",
+            "status": "ok",
+            "workdir": "nodes/page_spec_refine/runs/001",
+            "provider_id": "kimi_cli",
+            "outputs": [],
+            "prompt_path": "nodes/page_spec_refine/runs/001/prompt.md",
+            "stdout_path": "nodes/page_spec_refine/runs/001/kimi_events.jsonl",
+            "stderr_path": "nodes/page_spec_refine/runs/001/kimi_stderr.txt",
+            "trace_path": "nodes/page_spec_refine/runs/001/kimi_cli_trace.jsonl",
+            "execution_manifest_path": "nodes/page_spec_refine/runs/001/agent_execution.json",
+            "started_at": "2026-06-24T03:06:58Z",
+            "ended_at": "2026-06-24T03:34:33Z",
+            "duration_ms": 1654000,
+            "exit_code": 0,
+            "error": None,
+        },
+    )
+    (run_dir / "prompt.md").write_text("refine page spec", encoding="utf-8")
+    _write_jsonl(
+        run_dir / "kimi_cli_trace.jsonl",
+        [
+            {"type": "agent_request", "provider_id": "kimi_cli", "node_id": "page_spec_refine"},
+            {"type": "agent_response", "provider_id": "kimi_cli", "returncode": 0},
+        ],
+    )
+    _write_jsonl(run_dir / "kimi_events.jsonl", [{"role": "assistant", "content": [{"type": "text", "text": "done"}]}])
+    (run_dir / "kimi_stderr.txt").write_text("", encoding="utf-8")
+    _write_json(run_dir / "agent_execution.json", {"schema": "drawai.workflow_agent_execution.v1", "provider_id": "kimi_cli"})
+
+    response = client.get(f"/api/cases/{case.case_id}/workflow/nodes/page_spec_refine/viewer")
+
+    assert response.status_code == 200
+    logs = response.json()["agent_logs"]
+    assert "kimi_cli_trace.jsonl" in {item["source"] for item in logs["trace_events"]}
+    assert [item["type"] for item in logs["trace_events"]] == ["agent_request", "agent_response"]
+
+
+def test_api_workflow_node_viewer_reads_gemini_acp_trace_events(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    settings = _settings(tmp_path, base_config)
+    app = create_app(settings, store=store, runner=WorkbenchRunner(store, settings))
+    client = TestClient(app)
+    batch = store.create_batch(
+        name="gemini trace batch",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    run_dir = Path(case.run_root) / "nodes" / "page_spec_refine" / "runs" / "001"
+    _write_json(
+        run_dir / "node_run.json",
+        {
+            "schema": "drawai.workflow_node_run.v1",
+            "node_id": "page_spec_refine",
+            "node_type": "agent",
+            "attempt_id": "001",
+            "status": "failed",
+            "workdir": "nodes/page_spec_refine/runs/001",
+            "provider_id": "gemini_acp",
+            "outputs": [],
+            "prompt_path": "nodes/page_spec_refine/runs/001/prompt.md",
+            "stderr_path": "nodes/page_spec_refine/runs/001/gemini_acp_error.txt",
+            "trace_path": "nodes/page_spec_refine/runs/001/gemini_acp_trace.jsonl",
+            "started_at": "2026-06-26T04:13:07Z",
+            "ended_at": "2026-06-26T04:43:07Z",
+            "duration_ms": 1800000,
+            "exit_code": 1,
+            "error": "AgentExecutionError: gemini_acp Agent run failed: ACP request deadline expired",
+        },
+    )
+    (run_dir / "prompt.md").write_text("refine page spec", encoding="utf-8")
+    (run_dir / "gemini_acp_error.txt").write_text("AcpAgentError: ACP request deadline expired\n", encoding="utf-8")
+    _write_jsonl(
+        run_dir / "gemini_acp_trace.jsonl",
+        [
+            {"type": "acp_agent_request", "agent": "gemini", "task_name": "drawai.workflow.agent.page_spec_refine.gemini_acp"},
+            {"type": "acp_request", "agent": "gemini", "method": "initialize"},
+            {"type": "acp_notification", "agent": "gemini", "method": "session/update"},
+        ],
+    )
+
+    response = client.get(f"/api/cases/{case.case_id}/workflow/nodes/page_spec_refine/viewer")
+
+    assert response.status_code == 200
+    logs = response.json()["agent_logs"]
+    assert "gemini_acp_trace.jsonl" in {item["source"] for item in logs["trace_events"]}
+    assert [item["type"] for item in logs["trace_events"]] == [
+        "acp_agent_request",
+        "acp_request",
+        "acp_notification",
+    ]
+    assert any(file["label"] == "gemini_acp_error.txt" for file in logs["files"])
+
+
 def test_agent_session_events_reads_full_history(tmp_path: Path) -> None:
     path = tmp_path / "codex_session_events.jsonl"
     _write_jsonl(

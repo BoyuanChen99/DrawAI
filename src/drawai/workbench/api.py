@@ -3090,9 +3090,15 @@ AGENT_LOG_FILE_CANDIDATES = (
     "codex_cli_trace.jsonl",
     "codex_cli_events.jsonl",
     "codex_cli_stderr.txt",
-    "kimi_trace.jsonl",
+    "kimi_cli_trace.jsonl",
     "kimi_events.jsonl",
     "kimi_stderr.txt",
+    "kimi_acp_trace.jsonl",
+    "kimi_acp_final_response.txt",
+    "kimi_acp_error.txt",
+    "gemini_acp_trace.jsonl",
+    "gemini_acp_final_response.txt",
+    "gemini_acp_error.txt",
     "codex_session_log/live_manifest.json",
     "codex_session_log/manifest.json",
     "codex_session_log/turn_result_summary.json",
@@ -3113,6 +3119,11 @@ def _workflow_node_agent_logs(
     for relative_path in AGENT_LOG_FILE_CANDIDATES:
         path = run_dir / relative_path
         if path.exists():
+            relative_paths.append(_case_relative_path(root, path))
+    for path in sorted(run_dir.glob("*_trace.jsonl")):
+        relative_paths.append(_case_relative_path(root, path))
+    for pattern in ("*_events.jsonl", "*_stderr.txt", "*_error.txt", "*_final_response.txt"):
+        for path in sorted(run_dir.glob(pattern)):
             relative_paths.append(_case_relative_path(root, path))
     if node_run:
         for key in (
@@ -3158,7 +3169,7 @@ def _workflow_node_agent_logs(
             continue
         records.append(_case_file_record(case.case_id, root, path.name, relative_path))
 
-    trace_events = _agent_trace_events(run_dir)
+    trace_events = _agent_trace_events(root, run_dir, node_run)
     session_dir = run_dir / "codex_session_log"
     return {
         "files": records,
@@ -3170,20 +3181,65 @@ def _workflow_node_agent_logs(
     }
 
 
-def _agent_trace_events(run_dir: Path) -> list[dict[str, Any]]:
+def _agent_trace_events(
+    root: Path,
+    run_dir: Path,
+    node_run: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
-    for name in ("codex_sdk_trace.jsonl", "codex_cli_trace.jsonl", "kimi_trace.jsonl"):
-        path = run_dir / name
+    paths = _agent_trace_event_paths(root, run_dir, node_run)
+    for path in paths:
         for item in _read_jsonl_tail(path, limit=80):
             if isinstance(item, dict):
                 events.append(
                     {
-                        "source": name,
+                        "source": path.name,
                         "type": str(item.get("type") or ""),
                         "summary": _truncate_progress_text(_compact_json_text(item), limit=800),
                     }
                 )
     return events[-80:]
+
+
+def _agent_trace_event_paths(
+    root: Path,
+    run_dir: Path,
+    node_run: Mapping[str, Any] | None = None,
+) -> list[Path]:
+    paths: list[Path] = []
+    for name in ("codex_sdk_trace.jsonl", "codex_cli_trace.jsonl", "kimi_cli_trace.jsonl"):
+        path = run_dir / name
+        if path.is_file():
+            paths.append(path)
+    for path in sorted(run_dir.glob("*_trace.jsonl")):
+        if path.is_file():
+            paths.append(path)
+    if node_run:
+        for value in _workflow_node_log_values(node_run, "trace_path"):
+            path = _resolve_case_path(root, value)
+            if path.is_file():
+                paths.append(path)
+    seen: set[Path] = set()
+    deduped: list[Path] = []
+    for path in paths:
+        resolved = path.resolve(strict=False)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        deduped.append(path)
+    return deduped
+
+
+def _workflow_node_log_values(node_run: Mapping[str, Any], key: str) -> list[str]:
+    values: list[str] = []
+    value = node_run.get(key)
+    if isinstance(value, str) and value:
+        values.append(value)
+    for item in _json_list(node_run.get("outputs")):
+        value = item.get(key)
+        if isinstance(value, str) and value:
+            values.append(value)
+    return values
 
 
 def _agent_session_events(path: Path) -> list[dict[str, Any]]:
