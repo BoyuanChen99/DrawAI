@@ -34,16 +34,22 @@ test("case cards keep status beside the truncated title and show only the curren
   const taskBottomBlock = source.match(/<div className="task-bottom">[\s\S]*?<div\s+className="task-card-actions"/)?.[0] || "";
   const titleRowBlock = css.match(/\.task-title-row\s*\{(?<body>[^}]*)\}/)?.groups?.body || "";
   const titleBlock = css.match(/\.task-title-row strong\s*\{(?<body>[^}]*)\}/)?.groups?.body || "";
+  const taskBottomCss = css.match(/\.task-bottom\s*\{(?<body>[^}]*)\}/)?.groups?.body || "";
+  const taskMetaRowCss = css.match(/\.task-card-meta-row\s*\{(?<body>[^}]*)\}/)?.groups?.body || "";
+  const currentStageNameCss = css.match(/\.task-current-stage em\s*\{(?<body>[^}]*)\}/)?.groups?.body || "";
   const statusHoverBlock = css.match(/\.task-batch-action\.primary:hover(?<selector>[^{]*)\{(?<body>[^}]*)\}/);
 
   assert.doesNotMatch(taskTopBlock, /status-pill|item\.stage|item\.phase/);
-  assert.match(taskBottomBlock, /<div className="task-title-row">[\s\S]*?<strong title=\{item\.name\}>\{item\.name\}<\/strong>[\s\S]*?<span className=\{`status-pill status-\$\{item\.status\}`\}>\{humanize\(item\.status\)\}<\/span>/);
-  assert.match(taskBottomBlock, /<div className="task-current-stage">[\s\S]*?<span>当前阶段<\/span>[\s\S]*?<em title=\{caseCurrentStageLabel\(item\)\}>\{caseCurrentStageLabel\(item\)\}<\/em>/);
+  assert.match(taskBottomBlock, /<div className="task-title-row">[\s\S]*?<strong title=\{item\.name\}>\{item\.name\}<\/strong>[\s\S]*?<span className=\{`status-pill status-\$\{item\.status\}`\}>\{humanize\(item\.status\)\}<\/span>[\s\S]*?<\/div>\s*<div className="task-card-meta-row">/);
+  assert.match(taskBottomBlock, /<div className="task-card-meta-row">[\s\S]*?<div className="task-current-stage">[\s\S]*?<span>当前阶段<\/span>[\s\S]*?<em title=\{caseCurrentStageLabel\(item\)\}>\{caseCurrentStageLabel\(item\)\}<\/em>[\s\S]*?<div\s+className="task-card-actions"/);
   assert.doesNotMatch(taskBottomBlock, /editorReady\s*\?\s*"素材已准备"\s*:\s*"等待中"|humanize\(item\.phase\)\s*}\s*\/\s*\{humanize\(item\.stage\)/);
+  assert.match(taskBottomCss, /display:\s*grid;/);
   assert.match(titleRowBlock, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;/);
   assert.match(titleBlock, /overflow:\s*hidden;/);
   assert.match(titleBlock, /text-overflow:\s*ellipsis;/);
   assert.match(titleBlock, /white-space:\s*nowrap;/);
+  assert.match(taskMetaRowCss, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;/);
+  assert.match(currentStageNameCss, /font-size:\s*13px;/);
   assert.equal(statusHoverBlock, null);
 });
 

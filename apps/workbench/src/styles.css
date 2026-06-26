@@ -1532,8 +1532,7 @@ select:focus {
 .batch-row-main span,
 .task-main span,
 .task-meta em,
-.task-current-stage span,
-.task-current-stage em {
+.task-current-stage span {
   color: var(--muted);
   font-size: 12px;
   font-style: normal;
@@ -1641,6 +1640,7 @@ select:focus {
 }
 
 .task-main em,
+.task-error-text,
 .detail-error {
   color: var(--danger);
   font-size: 12px;
@@ -1672,7 +1672,8 @@ select:focus {
   max-height: 220px;
 }
 
-.task-main em {
+.task-main em,
+.task-error-text {
   display: -webkit-box;
   overflow: hidden;
   -webkit-box-orient: vertical;
@@ -1755,17 +1756,15 @@ select:focus {
 
 .task-bottom {
   min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  display: grid;
+  gap: 8px;
 }
 
 .task-info {
   min-width: 0;
-  flex: 1 1 auto;
   display: grid;
-  gap: 4px;
+  gap: 3px;
+  overflow: hidden;
 }
 
 .task-main {
@@ -1797,11 +1796,11 @@ select:focus {
   overflow: hidden;
   box-shadow: none;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .task-main span,
-.task-meta em,
-.task-current-stage em {
+.task-meta em {
   max-width: 100%;
   overflow: hidden;
   white-space: nowrap;
@@ -1824,24 +1823,39 @@ select:focus {
   gap: 5px;
 }
 
+.task-card-meta-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
 .task-current-stage {
   min-width: 0;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 6px;
+  gap: 7px;
 }
 
 .task-current-stage span {
   color: #94a3b8;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 580;
   white-space: nowrap;
 }
 
 .task-current-stage em {
+  max-width: 100%;
+  overflow: hidden;
   color: var(--muted);
+  font-size: 13px;
   font-style: normal;
+  font-weight: 620;
+  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .task-thumb {

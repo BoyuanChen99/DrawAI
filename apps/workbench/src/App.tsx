@@ -6101,64 +6101,64 @@ function TaskSelectionWorkspace({
                   </div>
                 </div>
                 <div className="task-bottom">
-                  <div className="task-info">
-                    <div className="task-main">
-                      <div className="task-title-row">
-                        <strong title={item.name}>{item.name}</strong>
-                        <span className={`status-pill status-${item.status}`}>{humanize(item.status)}</span>
-                      </div>
-                      {item.error_message && <em>{shortenError(item.error_message)}</em>}
-                    </div>
-                    <div className="task-current-stage">
-                      <span>当前阶段</span>
-                      <em title={caseCurrentStageLabel(item)}>{caseCurrentStageLabel(item)}</em>
-                    </div>
+                  <div className="task-title-row">
+                    <strong title={item.name}>{item.name}</strong>
+                    <span className={`status-pill status-${item.status}`}>{humanize(item.status)}</span>
                   </div>
-                  <div
-                    className="task-card-actions"
-                    onMouseEnter={() => void ensureCaseArtifacts(item.case_id)}
-                    onFocus={() => void ensureCaseArtifacts(item.case_id)}
-                    onClick={(event) => event.stopPropagation()}
-                    onPointerDown={(event) => event.stopPropagation()}
-                  >
-                    <div className="task-download-menu">
-                      <button className="task-download-button" title="下载" aria-label="下载">
-                        <DownloadIcon />
-                      </button>
-                      <div className="task-download-options" role="menu" aria-label="下载格式">
-                        {svgArtifact ? (
-                          <a href={svgArtifact.url} download role="menuitem">SVG</a>
-                        ) : (
-                          <span className="disabled" role="menuitem" aria-disabled="true">{artifactsLoading ? "加载中" : "SVG"}</span>
-                        )}
-                        {pptxArtifact ? (
-                          <button type="button" onClick={() => void onDownloadPptx(item.case_id, pptxArtifact)} role="menuitem">PPTX</button>
-                        ) : pptxExportable ? (
-                          <button type="button" disabled={pptxExportBlocked} onClick={() => void exportTaskPptx(item)} role="menuitem">
-                            {pptxExporting ? "导出中" : "PPTX"}
-                          </button>
-                        ) : (
-                          <span className="disabled" role="menuitem" aria-disabled="true">{artifactsLoading ? "加载中" : "PPTX"}</span>
-                        )}
-                        <span className="disabled psd-disabled" role="menuitem" aria-disabled="true" title="后续支持中">PSD</span>
+                  <div className="task-card-meta-row">
+                    <div className="task-info">
+                      <div className="task-current-stage">
+                        <span>当前阶段</span>
+                        <em title={caseCurrentStageLabel(item)}>{caseCurrentStageLabel(item)}</em>
                       </div>
+                      {item.error_message && <em className="task-error-text">{shortenError(item.error_message)}</em>}
                     </div>
-                    <button
-                      className={`task-run-button ${failed ? "retry" : ""} ${taskActionRunning ? "running" : ""}`}
-                      title={taskActionLabel}
-                      aria-label={taskActionLabel}
-                      disabled={!taskActionEnabled}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        if (failed) {
-                          onRetryCase(item);
-                          return;
-                        }
-                        onRunFromAssets();
-                      }}
+                    <div
+                      className="task-card-actions"
+                      onMouseEnter={() => void ensureCaseArtifacts(item.case_id)}
+                      onFocus={() => void ensureCaseArtifacts(item.case_id)}
+                      onClick={(event) => event.stopPropagation()}
+                      onPointerDown={(event) => event.stopPropagation()}
                     >
-                      {taskActionRunning ? <ButtonSpinner /> : failed ? <RetryIcon /> : <PlayIcon />}
-                    </button>
+                      <div className="task-download-menu">
+                        <button className="task-download-button" title="下载" aria-label="下载">
+                          <DownloadIcon />
+                        </button>
+                        <div className="task-download-options" role="menu" aria-label="下载格式">
+                          {svgArtifact ? (
+                            <a href={svgArtifact.url} download role="menuitem">SVG</a>
+                          ) : (
+                            <span className="disabled" role="menuitem" aria-disabled="true">{artifactsLoading ? "加载中" : "SVG"}</span>
+                          )}
+                          {pptxArtifact ? (
+                            <button type="button" onClick={() => void onDownloadPptx(item.case_id, pptxArtifact)} role="menuitem">PPTX</button>
+                          ) : pptxExportable ? (
+                            <button type="button" disabled={pptxExportBlocked} onClick={() => void exportTaskPptx(item)} role="menuitem">
+                              {pptxExporting ? "导出中" : "PPTX"}
+                            </button>
+                          ) : (
+                            <span className="disabled" role="menuitem" aria-disabled="true">{artifactsLoading ? "加载中" : "PPTX"}</span>
+                          )}
+                          <span className="disabled psd-disabled" role="menuitem" aria-disabled="true" title="后续支持中">PSD</span>
+                        </div>
+                      </div>
+                      <button
+                        className={`task-run-button ${failed ? "retry" : ""} ${taskActionRunning ? "running" : ""}`}
+                        title={taskActionLabel}
+                        aria-label={taskActionLabel}
+                        disabled={!taskActionEnabled}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (failed) {
+                            onRetryCase(item);
+                            return;
+                          }
+                          onRunFromAssets();
+                        }}
+                      >
+                        {taskActionRunning ? <ButtonSpinner /> : failed ? <RetryIcon /> : <PlayIcon />}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </article>
