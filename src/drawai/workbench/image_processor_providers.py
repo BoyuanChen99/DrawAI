@@ -12,13 +12,17 @@ import urllib.parse
 import urllib.request
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from fastapi import HTTPException
 from PIL import Image
 
 from .api_presets import ApiPreset, api_preset_by_id, read_workbench_api_presets
-from .processor_settings import require_processor_configured
+from .processor_settings import (
+    ProcessorSetting,
+    read_workbench_processor_settings,
+    require_processor_configured_from_settings,
+)
 
 MAX_GENERATED_IMAGE_BYTES = 50 * 1024 * 1024
 _DEFAULT_RETRY_ATTEMPTS = 3
@@ -28,15 +32,25 @@ urlopen_external = urllib.request.urlopen
 
 
 def asset_prepare_image_providers(workspace: str | Path) -> dict[str, Any]:
+    api_presets = read_workbench_api_presets(workspace)
+    settings = read_workbench_processor_settings(workspace)
+    return asset_prepare_image_providers_from_settings(settings, api_presets=api_presets)
+
+
+def asset_prepare_image_providers_from_settings(
+    settings: Mapping[str, ProcessorSetting],
+    *,
+    api_presets: Sequence[ApiPreset],
+) -> dict[str, Any]:
     providers: dict[str, Any] = {}
     for processor in ("image_generate", "image_edit"):
         try:
-            setting = require_processor_configured(workspace, processor)
+            setting = require_processor_configured_from_settings(settings, processor, api_presets=api_presets)
         except ValueError:
             continue
         if setting.driver_id != "openai_images_api":
             continue
-        preset = _processor_api_preset(workspace, processor, setting.api_preset_id)
+        preset = _processor_api_preset(api_presets, processor, setting.api_preset_id)
         if processor == "image_generate":
             providers["image_generate"] = images_api_generate_provider(preset)
         else:
@@ -224,8 +238,8 @@ def call_image_reference_edit_upstream(
     return call_image_generation_upstream(request_payload, api_url=api_url, api_key=api_key)
 
 
-def _processor_api_preset(workspace: str | Path, processor: str, api_preset_id: str) -> ApiPreset:
-    preset = api_preset_by_id(read_workbench_api_presets(workspace), api_preset_id)
+def _processor_api_preset(api_presets: Sequence[ApiPreset], processor: str, api_preset_id: str) -> ApiPreset:
+    preset = api_preset_by_id(api_presets, api_preset_id)
     if preset is None:
         raise ValueError(f"API preset not found for {processor}: {api_preset_id or '<empty>'}")
     return preset
@@ -682,6 +696,7 @@ def _optional_positive_int_env(name: str) -> int | None:
 
 __all__ = [
     "asset_prepare_image_providers",
+    "asset_prepare_image_providers_from_settings",
     "call_image_edit_upstream",
     "call_image_generation_upstream",
     "call_image_reference_edit_upstream",

@@ -68,11 +68,11 @@ from .agent_settings import (
     apply_workbench_agent_settings_to_node_config,
     apply_workbench_llm_settings_to_node_config,
     normalize_workbench_agent_settings,
-    read_workbench_agent_settings,
     workbench_agent_runtime_options,
 )
-from .image_processor_providers import asset_prepare_image_providers
-from .processor_settings import resolved_processor_operation_config
+from .case_settings_snapshot import CaseSettingsSnapshot, read_case_settings_snapshot_or_workspace
+from .image_processor_providers import asset_prepare_image_providers_from_settings
+from .processor_settings import resolved_processor_operation_config_from_settings
 from .models import CaseRecord, WorkbenchSettings
 from .store import WorkbenchStore
 
@@ -421,8 +421,19 @@ class WorkbenchRunner:
         except WorkbenchCaseCanceled:
             self._mark_case_canceled(case_id)
 
+    def _case_settings_snapshot(self, case: CaseRecord) -> CaseSettingsSnapshot:
+        return read_case_settings_snapshot_or_workspace(case.run_root, self.store.workspace)
+
+    def _case_owns_config_path(self, case: CaseRecord) -> bool:
+        config_path = Path(case.config_path).expanduser().resolve(strict=False)
+        run_root = Path(case.run_root).expanduser().resolve(strict=False)
+        return config_path.is_relative_to(run_root)
+
     def _refresh_case_runtime_config(self, case: CaseRecord) -> CaseRecord:
+        if self._case_owns_config_path(case) and Path(case.config_path).is_file():
+            return case
         batch = self.store.get_batch(case.batch_id)
+        settings_snapshot = self._case_settings_snapshot(case)
         config_path = create_case_config(
             base_config_path=batch.config_path,
             source_image=case.source_image_path,
@@ -432,7 +443,7 @@ class WorkbenchRunner:
             ocr_base_url=self.settings.ocr_base_url,
             ocr_timeout_seconds=self.settings.ocr_timeout_seconds,
             rmbg_base_url=self.settings.rmbg_base_url,
-            agent_settings=read_workbench_agent_settings(self.store.workspace).to_dict(),
+            agent_settings=settings_snapshot.agent_settings.to_dict(),
             execution_mode=batch.execution_mode,
         )
         self.store.update_case_config_path(case.case_id, config_path)
@@ -444,13 +455,17 @@ class WorkbenchRunner:
             self._raise_if_case_canceled(case_id)
             case = self._refresh_case_runtime_config(case)
             batch = self.store.get_batch(case.batch_id)
-            agent_settings = read_workbench_agent_settings(self.store.workspace)
+            settings_snapshot = self._case_settings_snapshot(case)
+            agent_settings = settings_snapshot.agent_settings
             template = load_workflow_template_by_id(self.store.workspace, batch.workflow_template_id)
             template = _workflow_template_with_agent_settings(
                 template,
                 agent_settings,
                 execution_mode=batch.execution_mode,
-                processor_operation_config=resolved_processor_operation_config(self.store.workspace),
+                processor_operation_config=resolved_processor_operation_config_from_settings(
+                    settings_snapshot.processor_settings,
+                    api_presets=settings_snapshot.api_presets,
+                ),
             )
             review_template = _workflow_until_first_human_review(template)
             run_template = template if batch.auto_run_svg_after_analysis or review_template is None else review_template
@@ -500,6 +515,7 @@ class WorkbenchRunner:
                         inputs,
                         stage_state,
                         stage_state_lock,
+                        settings_snapshot=settings_snapshot,
                     ),
                     "human_review": lambda context, inputs: self._run_workflow_review_node(
                         case,
@@ -817,6 +833,8 @@ class WorkbenchRunner:
         inputs: tuple[Mapping[str, Any], ...],
         stage_state: dict[str, bool],
         stage_state_lock: threading.Lock,
+        *,
+        settings_snapshot: CaseSettingsSnapshot | None = None,
     ) -> tuple[Mapping[str, Any], ...]:
         self._raise_if_case_canceled(case.case_id)
         processor_id = str(context.node.config.get("processor_id") or "")
@@ -876,7 +894,11 @@ class WorkbenchRunner:
             cfg = load_drawai_config(case.config_path, validate_input_exists=False)
             rmbg_config = cfg.asset_materialization.rmbg
             rmbg_client = RemoteRmbgClient(rmbg_config.base_url) if rmbg_config.enabled else None
-            image_providers = asset_prepare_image_providers(self.store.workspace)
+            case_snapshot = settings_snapshot or self._case_settings_snapshot(case)
+            image_providers = asset_prepare_image_providers_from_settings(
+                case_snapshot.processor_settings,
+                api_presets=case_snapshot.api_presets,
+            )
             materialized = materialize_page_spec_assets(
                 page_spec,
                 source_image_path=source_image,

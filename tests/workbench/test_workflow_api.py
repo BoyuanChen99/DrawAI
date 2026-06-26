@@ -1010,6 +1010,148 @@ def test_create_batch_applies_saved_workbench_agent_to_case_config(
     assert payload["model_runtime"]["cli"]["command"][0] == str(bin_dir / "kimi")
 
 
+def test_submitted_case_keeps_agent_and_processor_settings_snapshot(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    bin_dir = tmp_path / "bin"
+    _write_executable(bin_dir / "kimi", "echo 'kimi 1.2.3'\n")
+    monkeypatch.setenv("PATH", str(bin_dir))
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    settings = _settings(tmp_path, base_config)
+    runner = WorkbenchRunner(store, settings, stage_executor=lambda _case, _stage: None)
+    app = create_app(settings, store=store, runner=runner)
+    client = TestClient(app)
+    source = tmp_path / "single.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    preset_response = client.put(
+        "/api/workbench/api-presets",
+        json={
+            "presets": [
+                {
+                    "id": "apimart_images",
+                    "label": "Apimart Images",
+                    "type": "images_api",
+                    "base_url": "https://api.apimart.ai/v1/images/generations",
+                    "model": "gpt-image-2",
+                    "api_key_env": "APIMART_API_KEY",
+                }
+            ]
+        },
+    )
+    assert preset_response.status_code == 200
+    processor_response = client.put(
+        "/api/workbench/processor-settings",
+        json={
+            "processors": {
+                "image_generate": {
+                    "enabled": True,
+                    "driver_id": "openai_images_api",
+                    "api_preset_id": "apimart_images",
+                }
+            }
+        },
+    )
+    assert processor_response.status_code == 200
+    agent_response = client.put(
+        "/api/workbench/agent-settings",
+        json={
+            "selected_provider_id": "kimi_cli",
+            "model": "kimi-code/kimi-for-coding",
+            "reasoning_effort": "medium",
+            "fast": True,
+            "timeout_seconds": 240,
+        },
+    )
+    assert agent_response.status_code == 200
+    batch_response = client.post(
+        "/api/batches",
+        json={
+            "name": "settings snapshot batch",
+            "input_mode": "local_dir",
+            "local_dir": str(source),
+            "auto_run_svg_after_analysis": False,
+            "max_concurrent_cases": 1,
+            "base_config_path": str(base_config),
+            "execution_mode": "agent",
+        },
+    )
+    assert batch_response.status_code == 200
+    case = store.get_case(batch_response.json()["cases"][0]["case_id"])
+    snapshot_path = Path(case.run_root) / "reports" / "workbench" / "settings_snapshot.json"
+    assert snapshot_path.is_file()
+    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    assert snapshot["agent_settings"]["selected_provider_id"] == "kimi_cli"
+    assert snapshot["api_presets"]["presets"][0]["id"] == "apimart_images"
+    assert snapshot["processor_settings"]["processors"]["image_generate"]["api_preset_id"] == "apimart_images"
+
+    changed_presets = client.put(
+        "/api/workbench/api-presets",
+        json={
+            "presets": [
+                {
+                    "id": "other_images",
+                    "label": "Other Images",
+                    "type": "images_api",
+                    "base_url": "https://api.example.test/v1/images/generations",
+                    "model": "other-image-model",
+                    "api_key_env": "OTHER_IMAGE_KEY",
+                }
+            ]
+        },
+    )
+    assert changed_presets.status_code == 200
+    changed_processor = client.put(
+        "/api/workbench/processor-settings",
+        json={
+            "processors": {
+                "image_generate": {
+                    "enabled": True,
+                    "driver_id": "openai_images_api",
+                    "api_preset_id": "other_images",
+                }
+            }
+        },
+    )
+    assert changed_processor.status_code == 200
+    changed_agent = client.put(
+        "/api/workbench/agent-settings",
+        json={
+            "selected_provider_id": "codex_sdk",
+            "model": "codex-after-submit",
+            "reasoning_effort": "low",
+        },
+    )
+    assert changed_agent.status_code == 200
+
+    refreshed = runner._refresh_case_runtime_config(store.get_case(case.case_id))
+    config_payload = yaml.safe_load(Path(refreshed.config_path).read_text(encoding="utf-8"))
+    assert config_payload["model_runtime"]["connection_id"] == "kimi"
+    assert config_payload["model_runtime"]["model_name"] == "kimi-code/kimi-for-coding"
+    assert config_payload["model_runtime"]["fast"] is True
+
+    progress_response = client.get(f"/api/cases/{case.case_id}/progress")
+    assert progress_response.status_code == 200
+    nodes = {item["node_id"]: item for item in progress_response.json()["workflow_nodes"]}
+    assert nodes["page_spec_refine"]["provider_id"] == "kimi_cli"
+    assert nodes["page_spec_refine"]["provider_label"] == "Kimi CLI"
+    assert nodes["page_spec_refine"]["model"] == "kimi-code/kimi-for-coding"
+    assert nodes["page_spec_refine"]["processor_types"] == [
+        "no_process",
+        "crop",
+        "crop_nobg",
+        "image_generate",
+    ]
+    assert nodes["asset_prepare"]["api_presets"] == [
+        {
+            "processing_type": "image_generate",
+            "api_preset_id": "apimart_images",
+            "api_preset_label": "Apimart Images",
+        }
+    ]
+
+
 @pytest.mark.parametrize(
     ("provider_id", "agent", "command"),
     [

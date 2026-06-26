@@ -39,13 +39,18 @@ from .api_presets import (
     workbench_api_presets_payload,
     write_workbench_api_presets,
 )
+from .case_settings_snapshot import (
+    case_settings_snapshot_from_workspace,
+    read_case_settings_snapshot_or_workspace,
+    write_case_settings_snapshot,
+)
 from .image_processor_providers import images_api_edit_provider as _shared_images_api_edit_provider
 from .processor_settings import (
     PROCESSOR_DRIVER_DEFINITIONS,
     ProcessorSetting,
     read_workbench_processor_settings,
     require_processor_configured,
-    resolved_processor_operation_config,
+    resolved_processor_operation_config_from_settings,
     workbench_processor_settings_payload,
     write_workbench_processor_settings,
 )
@@ -433,6 +438,10 @@ def create_app(
         execution_mode = _batch_execution_mode(payload.get("execution_mode"))
         try:
             agent_settings = read_workbench_agent_settings(resolved_store.workspace)
+            settings_snapshot = case_settings_snapshot_from_workspace(
+                resolved_store.workspace,
+                agent_settings=agent_settings,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         batch = resolved_store.create_batch(
@@ -463,6 +472,7 @@ def create_app(
                 source_image_path=source,
                 config_path=base_config,
             )
+            write_case_settings_snapshot(case.run_root, settings_snapshot)
             config_path = create_case_config(
                 base_config_path=base_config,
                 source_image=source,
@@ -472,7 +482,7 @@ def create_app(
                 ocr_base_url=resolved_settings.ocr_base_url,
                 ocr_timeout_seconds=resolved_settings.ocr_timeout_seconds,
                 rmbg_base_url=resolved_settings.rmbg_base_url,
-                agent_settings=agent_settings.to_dict(),
+                agent_settings=settings_snapshot.agent_settings.to_dict(),
                 execution_mode=execution_mode,
             )
             resolved_store.update_case_config_path(case.case_id, config_path)
@@ -2664,14 +2674,19 @@ def _workflow_node_runs_progress(root: Path) -> list[dict[str, Any]]:
 def _workflow_node_metadata(store: WorkbenchStore, case: CaseRecord) -> list[dict[str, Any]]:
     batch = store.get_batch(case.batch_id)
     template = load_workflow_template_by_id(store.workspace, batch.workflow_template_id)
+    settings_snapshot = read_case_settings_snapshot_or_workspace(case.run_root, store.workspace)
     effective = _workflow_template_with_agent_settings(
         template,
-        read_workbench_agent_settings(store.workspace),
+        settings_snapshot.agent_settings,
         execution_mode=batch.execution_mode,
+        processor_operation_config=resolved_processor_operation_config_from_settings(
+            settings_snapshot.processor_settings,
+            api_presets=settings_snapshot.api_presets,
+        ),
     )
-    api_presets = read_workbench_api_presets(store.workspace)
-    processor_api_presets = _workflow_processor_api_preset_summaries(store.workspace, api_presets)
-    processor_types = _workflow_processor_types_for_refine(store.workspace)
+    api_presets = settings_snapshot.api_presets
+    processor_api_presets = _workflow_processor_api_preset_summaries(settings_snapshot.processor_settings, api_presets)
+    processor_types = _workflow_processor_types_for_refine(settings_snapshot.processor_settings, api_presets)
     metadata: list[dict[str, Any]] = []
     for node in effective.nodes:
         config = dict(node.config)
@@ -2706,10 +2721,9 @@ def _workflow_provider_label(provider_id: str) -> str:
 
 
 def _workflow_processor_api_preset_summaries(
-    workspace: str | Path,
+    settings: Mapping[str, ProcessorSetting],
     api_presets: Sequence[ApiPreset],
 ) -> list[dict[str, str]]:
-    settings = read_workbench_processor_settings(workspace)
     summaries: list[dict[str, str]] = []
     for processing_type, setting in settings.items():
         if not setting.enabled or not setting.api_preset_id:
@@ -2730,8 +2744,11 @@ def _workflow_processor_api_preset_summaries(
     return summaries
 
 
-def _workflow_processor_types_for_refine(workspace: str | Path) -> list[str]:
-    operation_config = resolved_processor_operation_config(workspace)
+def _workflow_processor_types_for_refine(
+    settings: Mapping[str, ProcessorSetting],
+    api_presets: Sequence[ApiPreset],
+) -> list[str]:
+    operation_config = resolved_processor_operation_config_from_settings(settings, api_presets=api_presets)
     return [
         processing_type
         for item in operation_config.get("page_spec_processing_types", [])

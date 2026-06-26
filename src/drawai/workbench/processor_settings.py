@@ -306,6 +306,14 @@ def processor_settings_validation(
 def resolved_processor_operation_config(workspace: str | Path) -> dict[str, Any]:
     api_presets = read_workbench_api_presets(workspace)
     settings = read_workbench_processor_settings(workspace)
+    return resolved_processor_operation_config_from_settings(settings, api_presets=api_presets)
+
+
+def resolved_processor_operation_config_from_settings(
+    settings: Mapping[str, ProcessorSetting],
+    *,
+    api_presets: Sequence[ApiPreset] = (),
+) -> dict[str, Any]:
     validation = processor_settings_validation(settings, api_presets=api_presets)["processors"]
     processing_types: list[str] = []
     operations: dict[str, Any] = {}
@@ -330,9 +338,20 @@ def require_processor_configured(
 ) -> ProcessorSetting:
     api_presets = read_workbench_api_presets(workspace)
     settings = read_workbench_processor_settings(workspace)
+    return require_processor_configured_from_settings(settings, processing_type, api_presets=api_presets)
+
+
+def require_processor_configured_from_settings(
+    settings: Mapping[str, ProcessorSetting],
+    processing_type: str,
+    *,
+    api_presets: Sequence[ApiPreset] = (),
+) -> ProcessorSetting:
     if processing_type not in PROCESSOR_DEFINITIONS:
         raise ValueError(f"unsupported processor: {processing_type}")
-    setting = settings[processing_type]
+    setting = settings.get(processing_type)
+    if setting is None:
+        raise ValueError(f"processor setting is missing: {processing_type}")
     if not setting.enabled:
         raise ValueError(f"processor is disabled: {processing_type}")
     definition = PROCESSOR_DEFINITIONS[processing_type]
@@ -442,7 +461,9 @@ __all__ = [
     "processor_settings_validation",
     "read_workbench_processor_settings",
     "require_processor_configured",
+    "require_processor_configured_from_settings",
     "resolved_processor_operation_config",
+    "resolved_processor_operation_config_from_settings",
     "workbench_processor_settings_payload",
     "write_workbench_processor_settings",
 ]
