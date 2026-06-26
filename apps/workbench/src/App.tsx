@@ -1887,8 +1887,10 @@ function WorkbenchSettingsCenter({
     sortedAgents[0] ||
     null;
   const agentPickerChoices = workbenchAgentPickerChoices(sortedAgents, draft.selected_provider_id);
-  const selectAgentProvider = (providerId: string) => {
-    setDraft((current) => ({ ...current, selected_provider_id: providerId }));
+  const selectAgentProvider = (providerId: string): WorkbenchAgentSettings => {
+    const nextDraft = { ...draft, selected_provider_id: providerId };
+    setDraft(nextDraft);
+    return nextDraft;
   };
 
   const createApiPresetDraft = (source?: ApiPresetTemplate | Partial<ApiPreset>) => {
@@ -2039,12 +2041,13 @@ function WorkbenchSettingsCenter({
     setSettingsCategory("overview");
   };
 
-  const saveSettings = async () => {
+  const saveSettings = async (agentSettingsOverride?: WorkbenchAgentSettings) => {
     setSaving(true);
     setLocalError("");
     try {
+      const sourceDraft = agentSettingsOverride || draft;
       const agentPayload = normalizeWorkbenchAgentDraft({
-        ...draft,
+        ...sourceDraft,
         llm_extra_body: parseWorkbenchAgentJsonObject(llmExtraBodyText, "LLM extra body")
       });
       if (selectedLlmPreset) {
@@ -2193,12 +2196,10 @@ function WorkbenchSettingsCenter({
                       loading={loading}
                       error={overviewError}
                       selectedProviderId={draft.selected_provider_id}
-                      savedSelectedProviderId={response?.settings.selected_provider_id || DEFAULT_WORKBENCH_AGENT_SETTINGS.selected_provider_id}
                       selectedAgent={currentAgent}
                       availableAgentCount={agentPickerChoices.length}
                       saving={saving}
                       onChooseAgent={() => setAgentPickerOpen(true)}
-                      onSave={() => void saveSettings()}
                       onAction={openSettingsOverviewAction}
                     />
                   )}
@@ -2406,9 +2407,13 @@ function WorkbenchSettingsCenter({
                                 key={agent.provider_id}
                                 className={`settings-provider-option${agent.selected ? " active" : ""}`}
                                 onClick={() => {
-                                  selectAgentProvider(agent.provider_id);
+                                  const nextDraft = selectAgentProvider(agent.provider_id);
                                   setAgentPickerOpen(false);
+                                  if (!agent.selected) {
+                                    void saveSettings(nextDraft);
+                                  }
                                 }}
+                                disabled={saving}
                               >
                                 <span
                                   className={`settings-provider-logo${agentIcon ? "" : " settings-provider-logo-custom"}`}
@@ -2869,31 +2874,26 @@ function SettingsOverviewPage({
   loading,
   error,
   selectedProviderId,
-  savedSelectedProviderId,
   selectedAgent,
   availableAgentCount,
   saving,
   onChooseAgent,
-  onSave,
   onAction
 }: {
   overview: WorkbenchStatusOverviewResponse | null;
   loading: boolean;
   error: string;
   selectedProviderId: string;
-  savedSelectedProviderId: string;
   selectedAgent: WorkbenchAgentDiscovery | null;
   availableAgentCount: number;
   saving: boolean;
   onChooseAgent: () => void;
-  onSave: () => void;
   onAction: (action?: WorkbenchStatusOverviewAction) => void;
 }) {
   if (loading) return <div className="agent-settings-empty">加载中</div>;
   if (error) return <div className="agent-settings-error">{error}</div>;
   if (!overview) return <EmptyState label="暂无状态总览" />;
   const agentSeverity = selectedAgent?.available ? "ok" : "warning";
-  const agentDirty = selectedProviderId !== savedSelectedProviderId;
   const checkCount = overview.groups.reduce((total, group) => total + group.items.length, 0);
   return (
     <div className="settings-overview">
@@ -2947,17 +2947,6 @@ function SettingsOverviewPage({
             >
               选择
             </button>
-            {agentDirty && (
-              <button
-                type="button"
-                className="settings-model-action primary"
-                aria-label="保存当前 Agent"
-                onClick={onSave}
-                disabled={loading || saving}
-              >
-                {saving ? "保存中" : "保存"}
-              </button>
-            )}
           </div>
         </div>
       </section>

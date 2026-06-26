@@ -8131,17 +8131,6 @@ button.asset-status-unsupported {
   gap: 8px;
 }
 
-.settings-overview-agent-actions .settings-model-action.primary {
-  border-color: var(--overview-accent);
-  background: var(--overview-accent);
-  color: #ffffff;
-}
-
-.settings-overview-agent-actions .settings-model-action.primary:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--overview-accent) 84%, #172033);
-  background: color-mix(in srgb, var(--overview-accent) 88%, #172033);
-}
-
 .settings-overview-board {
   min-width: 0;
   display: grid;
