@@ -1016,17 +1016,17 @@ select:focus {
 }
 
 .task-batch-status-bar {
-  width: min(100%, 640px);
-  min-height: 34px;
+  width: min(100%, 820px);
+  min-height: 30px;
   display: grid;
-  grid-template-columns: minmax(120px, 0.62fr) auto auto;
+  grid-template-columns: minmax(180px, 0.78fr) auto auto;
   align-items: center;
   gap: 8px;
   border: 1px solid rgba(203, 213, 225, 0.58);
   border-radius: 999px;
   background: rgba(248, 250, 252, 0.9);
   color: #475569;
-  padding: 4px 6px 4px 12px;
+  padding: 2px 6px 2px 12px;
   box-shadow: 0 10px 26px rgba(15, 23, 42, 0.06);
   backdrop-filter: blur(16px);
   pointer-events: auto;
@@ -1119,9 +1119,9 @@ select:focus {
 }
 
 .task-batch-action {
-  width: 26px;
-  min-width: 26px;
-  height: 26px;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1208,8 +1208,8 @@ select:focus {
 }
 
 .task-batch-action .button-spinner {
-  width: 13px;
-  height: 13px;
+  width: 12px;
+  height: 12px;
 }
 
 .batch-download-floating {
@@ -2360,8 +2360,8 @@ select:focus {
   }
 
   .task-batch-status-bar {
-    min-height: 34px;
-    padding: 4px 6px 4px 12px;
+    min-height: 30px;
+    padding: 2px 6px 2px 12px;
   }
 
   .task-batch-actions {
@@ -2369,9 +2369,9 @@ select:focus {
   }
 
   .task-batch-action {
-    width: 26px;
-    min-width: 26px;
-    height: 26px;
+    width: 24px;
+    min-width: 24px;
+    height: 24px;
     padding: 0;
   }
 
