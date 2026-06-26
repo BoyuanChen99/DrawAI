@@ -1017,14 +1017,14 @@ select:focus {
 
 .task-batch-status-bar {
   width: min(100%, 820px);
-  min-height: 40px;
+  min-height: 36px;
   display: grid;
   grid-template-columns: minmax(180px, 0.78fr) auto auto;
   align-items: center;
   gap: 8px;
   border: 1px solid rgba(203, 213, 225, 0.58);
   border-radius: 999px;
-  background: rgba(248, 250, 252, 0.9);
+  background: #ffffff;
   color: #475569;
   padding: 3px 8px 3px 12px;
   box-shadow: 0 10px 26px rgba(15, 23, 42, 0.06);
@@ -1033,8 +1033,8 @@ select:focus {
 }
 
 .task-batch-status-bar.status-failed {
-  border-color: rgba(239, 68, 68, 0.24);
-  box-shadow: 0 10px 26px rgba(127, 29, 29, 0.06);
+  border-color: rgba(203, 213, 225, 0.58);
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.06);
 }
 
 .task-batch-file {
@@ -1055,18 +1055,18 @@ select:focus {
 
 .task-batch-status-bar.status-running .task-batch-status-dot,
 .task-batch-status-bar.status-waiting_review .task-batch-status-dot {
-  background: #93c5fd;
-  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.08);
+  background: #cbd5e1;
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.1);
 }
 
 .task-batch-status-bar.status-completed .task-batch-status-dot {
-  background: #6ee7b7;
-  box-shadow: 0 0 0 3px rgba(5, 150, 105, 0.08);
+  background: #cbd5e1;
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.1);
 }
 
 .task-batch-status-bar.status-failed .task-batch-status-dot {
-  background: #fca5a5;
-  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.08);
+  background: #cbd5e1;
+  box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.1);
 }
 
 .task-batch-file > div {
@@ -1121,19 +1121,19 @@ select:focus {
 .task-batch-action {
   box-sizing: border-box;
   position: relative;
-  flex: 0 0 34px;
-  width: 34px;
-  min-width: 34px;
-  max-width: 34px;
-  height: 34px;
-  min-height: 34px;
-  max-height: 34px;
+  flex: 0 0 30px;
+  width: 30px;
+  min-width: 30px;
+  max-width: 30px;
+  height: 30px;
+  min-height: 30px;
+  max-height: 30px;
   aspect-ratio: 1 / 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   border: 1px solid transparent;
-  border-radius: 12px;
+  border-radius: 9px;
   background: transparent;
   color: #737a80;
   padding: 0;
@@ -1150,8 +1150,8 @@ select:focus {
 .task-batch-action:active,
 .task-batch-action.select-toggle.active {
   border-color: transparent;
-  background: #f1f3f5;
-  color: #1f2328;
+  background: #f3f4f6;
+  color: #272b30;
   transform: none;
 }
 
@@ -1168,8 +1168,8 @@ select:focus {
 
 .task-batch-action.primary:hover:not(:disabled) {
   border-color: transparent;
-  background: #f1f3f5;
-  color: #1f2328;
+  background: #f3f4f6;
+  color: #272b30;
 }
 
 .task-batch-action.dark {
@@ -1180,8 +1180,8 @@ select:focus {
 
 .task-batch-action.dark:hover:not(:disabled) {
   border-color: transparent;
-  background: #f1f3f5;
-  color: #1f2328;
+  background: #f3f4f6;
+  color: #272b30;
 }
 
 .task-batch-action.danger {
@@ -1192,14 +1192,14 @@ select:focus {
 
 .task-batch-action.danger:hover:not(:disabled) {
   border-color: transparent;
-  background: #f1f3f5;
-  color: #b91c1c;
+  background: #f3f4f6;
+  color: #272b30;
 }
 
 .task-batch-action.select-toggle.active {
   border-color: transparent;
-  background: #f1f3f5;
-  color: #1f2328;
+  background: #f3f4f6;
+  color: #272b30;
 }
 
 .task-batch-action:disabled {
@@ -1246,8 +1246,8 @@ select:focus {
 .task-batch-action .download-icon,
 .task-batch-action .select-cards-icon,
 .task-batch-action .panel-close-icon {
-  width: 17px;
-  height: 17px;
+  width: 20px;
+  height: 20px;
 }
 
 .task-batch-action .play-icon {
@@ -1255,8 +1255,8 @@ select:focus {
 }
 
 .task-batch-action .button-spinner {
-  width: 15px;
-  height: 15px;
+  width: 18px;
+  height: 18px;
 }
 
 .batch-download-floating {
@@ -2407,7 +2407,7 @@ select:focus {
   }
 
   .task-batch-status-bar {
-    min-height: 40px;
+    min-height: 36px;
     padding: 3px 8px 3px 12px;
   }
 
@@ -2416,12 +2416,12 @@ select:focus {
   }
 
   .task-batch-action {
-    width: 34px;
-    min-width: 34px;
-    max-width: 34px;
-    height: 34px;
-    min-height: 34px;
-    max-height: 34px;
+    width: 30px;
+    min-width: 30px;
+    max-width: 30px;
+    height: 30px;
+    min-height: 30px;
+    max-height: 30px;
     padding: 0;
   }
 
