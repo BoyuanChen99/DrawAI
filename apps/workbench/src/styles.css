@@ -8124,6 +8124,24 @@ button.asset-status-unsupported {
   white-space: nowrap;
 }
 
+.settings-overview-agent-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.settings-overview-agent-actions .settings-model-action.primary {
+  border-color: var(--overview-accent);
+  background: var(--overview-accent);
+  color: #ffffff;
+}
+
+.settings-overview-agent-actions .settings-model-action.primary:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--overview-accent) 84%, #172033);
+  background: color-mix(in srgb, var(--overview-accent) 88%, #172033);
+}
+
 .settings-overview-board {
   min-width: 0;
   display: grid;
@@ -8652,6 +8670,10 @@ button.asset-status-unsupported {
   .settings-overview-kpis,
   .settings-overview-agent-row {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-overview-agent-actions {
+    justify-content: flex-start;
   }
 
   .settings-overview-agent-icon {

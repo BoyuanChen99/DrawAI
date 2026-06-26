@@ -2193,9 +2193,12 @@ function WorkbenchSettingsCenter({
                       loading={loading}
                       error={overviewError}
                       selectedProviderId={draft.selected_provider_id}
+                      savedSelectedProviderId={response?.settings.selected_provider_id || DEFAULT_WORKBENCH_AGENT_SETTINGS.selected_provider_id}
                       selectedAgent={currentAgent}
                       availableAgentCount={agentPickerChoices.length}
+                      saving={saving}
                       onChooseAgent={() => setAgentPickerOpen(true)}
+                      onSave={() => void saveSettings()}
                       onAction={openSettingsOverviewAction}
                     />
                   )}
@@ -2866,24 +2869,31 @@ function SettingsOverviewPage({
   loading,
   error,
   selectedProviderId,
+  savedSelectedProviderId,
   selectedAgent,
   availableAgentCount,
+  saving,
   onChooseAgent,
+  onSave,
   onAction
 }: {
   overview: WorkbenchStatusOverviewResponse | null;
   loading: boolean;
   error: string;
   selectedProviderId: string;
+  savedSelectedProviderId: string;
   selectedAgent: WorkbenchAgentDiscovery | null;
   availableAgentCount: number;
+  saving: boolean;
   onChooseAgent: () => void;
+  onSave: () => void;
   onAction: (action?: WorkbenchStatusOverviewAction) => void;
 }) {
   if (loading) return <div className="agent-settings-empty">加载中</div>;
   if (error) return <div className="agent-settings-error">{error}</div>;
   if (!overview) return <EmptyState label="暂无状态总览" />;
   const agentSeverity = selectedAgent?.available ? "ok" : "warning";
+  const agentDirty = selectedProviderId !== savedSelectedProviderId;
   const checkCount = overview.groups.reduce((total, group) => total + group.items.length, 0);
   return (
     <div className="settings-overview">
@@ -2927,15 +2937,28 @@ function SettingsOverviewPage({
                 : "未发现"}
             </span>
           </div>
-          <button
-            type="button"
-            className="settings-model-action"
-            aria-label="选择当前 Agent"
-            onClick={onChooseAgent}
-            disabled={availableAgentCount === 0}
-          >
-            选择
-          </button>
+          <div className="settings-overview-agent-actions">
+            <button
+              type="button"
+              className="settings-model-action"
+              aria-label="选择当前 Agent"
+              onClick={onChooseAgent}
+              disabled={availableAgentCount === 0 || saving}
+            >
+              选择
+            </button>
+            {agentDirty && (
+              <button
+                type="button"
+                className="settings-model-action primary"
+                aria-label="保存当前 Agent"
+                onClick={onSave}
+                disabled={loading || saving}
+              >
+                {saving ? "保存中" : "保存"}
+              </button>
+            )}
+          </div>
         </div>
       </section>
       <section className="settings-overview-board">
