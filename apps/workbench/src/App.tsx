@@ -1748,7 +1748,7 @@ function SubmitDialog({
   onError: (message: string) => void;
 }) {
   return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
+    <div className="modal-backdrop batch-create-backdrop" role="presentation" onMouseDown={onClose}>
       <section className="submit-dialog submit-dialog-drop-only" role="dialog" aria-modal="true" aria-label="提交任务" onMouseDown={(event) => event.stopPropagation()}>
         <NewBatchForm onSubmitted={onSubmitted} onCreated={onCreated} onError={onError} />
       </section>
@@ -6503,9 +6503,7 @@ function NewBatchForm({
   const continueFileInputRef = useRef<HTMLInputElement>(null);
   const uploadFileRows = useMemo(() => pendingUpload?.files.map((item) => ({
     id: uploadFileId(item),
-    item,
     label: uploadFileLabel(item),
-    kind: uploadFileKind(item),
     size: formatBytes(item.file.size)
   })) || [], [pendingUpload]);
   const selectedCount = uploadFileRows.filter((row) => selectedUploadIds.has(row.id)).length;
@@ -6687,7 +6685,6 @@ function NewBatchForm({
                       disabled={submitting}
                       onChange={() => toggleUploadSelection(row.id)}
                     />
-                    <span>{row.kind}</span>
                     <strong>{row.label}</strong>
                     <em>{row.size}</em>
                   </label>
@@ -6963,10 +6960,6 @@ function uploadFileId(item: SelectedUploadFile): string {
 
 function uploadFileLabel(item: SelectedUploadFile): string {
   return (item.relativePath || item.file.name).replace(/\\/g, "/").replace(/^\/+/, "") || item.file.name;
-}
-
-function uploadFileKind(item: SelectedUploadFile): string {
-  return item.file.name.toLowerCase().endsWith(".zip") ? "ZIP" : "Image";
 }
 
 function mergeUploadFiles(current: SelectedUploadFile[], incoming: SelectedUploadFile[]): SelectedUploadFile[] {
