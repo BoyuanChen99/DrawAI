@@ -5677,6 +5677,21 @@ function TaskSelectionWorkspace({
   const cancelDisabled = !activeBatch || cancelTargets.length === 0 || cancelPending;
   const selectionCount = selectedCaseIds.length;
   const statusSummary = activeBatch ? batchStatusSummary(activeBatch.batch, cases) : "";
+  const cancelActionLabel = caseSelectionMode
+    ? cancelTargets.length > 0
+      ? `终止选中的 ${cancelTargets.length} 张`
+      : "选中的图片没有运行或排队"
+    : cancelTargets.length > 0
+      ? `终止当前任务中运行或排队的 ${cancelTargets.length} 张`
+      : "当前任务没有运行或排队的图片";
+  const continueActionLabel = continueTarget ? `继续 ${continueTarget.name}` : "没有等待断点的卡片";
+  const rerunActionLabel = caseSelectionMode
+    ? selectionCount > 0
+      ? `重新生成选中的 ${selectionCount} 张`
+      : "先选择要重新生成的卡片"
+    : "重新生成全部卡片";
+  const downloadActionLabel = batchDownloadReady ? "下载合并 PPTX" : "全部完成后可下载合并 PPTX";
+  const selectionToggleLabel = caseSelectionMode ? "退出多选" : "选择要重新生成的卡片";
 
   useEffect(() => {
     setCaseSelectionMode(false);
@@ -5910,65 +5925,57 @@ function TaskSelectionWorkspace({
                   type="button"
                   className="task-batch-action danger"
                   disabled={cancelDisabled}
-                  title={
-                    caseSelectionMode
-                      ? cancelTargets.length > 0
-                        ? `终止选中的 ${cancelTargets.length} 张`
-                        : "选中的图片没有运行或排队"
-                      : cancelTargets.length > 0
-                        ? `终止当前任务中运行或排队的 ${cancelTargets.length} 张`
-                        : "当前任务没有运行或排队的图片"
-                  }
+                  title={cancelActionLabel}
+                  aria-label={cancelActionLabel}
                   onClick={() => {
                     void cancelSelectedTargets();
                   }}
                 >
                   {cancelPending ? <ButtonSpinner /> : <StopIcon />}
-                  <span>{caseSelectionMode && cancelTargets.length > 0 ? `终止 ${cancelTargets.length}` : "终止"}</span>
                 </button>
                 <button
                   type="button"
                   className="task-batch-action"
                   disabled={continueDisabled}
-                  title={continueTarget ? `继续 ${continueTarget.name}` : "没有等待断点的卡片"}
+                  title={continueActionLabel}
+                  aria-label={continueActionLabel}
                   onClick={continueBreakpointTarget}
                 >
                   {continuePending ? <ButtonSpinner /> : <PlayIcon />}
-                  <span>继续</span>
                 </button>
                 <button
                   type="button"
                   className="task-batch-action primary"
                   disabled={rerunDisabled}
-                  title={caseSelectionMode ? (selectionCount > 0 ? `重新生成选中的 ${selectionCount} 张` : "先选择要重新生成的卡片") : "重新生成全部卡片"}
+                  title={rerunActionLabel}
+                  aria-label={rerunActionLabel}
                   onClick={() => {
                     void regenerateRerunTargets();
                   }}
                 >
                   {caseActionPendingId ? <ButtonSpinner /> : <RetryIcon />}
-                  <span>{caseSelectionMode && selectionCount > 0 ? `重新生成 ${selectionCount}` : "重新生成"}</span>
                 </button>
                 <button
                   type="button"
                   className="task-batch-action dark"
                   disabled={!batchDownloadReady || batchDownloadPending}
-                  title={batchDownloadReady ? "下载合并 PPTX" : "全部完成后可下载合并 PPTX"}
+                  title={downloadActionLabel}
+                  aria-label={downloadActionLabel}
                   onClick={() => {
                     void onDownloadBatchPptx(activeBatch.batch.batch_id);
                   }}
                 >
                   {batchDownloadPending ? <ButtonSpinner /> : <DownloadIcon />}
-                  <span>下载</span>
                 </button>
                 <button
                   type="button"
                   className={`task-batch-action select-toggle${caseSelectionMode ? " active" : ""}`}
-                  title={caseSelectionMode ? "退出多选" : "选择要重新生成的卡片"}
+                  title={selectionToggleLabel}
+                  aria-label={selectionToggleLabel}
                   aria-pressed={caseSelectionMode}
                   onClick={toggleSelectionMode}
                 >
                   {caseSelectionMode ? <ClosePanelIcon /> : <SelectCardsIcon />}
-                  <span>{caseSelectionMode ? "退出" : "多选"}</span>
                 </button>
               </div>
             </div>
