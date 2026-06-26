@@ -46,13 +46,15 @@ test("settings navigation keeps overview above engine and node groups", () => {
   assert.match(source, /\{section\.label && <div className="settings-nav-heading">\{section\.label\}<\/div>\}/);
 });
 
-test("settings overview and Agent cards use provider icons and bottom-aligned actions", () => {
+test("settings overview engine and Agent cards use provider icons and bottom-aligned actions", () => {
   const source = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
   const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
   assert.match(source, /const selectedAgentIcon = selectedAgent \? agentProviderIconForId\(selectedAgent\.provider_id\) : null;/);
-  assert.match(source, /className=\{`settings-overview-agent-icon\$\{selectedAgentIcon \? " settings-provider-logo-mini" : ""\}`\}/);
+  assert.match(source, /aria-label="选择默认 Agent"/);
+  assert.match(source, /className=\{`settings-overview-engine-icon\$\{selectedAgentIcon \? " settings-provider-logo-mini" : ""\}`\}/);
   assert.match(source, /selectedAgentIcon \? <img src=\{selectedAgentIcon\.icon_url\} alt="" \/> : <SettingsNavIcon icon="agent" \/>/);
+  assert.match(source, /className="settings-overview-engine-action">选择<\/span>/);
   assert.match(source, /<div className="settings-model-card-bottom">[\s\S]*?<dl className="settings-model-meta">[\s\S]*?<button type="button" className="settings-model-action"/);
   assert.match(css, /\.settings-model-card-bottom\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\) auto;/);
   assert.match(css, /\.settings-model-action\s*\{[\s\S]*?align-self:\s*end;/);

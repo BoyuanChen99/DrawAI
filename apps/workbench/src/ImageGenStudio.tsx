@@ -8,6 +8,7 @@ import {
   type ImageGenSelectionMode,
   type ImageGenTile
 } from "./imageGenState";
+import type { ImageGenConnectionSettings } from "./imageGenSettings";
 import type {
   BatchDetail,
   BatchExecutionMode,
@@ -142,11 +143,6 @@ const BACKGROUNDS: Array<{ value: Background; label: string }> = [
   { value: "transparent", label: "透明" }
 ];
 
-const PROVIDERS: Array<{ value: ImageGenerationProvider; label: string; sub: string }> = [
-  { value: "api", label: "API", sub: "参数直连" },
-  { value: "codex", label: "Codex", sub: "内置工具" }
-];
-
 type PPTTemplateOption = { value: string; label: string; sub: string };
 
 const PPT_TEMPLATE_GROUPS: Array<{ group: string; options: PPTTemplateOption[] }> = [
@@ -264,25 +260,18 @@ interface GeneratedImage extends ImageGenerationTaskImage {
   provider: ImageGenerationProvider;
 }
 
-export interface ImageGenConnectionSettings {
-  provider: ImageGenerationProvider;
-  baseUrl: string;
-  apiKey: string;
-  model: string;
-}
-
 export default function ImageGenStudio({
   connection,
-  onConnectionChange,
+  onOpenSettings,
   onCreated,
   onError
 }: {
   connection: ImageGenConnectionSettings;
-  onConnectionChange?: (connection: ImageGenConnectionSettings) => void;
+  onOpenSettings?: () => void;
   onCreated: (detail: BatchDetail) => void | Promise<void>;
   onError: (message: string) => void;
 }) {
-  const [provider, setProvider] = useState<ImageGenerationProvider>(connection.provider || "api");
+  const provider: ImageGenerationProvider = connection.provider || "api";
   const [prompt, setPrompt] = useState("");
   const [size, setSize] = useState<string>("16:9");
   const [resolution, setResolution] = useState<Resolution>("2k");
@@ -314,10 +303,6 @@ export default function ImageGenStudio({
   const taskCounterRef = useRef(0);
 
   const effectiveSize = openAiSizeFromPreset(size, resolution);
-
-  useEffect(() => {
-    setProvider(connection.provider || "api");
-  }, [connection.provider]);
 
   useEffect(() => {
     let cancelled = false;
@@ -486,11 +471,6 @@ export default function ImageGenStudio({
     connection.model
   ]);
 
-  const changeProvider = useCallback((nextProvider: ImageGenerationProvider) => {
-    setProvider(nextProvider);
-    onConnectionChange?.({ ...connection, provider: nextProvider });
-  }, [connection, onConnectionChange]);
-
   const visibleTasks = useMemo(
     () => (activeTaskId ? tasks.filter((task) => task.id === activeTaskId) : tasks),
     [activeTaskId, tasks]
@@ -657,11 +637,13 @@ export default function ImageGenStudio({
               </div>
 
               <Field label="生成方式" hint={provider === "codex" ? "Codex SDK" : "Images API"}>
-                <Segmented
-                  options={PROVIDERS}
-                  value={provider}
-                  onChange={(v) => changeProvider(v as ImageGenerationProvider)}
-                />
+                <button type="button" className="gen-method-summary" onClick={onOpenSettings}>
+                  <span className="gen-method-summary-copy">
+                    <strong>{connection.label || (provider === "codex" ? "Codex 内置" : "Images API")}</strong>
+                    <em>{provider === "codex" ? "使用设置中心选择的 Codex 内置方式" : connection.baseUrl || "自定义 Images API"}</em>
+                  </span>
+                  <span className="gen-method-summary-action">设置</span>
+                </button>
               </Field>
 
               {provider === "codex" && (

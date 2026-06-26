@@ -41,7 +41,7 @@ import {
   continueWorkflowCase,
   type WorkbenchRerunStage,
 } from "./api";
-import ImageGenStudio, { type ImageGenConnectionSettings } from "./ImageGenStudio";
+import ImageGenStudio from "./ImageGenStudio";
 import WorkflowWorkspace from "./WorkflowWorkspace";
 import {
   API_PRESET_TEMPLATES,
@@ -53,6 +53,18 @@ import {
   type ApiPresetTemplate
 } from "./apiPresetTemplates";
 import { agentProviderIconForId, sortWorkbenchAgentsForDisplay } from "./agentProviderPresentation";
+import {
+  imageGenApiPresets,
+  imageGenConnectionFromMethod,
+  imageGenConnectionFromMethodCard,
+  imageGenMethodCards,
+  imageGenMethodPickerOptions,
+  normalizeImageGenConnection,
+  resolveImageGenConnectionDraft,
+  type ImageGenConnectionSettings,
+  type ImageGenMethodCard,
+  type ImageGenMethodSelection
+} from "./imageGenSettings";
 import { ProcessorIcon } from "./processorIcons";
 import { selectedWorkbenchAgent, workbenchAgentPickerChoices } from "./settingsAgentSelection";
 import { buildWorkflowPreviewLayout, type WorkflowPreviewLayout } from "./workflowPreviewLayout";
@@ -125,9 +137,10 @@ type BoardMode = "generate" | "process" | "workflow";
 type CanvasMode = "select" | "add" | "polygon";
 type AssetEditorView = "extraction" | "processing";
 type NodeArtifactViewMode = "artifact" | "agent_log";
-type WorkbenchSettingsCategory = "overview" | "api" | "agent" | "llm" | "processor";
+type WorkbenchSettingsCategory = "overview" | "api" | "agent" | "llm" | "imagegen" | "processor";
 type WorkbenchSettingsDetailCategory = Exclude<WorkbenchSettingsCategory, "overview">;
 type ApiPresetDialogMode = "choose_provider" | "edit";
+type ImageGenDialogMode = "choose_method" | "edit";
 type CloseSettingsDetailOptions = { discardApiDraft?: boolean };
 type SaveSettingsOptions = {
   agentSettingsOverride?: WorkbenchAgentSettings;
@@ -202,7 +215,8 @@ const WORKBENCH_SETTINGS_NAV_SECTIONS: WorkbenchSettingsNavSection[] = [
     items: [
       { id: "api", label: "模型供应商", icon: "api" },
       { id: "agent", label: "Agent", icon: "agent" },
-      { id: "llm", label: "LLM 配置", icon: "llm" }
+      { id: "llm", label: "LLM 配置", icon: "llm" },
+      { id: "imagegen", label: "图像生成", icon: "imagegen" }
     ]
   },
   {
@@ -219,7 +233,10 @@ const DEFAULT_IMAGEGEN_CONNECTION: ImageGenConnectionSettings = {
   provider: "codex",
   baseUrl: "",
   apiKey: "",
-  model: "gpt-image-2"
+  model: "gpt-image-2",
+  methodId: "codex_builtin",
+  apiPresetId: "",
+  label: "Codex 内置"
 };
 const DEFAULT_WORKBENCH_AGENT_SETTINGS: WorkbenchAgentSettings = {
   selected_provider_id: "codex_sdk",
@@ -342,6 +359,7 @@ export default function App() {
   const [boardMode, setBoardMode] = useState<BoardMode>(() => initialBoardMode());
   const [submitOpen, setSubmitOpen] = useState(false);
   const [workbenchSettingsOpen, setWorkbenchSettingsOpen] = useState(false);
+  const [workbenchSettingsInitialCategory, setWorkbenchSettingsInitialCategory] = useState<WorkbenchSettingsCategory>("overview");
   const [imageGenConnection, setImageGenConnection] = useState<ImageGenConnectionSettings>(() => loadImageGenConnectionSettings());
   const [error, setError] = useState("");
   const [assetsRunPendingCaseId, setAssetsRunPendingCaseId] = useState("");
@@ -1215,7 +1233,10 @@ export default function App() {
             className="topbar-icon-button"
             title="Workbench 设置"
             aria-label="Workbench 设置"
-            onClick={() => setWorkbenchSettingsOpen(true)}
+            onClick={() => {
+              setWorkbenchSettingsInitialCategory("overview");
+              setWorkbenchSettingsOpen(true);
+            }}
           >
             <SettingsIcon />
           </button>
@@ -1251,9 +1272,9 @@ export default function App() {
           <main className="board-workspace board-generate-workspace" hidden={boardMode !== "generate"}>
             <ImageGenStudio
               connection={imageGenConnection}
-              onConnectionChange={(nextConnection) => {
-                setImageGenConnection(nextConnection);
-                saveImageGenConnectionSettings(nextConnection);
+              onOpenSettings={() => {
+                setWorkbenchSettingsInitialCategory("imagegen");
+                setWorkbenchSettingsOpen(true);
               }}
               onCreated={activateCreatedBatch}
               onError={setError}
@@ -1386,6 +1407,7 @@ export default function App() {
       )}
       {workbenchSettingsOpen && (
         <WorkbenchSettingsCenter
+          initialCategory={workbenchSettingsInitialCategory}
           imageGenConnection={imageGenConnection}
           onClose={() => setWorkbenchSettingsOpen(false)}
           onSaved={(nextConnection) => {
@@ -1756,93 +1778,14 @@ function SubmitDialog({
   );
 }
 
-function ImageGenSettingsDialog({
-  connection,
-  onClose,
-  onSave
-}: {
-  connection: ImageGenConnectionSettings;
-  onClose: () => void;
-  onSave: (connection: ImageGenConnectionSettings) => void;
-}) {
-  const [draft, setDraft] = useState<ImageGenConnectionSettings>(connection);
-  const save = () => {
-    onSave({
-      provider: draft.provider || DEFAULT_IMAGEGEN_CONNECTION.provider,
-      baseUrl: draft.baseUrl.trim(),
-      apiKey: draft.apiKey.trim(),
-      model: draft.model.trim() || DEFAULT_IMAGEGEN_CONNECTION.model
-    });
-  };
-  return (
-    <div className="modal-backdrop" role="presentation" onMouseDown={onClose}>
-      <section
-        className="settings-dialog imagegen-settings-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-label="生成 API 设置"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <header className="settings-dialog-head">
-          <div>
-            <span>生成 API</span>
-            <strong>连接设置</strong>
-          </div>
-          <button type="button" className="settings-close" aria-label="关闭" onClick={onClose}>
-            ×
-          </button>
-        </header>
-        <div className="settings-form">
-          <label className="settings-field">
-            <span>接口地址</span>
-            <input
-              value={draft.baseUrl}
-              onChange={(event) => setDraft((current) => ({ ...current, baseUrl: event.target.value }))}
-              placeholder="https://api.openai.com"
-            />
-          </label>
-          <label className="settings-field">
-            <span>模型</span>
-            <input
-              value={draft.model}
-              onChange={(event) => setDraft((current) => ({ ...current, model: event.target.value }))}
-              placeholder="gpt-image-2"
-              autoComplete="off"
-            />
-          </label>
-          <label className="settings-field">
-            <span>API 密钥</span>
-            <input
-              type="password"
-              value={draft.apiKey}
-              onChange={(event) => setDraft((current) => ({ ...current, apiKey: event.target.value }))}
-              placeholder="留空则使用后端环境变量"
-              autoComplete="off"
-            />
-          </label>
-        </div>
-        <footer className="settings-actions">
-          <button type="button" onClick={() => setDraft(DEFAULT_IMAGEGEN_CONNECTION)}>
-            清空
-          </button>
-          <button type="button" onClick={onClose}>
-            取消
-          </button>
-          <button type="button" className="primary" onClick={save}>
-            保存
-          </button>
-        </footer>
-      </section>
-    </div>
-  );
-}
-
 function WorkbenchSettingsCenter({
+  initialCategory,
   imageGenConnection,
   onClose,
   onSaved,
   onError
 }: {
+  initialCategory: WorkbenchSettingsCategory;
   imageGenConnection: ImageGenConnectionSettings;
   onClose: () => void;
   onSaved: (connection?: ImageGenConnectionSettings) => void;
@@ -1861,16 +1804,24 @@ function WorkbenchSettingsCenter({
   const [agentsLoading, setAgentsLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState("");
-  const [settingsCategory, setSettingsCategory] = useState<WorkbenchSettingsCategory>("overview");
+  const [settingsCategory, setSettingsCategory] = useState<WorkbenchSettingsCategory>(initialCategory);
   const [settingsDetailTarget, setSettingsDetailTarget] = useState<WorkbenchSettingsDetailCategory | null>(null);
   const [selectedApiPresetIndex, setSelectedApiPresetIndex] = useState(0);
   const [apiPresetDialogMode, setApiPresetDialogMode] = useState<ApiPresetDialogMode>("edit");
+  const [imageGenDialogMode, setImageGenDialogMode] = useState<ImageGenDialogMode>("edit");
   const [newApiPresetDraftIndex, setNewApiPresetDraftIndex] = useState<number | null>(null);
   const [apiTemplateSearch, setApiTemplateSearch] = useState("");
+  const [imageGenConnectionDraft, setImageGenConnectionDraft] = useState<ImageGenConnectionSettings>(() =>
+    normalizeImageGenConnection(imageGenConnection)
+  );
   const [selectedLlmPresetId, setSelectedLlmPresetId] = useState("");
   const [selectedProcessorId, setSelectedProcessorId] = useState("");
   const [selectedAgentConfigProviderId, setSelectedAgentConfigProviderId] = useState("");
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
+
+  useEffect(() => {
+    setImageGenConnectionDraft(normalizeImageGenConnection(imageGenConnection));
+  }, [imageGenConnection]);
 
   const loadSettings = useCallback(async () => {
     setLoading(true);
@@ -1886,6 +1837,7 @@ function WorkbenchSettingsCenter({
       ]);
       const normalizedSettings = normalizeWorkbenchAgentDraft(nextResponse.settings);
       const nextApiDrafts = apiPresetsWithImageGenMigration(nextApiResponse.presets || [], imageGenConnection);
+      const nextImageGenConnection = resolveImageGenConnectionDraft(imageGenConnection, nextApiDrafts);
       setOverviewResponse(nextOverview.payload);
       setOverviewError(nextOverview.error);
       setResponse(nextResponse);
@@ -1893,6 +1845,7 @@ function WorkbenchSettingsCenter({
       setProcessorResponse(nextProcessorResponse);
       setDraft(normalizedSettings);
       setApiDrafts(nextApiDrafts);
+      setImageGenConnectionDraft(nextImageGenConnection);
       setProcessorDrafts({ ...(nextProcessorResponse.settings?.processors || {}) });
       setLlmExtraBodyText(formatWorkbenchAgentJsonObject(normalizedSettings.llm_extra_body));
       setSelectedApiPresetIndex(0);
@@ -1942,6 +1895,15 @@ function WorkbenchSettingsCenter({
   const selectedApiPreset = apiDrafts[selectedApiPresetIndex] || null;
   const llmPresets = apiDrafts.filter((preset) => preset.type === "llm_chat_completions" || preset.type === "llm_responses");
   const selectedLlmPreset = llmPresets.find((preset) => preset.id === selectedLlmPresetId) || null;
+  const selectedLlmPresetTemplate = selectedLlmPreset ? apiPresetTemplateForPreset(selectedLlmPreset) : null;
+  const imageApiPresets = imageGenApiPresets(apiDrafts);
+  const imageGenMethodCardsList = imageGenMethodCards(imageGenConnectionDraft, apiDrafts, sortedAgents);
+  const selectedImageGenMethod = imageGenMethodCardsList.find((method) => method.selected) || imageGenMethodCardsList[0] || null;
+  const selectedImageGenApiPresetIndex = imageGenConnectionDraft.apiPresetId
+    ? apiDrafts.findIndex((preset) => preset.id === imageGenConnectionDraft.apiPresetId)
+    : -1;
+  const selectedImageGenApiPreset = selectedImageGenApiPresetIndex >= 0 ? apiDrafts[selectedImageGenApiPresetIndex] : null;
+  const selectedImageGenApiPresetTemplate = selectedImageGenApiPreset ? apiPresetTemplateForPreset(selectedImageGenApiPreset) : null;
   const processorDefinitions = processorResponse?.definitions.processors || {};
   const processorDrivers = processorResponse?.definitions.drivers || {};
   const processorIds = Object.keys(processorDefinitions);
@@ -1983,6 +1945,9 @@ function WorkbenchSettingsCenter({
     setSelectedApiPresetIndex((current) => Math.min(current, maxNextIndex));
     if (draftToRemove) {
       setSelectedLlmPresetId((current) => (current === draftToRemove.id ? "" : current));
+      setImageGenConnectionDraft((current) =>
+        current.apiPresetId === draftToRemove.id ? imageGenConnectionFromMethod({ kind: "custom" }, current) : current
+      );
       setProcessorDrafts((current) => retargetProcessorApiPresetDrafts(current, draftToRemove.id, ""));
     }
     setNewApiPresetDraftIndex(null);
@@ -1999,6 +1964,7 @@ function WorkbenchSettingsCenter({
       discardNewApiPresetDraft();
     }
     setApiPresetDialogMode("edit");
+    setImageGenDialogMode("edit");
     setApiTemplateSearch("");
     setSettingsDetailTarget(null);
   };
@@ -2022,7 +1988,11 @@ function WorkbenchSettingsCenter({
         ? selectedAgent?.label || "Agent"
         : settingsCategory === "llm"
           ? selectedLlmPreset?.label || selectedLlmPreset?.id || "LLM 配置"
-          : selectedProcessor?.label || "Processor";
+          : settingsCategory === "imagegen"
+            ? imageGenDialogMode === "choose_method"
+              ? "选择图像生成方式"
+              : selectedImageGenMethod?.label || "图像生成"
+            : selectedProcessor?.label || "Processor";
 
   const openApiPresetSettings = (presetIndex: number) => {
     setSettingsCategory("api");
@@ -2051,6 +2021,23 @@ function WorkbenchSettingsCenter({
     setSettingsCategory("llm");
     setSelectedLlmPresetId(presetId);
     setSettingsDetailTarget("llm");
+  };
+
+  const openImageGenSettings = () => {
+    setSettingsCategory("imagegen");
+    setImageGenDialogMode("edit");
+    setSettingsDetailTarget("imagegen");
+  };
+
+  const beginImageGenMethodSelection = () => {
+    setSettingsCategory("imagegen");
+    setImageGenDialogMode("choose_method");
+    setSettingsDetailTarget("imagegen");
+  };
+
+  const selectImageGenMethod = (selection: ImageGenMethodSelection) => {
+    setImageGenConnectionDraft((current) => imageGenConnectionFromMethod(selection, current));
+    setImageGenDialogMode("edit");
   };
 
   const openProcessorSettings = (processorId: string) => {
@@ -2133,6 +2120,7 @@ function WorkbenchSettingsCenter({
       ]);
       const normalizedSettings = normalizeWorkbenchAgentDraft(nextResponse.settings);
       const nextApiDrafts = nextApiResponse.presets || [];
+      const nextImageGenConnection = resolveImageGenConnectionDraft(imageGenConnectionDraft, nextApiDrafts);
       setResponse((current) => ({
         settings: nextResponse.settings,
         agents: nextResponse.agents?.length ? nextResponse.agents : current?.agents || []
@@ -2141,6 +2129,7 @@ function WorkbenchSettingsCenter({
       setProcessorResponse(nextProcessorResponse);
       setDraft(normalizedSettings);
       setApiDrafts(nextApiDrafts);
+      setImageGenConnectionDraft(nextImageGenConnection);
       setProcessorDrafts({ ...(nextProcessorResponse.settings?.processors || {}) });
       setLlmExtraBodyText(formatWorkbenchAgentJsonObject(normalizedSettings.llm_extra_body));
       setNewApiPresetDraftIndex(null);
@@ -2154,7 +2143,7 @@ function WorkbenchSettingsCenter({
       } catch (err) {
         setOverviewError(err instanceof Error ? err.message : String(err));
       }
-      onSaved(imageGenConnectionFromApiPresets(nextApiDrafts, imageGenConnection));
+      onSaved(nextImageGenConnection);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setLocalError(message);
@@ -2232,7 +2221,9 @@ function WorkbenchSettingsCenter({
                               ? "Agent 运行配置"
                               : settingsCategory === "llm"
                                 ? "默认 LLM 配置"
-                                : "处理器配置"}
+                                : settingsCategory === "imagegen"
+                                  ? "图像生成方式"
+                                  : "处理器配置"}
                       </strong>
                       <p>
                         {settingsCategory === "overview"
@@ -2245,7 +2236,9 @@ function WorkbenchSettingsCenter({
                               ? `${agents.length} 个 Agent 供应方`
                               : settingsCategory === "llm"
                                 ? `${llmPresets.length} 个 LLM 预设`
-                                : `${processorIds.length} 个处理器`}
+                                : settingsCategory === "imagegen"
+                                  ? `${imageGenMethodCardsList.length} 个生成方式`
+                                  : `${processorIds.length} 个处理器`}
                       </p>
                     </div>
                     {settingsCategory === "agent" && (
@@ -2269,9 +2262,22 @@ function WorkbenchSettingsCenter({
                       selectedProviderId={draft.selected_provider_id}
                       selectedAgent={currentAgent}
                       availableAgentCount={agentPickerChoices.length}
+                      selectedLlmPreset={selectedLlmPreset}
+                      llmPresetCount={llmPresets.length}
+                      selectedImageGenMethod={selectedImageGenMethod}
+                      imageGenMethodCount={imageGenMethodCardsList.length}
+                      processorDefinitions={processorDefinitions}
+                      processorDrafts={processorDrafts}
+                      processorIds={processorIds}
                       saving={saving}
                       onChooseAgent={() => setAgentPickerOpen(true)}
-                      onAction={openSettingsOverviewAction}
+                      onChooseLlm={() => openLlmSettings(selectedLlmPresetId)}
+                      onChooseImageGen={beginImageGenMethodSelection}
+                      onOpenProcessorSettings={() => {
+                        setSelectedProcessorId(selectedProcessorId || processorIds[0] || "");
+                        setSettingsDetailTarget(null);
+                        setSettingsCategory("processor");
+                      }}
                     />
                   )}
                   {settingsCategory === "api" && (
@@ -2377,35 +2383,107 @@ function WorkbenchSettingsCenter({
                   {settingsCategory === "llm" && (
                     <div className="settings-model-grid" aria-label="LLM 预设">
                       {llmPresets.length === 0 && <div className="agent-settings-empty">未发现 LLM API 预设</div>}
-                      {llmPresets.map((preset) => (
-                        <article
-                          key={preset.id}
-                          className={`settings-model-card${selectedLlmPresetId === preset.id ? " active" : ""}`}
-                        >
-                          <div className="settings-model-card-head">
-                            <span className="settings-model-icon" aria-hidden="true">
-                              <SettingsNavIcon icon="llm" />
-                            </span>
-                            <div>
-                              <strong>{preset.label || preset.id}</strong>
-                              <span>{preset.type === "llm_responses" ? "Responses" : "Chat Completions"}</span>
+                      {llmPresets.map((preset) => {
+                        const presetTemplate = apiPresetTemplateForPreset(preset);
+                        return (
+                          <article
+                            key={preset.id}
+                            className={`settings-model-card${selectedLlmPresetId === preset.id ? " active" : ""}`}
+                          >
+                            <div className="settings-model-card-head">
+                              <span
+                                className={`settings-model-icon${presetTemplate ? " settings-provider-logo-mini" : ""}`}
+                                style={presetTemplate ? ({ "--provider-color": presetTemplate.accent_color } as CSSProperties) : undefined}
+                                aria-hidden="true"
+                              >
+                                {presetTemplate ? <img src={presetTemplate.icon_url} alt="" /> : <SettingsNavIcon icon="llm" />}
+                              </span>
+                              <div>
+                                <strong>{preset.label || preset.id}</strong>
+                                <span>{preset.type === "llm_responses" ? "Responses" : "Chat Completions"}</span>
+                              </div>
                             </div>
-                          </div>
-                          <dl className="settings-model-meta">
-                            <div>
-                              <dt>模型</dt>
-                              <dd>{preset.model || "未设置"}</dd>
+                            <dl className="settings-model-meta">
+                              <div>
+                                <dt>模型</dt>
+                                <dd>{preset.model || "未设置"}</dd>
+                              </div>
+                              <div>
+                                <dt>Base URL</dt>
+                                <dd>{preset.base_url || "未设置"}</dd>
+                              </div>
+                            </dl>
+                            <button type="button" className="settings-model-action" onClick={() => openLlmSettings(preset.id)}>
+                              设置
+                            </button>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {settingsCategory === "imagegen" && (
+                    <div className="settings-model-grid" aria-label="图像生成方式">
+                      {imageGenMethodCardsList.map((method) => {
+                        const preset = method.apiPresetId ? apiDrafts.find((item) => item.id === method.apiPresetId) || null : null;
+                        const presetTemplate = preset ? apiPresetTemplateForPreset(preset) : null;
+                        const codexIcon = method.kind === "codex_builtin" ? agentProviderIconForId("codex_sdk") : null;
+                        const methodIcon = presetTemplate || codexIcon;
+                        return (
+                          <article
+                            key={method.id}
+                            className={`settings-model-card settings-imagegen-method-card${method.selected ? " active" : ""}${method.available ? "" : " missing"}`}
+                          >
+                            <div className="settings-model-card-head">
+                              <span
+                                className={`settings-model-icon${methodIcon ? " settings-provider-logo-mini" : ""}`}
+                                style={methodIcon ? ({ "--provider-color": methodIcon.accent_color } as CSSProperties) : undefined}
+                                aria-hidden="true"
+                              >
+                                {methodIcon ? <img src={methodIcon.icon_url} alt="" /> : <SettingsNavIcon icon="imagegen" />}
+                              </span>
+                              <div>
+                                <strong>{method.label}</strong>
+                                <span>{method.kind === "codex_builtin" ? "Codex SDK" : method.kind === "api_preset" ? "Images API 预设" : "自定义 API"}</span>
+                              </div>
+                              <em className={`settings-card-status ${method.available ? "ok" : "missing"}`}>
+                                {method.available ? (method.selected ? "当前" : "可用") : "未检测到"}
+                              </em>
                             </div>
-                            <div>
-                              <dt>Base URL</dt>
-                              <dd>{preset.base_url || "未设置"}</dd>
-                            </div>
-                          </dl>
-                          <button type="button" className="settings-model-action" onClick={() => openLlmSettings(preset.id)}>
-                            设置
-                          </button>
-                        </article>
-                      ))}
+                            <dl className="settings-model-meta">
+                              <div>
+                                <dt>模型</dt>
+                                <dd>{method.model || "未设置"}</dd>
+                              </div>
+                              <div>
+                                <dt>连接</dt>
+                                <dd>{method.detail || method.baseUrl || "内置"}</dd>
+                              </div>
+                            </dl>
+                            <button
+                              type="button"
+                              className="settings-model-action"
+                              onClick={() => {
+                                setImageGenConnectionDraft((current) => imageGenConnectionFromMethodCard(method, apiDrafts, current));
+                                openImageGenSettings();
+                              }}
+                              disabled={!method.available && !method.selected}
+                            >
+                              {method.selected ? "设置" : "使用"}
+                            </button>
+                          </article>
+                        );
+                      })}
+                      <button
+                        type="button"
+                        className="settings-model-card settings-model-card-add"
+                        onClick={beginImageGenMethodSelection}
+                      >
+                        <span className="settings-add-icon" aria-hidden="true">
+                          <PlusIcon />
+                        </span>
+                        <strong>添加生成方式</strong>
+                        <span>自定义、Codex 或 API 预设</span>
+                      </button>
                     </div>
                   )}
                   {settingsCategory === "processor" && (
@@ -2793,10 +2871,19 @@ function WorkbenchSettingsCenter({
                     </select>
                   </label>
                   {selectedLlmPreset && (
-                    <div className="settings-summary-row">
-                      <span>{selectedLlmPreset.type}</span>
-                      <strong>{selectedLlmPreset.base_url}</strong>
-                      <em>{selectedLlmPreset.model}</em>
+                    <div className="settings-summary-row settings-llm-summary">
+                      <span
+                        className={`settings-summary-logo${selectedLlmPresetTemplate ? " settings-provider-logo-mini" : ""}`}
+                        style={selectedLlmPresetTemplate ? ({ "--provider-color": selectedLlmPresetTemplate.accent_color } as CSSProperties) : undefined}
+                        aria-hidden="true"
+                      >
+                        {selectedLlmPresetTemplate ? <img src={selectedLlmPresetTemplate.icon_url} alt="" /> : <SettingsNavIcon icon="llm" />}
+                      </span>
+                      <div>
+                        <span>{selectedLlmPreset.type}</span>
+                        <strong>{selectedLlmPreset.base_url}</strong>
+                        <em>{selectedLlmPreset.model}</em>
+                      </div>
                     </div>
                   )}
                   <label className="settings-field">
@@ -2826,6 +2913,161 @@ function WorkbenchSettingsCenter({
                     />
                   </label>
                 </div>
+              )}
+              {settingsCategory === "imagegen" && (
+                imageGenDialogMode === "choose_method" ? (
+                  <div className="settings-provider-picker choose" aria-label="选择图像生成方式">
+                    <div className="settings-provider-option-grid choose">
+                      {imageGenMethodPickerOptions(imageApiPresets, sortedAgents).map((option) => {
+                        const preset = option.apiPresetId ? imageApiPresets.find((item) => item.id === option.apiPresetId) || null : null;
+                        const presetTemplate = preset ? apiPresetTemplateForPreset(preset) : null;
+                        const codexIcon = option.kind === "codex_builtin" ? agentProviderIconForId("codex_sdk") : null;
+                        const optionIcon = presetTemplate || codexIcon;
+                        return (
+                          <button
+                            type="button"
+                            key={option.id}
+                            className={`settings-provider-option${selectedImageGenMethod?.id === option.id ? " active" : ""}`}
+                            onClick={() => {
+                              if (option.kind === "codex_builtin") {
+                                selectImageGenMethod({ kind: "codex_builtin" });
+                                return;
+                              }
+                              if (option.kind === "api_preset" && preset) {
+                                selectImageGenMethod({ kind: "api_preset", preset });
+                                return;
+                              }
+                              selectImageGenMethod({ kind: "custom" });
+                            }}
+                          >
+                            <span
+                              className={`settings-provider-logo${optionIcon ? "" : " settings-provider-logo-custom"}`}
+                              style={optionIcon ? ({ "--provider-color": optionIcon.accent_color } as CSSProperties) : undefined}
+                              aria-hidden="true"
+                            >
+                              {optionIcon ? <img src={optionIcon.icon_url} alt="" /> : <PlusIcon />}
+                            </span>
+                            <span className="settings-provider-option-copy">
+                              <strong>{option.label}</strong>
+                              <span>{option.detail || option.model}</span>
+                            </span>
+                          </button>
+                        );
+                      })}
+                      {imageGenMethodPickerOptions(imageApiPresets, sortedAgents).length === 0 && (
+                        <div className="settings-provider-option-empty">暂无可选图像生成方式</div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="agent-settings-section">
+                    <div className="agent-settings-section-title">
+                      <span>图像生成</span>
+                      <button type="button" className="link-button" onClick={beginImageGenMethodSelection}>
+                        切换方式
+                      </button>
+                    </div>
+                    <div className="settings-summary-row settings-imagegen-summary">
+                      <span
+                        className={`settings-summary-logo${
+                          selectedImageGenMethod?.kind === "api_preset" && selectedImageGenApiPresetTemplate
+                            ? " settings-provider-logo-mini"
+                            : ""
+                        }`}
+                        style={
+                          selectedImageGenMethod?.kind === "api_preset" && selectedImageGenApiPresetTemplate
+                            ? ({ "--provider-color": selectedImageGenApiPresetTemplate.accent_color } as CSSProperties)
+                            : undefined
+                        }
+                        aria-hidden="true"
+                      >
+                        {selectedImageGenMethod?.kind === "api_preset" && selectedImageGenApiPresetTemplate ? (
+                          <img src={selectedImageGenApiPresetTemplate.icon_url} alt="" />
+                        ) : (
+                          <SettingsNavIcon icon="imagegen" />
+                        )}
+                      </span>
+                      <div>
+                        <span>{imageGenConnectionDraft.provider === "codex" ? "Codex SDK" : selectedImageGenApiPreset ? "Images API 预设" : "自定义 API"}</span>
+                        <strong>{selectedImageGenMethod?.label || imageGenConnectionDraft.label || "图像生成"}</strong>
+                        <em>{imageGenConnectionDraft.provider === "codex" ? "使用检测到的 Codex 内置能力" : imageGenConnectionDraft.baseUrl || "未设置 Base URL"}</em>
+                      </div>
+                    </div>
+                    <label className="settings-field">
+                      <span>模型</span>
+                      <input
+                        value={imageGenConnectionDraft.model}
+                        onChange={(event) => {
+                          const nextModel = event.target.value;
+                          setImageGenConnectionDraft((current) => ({ ...current, model: nextModel }));
+                          if (selectedImageGenApiPresetIndex >= 0) {
+                            updateApiPresetDraft(setApiDrafts, selectedImageGenApiPresetIndex, { model: nextModel });
+                          }
+                        }}
+                        placeholder="gpt-image-2"
+                        autoComplete="off"
+                      />
+                    </label>
+                    {imageGenConnectionDraft.provider === "api" && selectedImageGenApiPreset && (
+                      <div className="settings-summary-row settings-imagegen-summary">
+                        <span>API</span>
+                        <div>
+                          <span>{selectedImageGenApiPreset.type}</span>
+                          <strong>{selectedImageGenApiPreset.label || selectedImageGenApiPreset.id}</strong>
+                          <em>{selectedImageGenApiPreset.base_url || "未设置 Base URL"}</em>
+                        </div>
+                        <button
+                          type="button"
+                          className="settings-model-action"
+                          onClick={() => openApiPresetSettings(selectedImageGenApiPresetIndex)}
+                        >
+                          编辑预设
+                        </button>
+                      </div>
+                    )}
+                    {imageGenConnectionDraft.provider === "api" && !selectedImageGenApiPreset && (
+                      <>
+                        <label className="settings-field">
+                          <span>Base URL</span>
+                          <input
+                            value={imageGenConnectionDraft.baseUrl}
+                            onChange={(event) =>
+                              setImageGenConnectionDraft((current) => ({
+                                ...current,
+                                provider: "api",
+                                baseUrl: event.target.value,
+                                methodId: "custom",
+                                apiPresetId: "",
+                                label: current.label || "自定义"
+                              }))
+                            }
+                            placeholder="https://api.openai.com/v1"
+                            autoComplete="off"
+                          />
+                        </label>
+                        <label className="settings-field">
+                          <span>API Key</span>
+                          <input
+                            type="password"
+                            value={imageGenConnectionDraft.apiKey}
+                            onChange={(event) =>
+                              setImageGenConnectionDraft((current) => ({
+                                ...current,
+                                provider: "api",
+                                apiKey: event.target.value,
+                                methodId: "custom",
+                                apiPresetId: "",
+                                label: current.label || "自定义"
+                              }))
+                            }
+                            placeholder="留空则使用后端环境变量"
+                            autoComplete="off"
+                          />
+                        </label>
+                      </>
+                    )}
+                  </div>
+                )
               )}
               {settingsCategory === "processor" && (
                 <div className="agent-settings-section">
@@ -2931,11 +3173,14 @@ function WorkbenchSettingsCenter({
                         <button type="button" onClick={() => closeSettingsDetail()} disabled={saving}>
                           取消
                         </button>
-                        {!(settingsCategory === "api" && apiPresetDialogMode === "choose_provider") && (
+                        {!(
+                          (settingsCategory === "api" && apiPresetDialogMode === "choose_provider") ||
+                          (settingsCategory === "imagegen" && imageGenDialogMode === "choose_method")
+                        ) && (
                           <button
                             type="button"
                             className="primary"
-                            onClick={() => void saveSettings({ closeDetailOnSuccess: settingsCategory === "api" })}
+                            onClick={() => void saveSettings({ closeDetailOnSuccess: settingsCategory === "api" || settingsCategory === "imagegen" })}
                             disabled={loading || saving}
                           >
                             {saving ? "保存中" : "保存"}
@@ -2961,9 +3206,18 @@ function SettingsOverviewPage({
   selectedProviderId,
   selectedAgent,
   availableAgentCount,
+  selectedLlmPreset,
+  llmPresetCount,
+  selectedImageGenMethod,
+  imageGenMethodCount,
+  processorDefinitions,
+  processorDrafts,
+  processorIds,
   saving,
   onChooseAgent,
-  onAction
+  onChooseLlm,
+  onChooseImageGen,
+  onOpenProcessorSettings
 }: {
   overview: WorkbenchStatusOverviewResponse | null;
   loading: boolean;
@@ -2971,125 +3225,161 @@ function SettingsOverviewPage({
   selectedProviderId: string;
   selectedAgent: WorkbenchAgentDiscovery | null;
   availableAgentCount: number;
+  selectedLlmPreset: ApiPreset | null;
+  llmPresetCount: number;
+  selectedImageGenMethod: ImageGenMethodCard | null;
+  imageGenMethodCount: number;
+  processorDefinitions: ProcessorSettingsResponse["definitions"]["processors"];
+  processorDrafts: ProcessorSettingsResponse["settings"]["processors"];
+  processorIds: string[];
   saving: boolean;
   onChooseAgent: () => void;
-  onAction: (action?: WorkbenchStatusOverviewAction) => void;
+  onChooseLlm: () => void;
+  onChooseImageGen: () => void;
+  onOpenProcessorSettings: () => void;
 }) {
   if (loading) return <div className="agent-settings-empty">加载中</div>;
-  if (error) return <div className="agent-settings-error">{error}</div>;
-  if (!overview) return <EmptyState label="暂无状态总览" />;
   const agentSeverity = selectedAgent?.available ? "ok" : "warning";
   const selectedAgentIcon = selectedAgent ? agentProviderIconForId(selectedAgent.provider_id) : null;
-  const checkCount = overview.groups.reduce((total, group) => total + group.items.length, 0);
+  const selectedLlmPresetTemplate = selectedLlmPreset ? apiPresetTemplateForPreset(selectedLlmPreset) : null;
+  const llmSeverity = selectedLlmPreset ? "ok" : "warning";
+  const imageGenSeverity = selectedImageGenMethod?.available ? "ok" : "warning";
+  const selectedImageGenPresetTemplate =
+    selectedImageGenMethod?.kind === "api_preset"
+      ? apiPresetTemplateForPreset({
+          id: selectedImageGenMethod.apiPresetId,
+          label: selectedImageGenMethod.label,
+          type: "images_api",
+          base_url: selectedImageGenMethod.baseUrl,
+          model: selectedImageGenMethod.model,
+          api_key_env: "",
+          api_key: ""
+        })
+      : null;
+  const statusSeverity = error ? "warning" : overview?.overall.severity || "ok";
+  const statusLabel = error || overview?.overall.label || "状态已读取";
+  const enabledOverviewProcessors = processorIds.filter((processorId) => processorDrafts[processorId]?.enabled);
   return (
     <div className="settings-overview">
-      <section className={`settings-overview-hero ${overview.overall.severity}`}>
-        <div className="settings-overview-hero-copy">
-          <span className="settings-overview-status-mark" aria-hidden="true" />
+      <section className="settings-overview-section settings-overview-engines" aria-label="引擎">
+        <header className="settings-overview-section-head">
           <div>
-            <span>运行总览</span>
-            <strong>{overview.overall.label}</strong>
-            <p title={overview.workspace}>{overview.workspace}</p>
+            <span>引擎</span>
+            <strong>默认执行配置</strong>
           </div>
-        </div>
-        <dl className="settings-overview-kpis">
-          <div>
-            <dt>配置组</dt>
-            <dd>{overview.groups.length}</dd>
-          </div>
-          <div>
-            <dt>错误</dt>
-            <dd>{overview.overall.error_count}</dd>
-          </div>
-          <div>
-            <dt>提醒</dt>
-            <dd>{overview.overall.warning_count}</dd>
-          </div>
-        </dl>
-      </section>
-      <section className={`settings-overview-agent ${agentSeverity}`}>
-        <div className="settings-overview-agent-row">
-          <span
-            className={`settings-overview-agent-icon${selectedAgentIcon ? " settings-provider-logo-mini" : ""}`}
-            style={selectedAgentIcon ? ({ "--provider-color": selectedAgentIcon.accent_color } as CSSProperties) : undefined}
-            aria-hidden="true"
+          <em className={`settings-overview-status ${statusSeverity}`}>{statusLabel}</em>
+        </header>
+        <div className="settings-overview-engine-grid">
+          <button
+            type="button"
+            className={`settings-overview-engine ${agentSeverity}`}
+            aria-label="选择默认 Agent"
+            onClick={onChooseAgent}
+            disabled={availableAgentCount === 0 || saving}
           >
-            {selectedAgentIcon ? <img src={selectedAgentIcon.icon_url} alt="" /> : <SettingsNavIcon icon="agent" />}
-          </span>
+            <span
+              className={`settings-overview-engine-icon${selectedAgentIcon ? " settings-provider-logo-mini" : ""}`}
+              style={selectedAgentIcon ? ({ "--provider-color": selectedAgentIcon.accent_color } as CSSProperties) : undefined}
+              aria-hidden="true"
+            >
+              {selectedAgentIcon ? <img src={selectedAgentIcon.icon_url} alt="" /> : <SettingsNavIcon icon="agent" />}
+            </span>
+            <span className="settings-overview-engine-copy">
+              <span>默认 Agent</span>
+              <strong>{selectedAgent?.label || selectedProviderId}</strong>
+              <em>
+                {selectedAgent
+                  ? selectedAgent.available
+                    ? `${selectedAgent.kind.toUpperCase()} · 可用`
+                    : `${selectedAgent.kind.toUpperCase()} · 未通过`
+                  : "未发现"}
+              </em>
+            </span>
+            <span className="settings-overview-engine-action">选择</span>
+          </button>
+          <button
+            type="button"
+            className={`settings-overview-engine ${llmSeverity}`}
+            aria-label="选择默认 LLM 配置"
+            onClick={onChooseLlm}
+            disabled={saving}
+          >
+            <span
+              className={`settings-overview-engine-icon${selectedLlmPresetTemplate ? " settings-provider-logo-mini" : ""}`}
+              style={selectedLlmPresetTemplate ? ({ "--provider-color": selectedLlmPresetTemplate.accent_color } as CSSProperties) : undefined}
+              aria-hidden="true"
+            >
+              {selectedLlmPresetTemplate ? <img src={selectedLlmPresetTemplate.icon_url} alt="" /> : <SettingsNavIcon icon="llm" />}
+            </span>
+            <span className="settings-overview-engine-copy">
+              <span>默认 LLM 配置</span>
+              <strong>{selectedLlmPreset?.label || selectedLlmPreset?.id || "未选择"}</strong>
+              <em>{selectedLlmPreset ? selectedLlmPreset.model || selectedLlmPreset.type : `${llmPresetCount} 个预设可选`}</em>
+            </span>
+            <span className="settings-overview-engine-action">选择</span>
+          </button>
+          <button
+            type="button"
+            className={`settings-overview-engine ${imageGenSeverity}`}
+            aria-label="选择图像生成方式"
+            onClick={onChooseImageGen}
+            disabled={saving}
+          >
+            <span
+              className={`settings-overview-engine-icon${selectedImageGenPresetTemplate ? " settings-provider-logo-mini" : ""}`}
+              style={selectedImageGenPresetTemplate ? ({ "--provider-color": selectedImageGenPresetTemplate.accent_color } as CSSProperties) : undefined}
+              aria-hidden="true"
+            >
+              {selectedImageGenPresetTemplate ? <img src={selectedImageGenPresetTemplate.icon_url} alt="" /> : <SettingsNavIcon icon="imagegen" />}
+            </span>
+            <span className="settings-overview-engine-copy">
+              <span>图像生成</span>
+              <strong>{selectedImageGenMethod?.label || "未选择"}</strong>
+              <em>{selectedImageGenMethod ? selectedImageGenMethod.model || selectedImageGenMethod.detail : `${imageGenMethodCount} 个方式可选`}</em>
+            </span>
+            <span className="settings-overview-engine-action">选择</span>
+          </button>
+        </div>
+      </section>
+      <section className="settings-overview-section settings-overview-nodes" aria-label="节点">
+        <header className="settings-overview-section-head">
           <div>
-            <span>当前 Agent</span>
-            <strong>{selectedAgent?.label || selectedProviderId}</strong>
+            <span>节点</span>
+            <strong>节点设置</strong>
+          </div>
+        </header>
+        <article className="settings-overview-node-group">
+          <div className="settings-overview-node-copy">
+            <span>处理器</span>
+            <strong>{enabledOverviewProcessors.length} 个启用节点</strong>
             <span>
-              {selectedAgent
-                ? selectedAgent.available
-                  ? `${selectedAgent.kind.toUpperCase()} · 可用`
-                  : `${selectedAgent.kind.toUpperCase()} · 未通过`
-                : "未发现"}
+              {processorIds.length ? `${processorIds.length} 个处理器可配置` : "暂无处理器配置"}
             </span>
           </div>
-          <div className="settings-overview-agent-actions">
-            <button
-              type="button"
-              className="settings-model-action"
-              aria-label="选择当前 Agent"
-              onClick={onChooseAgent}
-              disabled={availableAgentCount === 0 || saving}
-            >
-              选择
-            </button>
+          <div className="settings-overview-node-icons" aria-label="已启用处理器节点">
+            {enabledOverviewProcessors.map((processorId) => {
+              const definition = processorDefinitions[processorId];
+              return (
+                <span
+                  key={processorId}
+                  className="settings-overview-node-icon"
+                  title={definition?.label || processorId}
+                  aria-label={definition?.label || processorId}
+                >
+                  <ProcessorIcon
+                    processorId={processorId}
+                    className="settings-overview-node-icon-image"
+                    fallback={<SettingsNavIcon icon="processor" />}
+                  />
+                </span>
+              );
+            })}
+            {enabledOverviewProcessors.length === 0 && <span className="settings-overview-node-empty">未启用</span>}
           </div>
-        </div>
-      </section>
-      <section className="settings-overview-board">
-        <header className="settings-overview-board-head">
-          <div>
-            <span>配置面板</span>
-            <strong>{overview.groups.length} 个配置域</strong>
-          </div>
-          <span className="settings-overview-check-count">{checkCount} 个检查点</span>
-        </header>
-        <div className="settings-overview-lanes">
-          {overview.groups.map((group) => (
-            <article key={group.id} className={`settings-overview-lane ${group.severity}`}>
-              <header>
-                <span>{group.label}</span>
-                <strong>{group.summary}</strong>
-              </header>
-              <div className="settings-overview-lane-items">
-                {group.items.map((item) => (
-                  <span key={item.id} className={`settings-overview-chip ${item.severity}`} title={item.detail || item.label}>
-                    <em>{item.label}</em>
-                    <strong>{item.value}</strong>
-                  </span>
-                ))}
-              </div>
-            </article>
-          ))}
-        </div>
-      </section>
-      <section className={`settings-overview-issues ${overview.issues.length ? "has-issues" : "clear"}`}>
-        <header>
-          <span>需要处理</span>
-          <strong>{overview.issues.length ? `${overview.issues.length} 项` : "无"}</strong>
-        </header>
-        {overview.issues.length === 0 ? (
-          <div className="settings-overview-clear-state">当前配置已就绪</div>
-        ) : (
-          overview.issues.map((issue) => (
-            <article key={issue.id} className={`settings-overview-issue ${issue.severity}`}>
-              <div>
-                <span>{issue.scope}</span>
-                <strong>{issue.title}</strong>
-                <p>{issue.message}</p>
-              </div>
-              {issue.action && (
-                <button type="button" className="settings-model-action" onClick={() => onAction(issue.action)}>
-                  {issue.action.label}
-                </button>
-              )}
-            </article>
-          ))
-        )}
+          <button type="button" className="settings-model-action" aria-label="打开处理器设置" onClick={onOpenProcessorSettings}>
+            设置
+          </button>
+        </article>
       </section>
     </div>
   );
@@ -3123,20 +3413,6 @@ function matchingLlmPresetId(presets: ApiPreset[], settings: WorkbenchAgentSetti
       preset.model.trim() === llmModel
   );
   return match?.id || "";
-}
-
-function imageGenConnectionFromApiPresets(
-  presets: ApiPreset[],
-  fallback: ImageGenConnectionSettings
-): ImageGenConnectionSettings | undefined {
-  const preset = presets.find((item) => item.type === "images_api");
-  if (!preset) return undefined;
-  return {
-    provider: "api",
-    baseUrl: preset.base_url,
-    apiKey: preset.api_key || fallback.apiKey,
-    model: preset.model || fallback.model
-  };
 }
 
 function normalizeApiPresetDrafts(presets: ApiPreset[]): ApiPreset[] {
@@ -7982,6 +8258,16 @@ function SettingsNavIcon({ icon }: { icon: WorkbenchSettingsCategory }) {
       </svg>
     );
   }
+  if (icon === "imagegen") {
+    return (
+      <svg className="settings-nav-svg" viewBox="0 0 24 24" aria-hidden="true">
+        <rect x="4.5" y="5" width="15" height="12.5" rx="2" />
+        <circle cx="9" cy="9.1" r="1.45" />
+        <path d="m6.6 15 3.6-3.4 2.8 2.5 2-1.8 2.4 2.7" />
+        <path d="M16.6 4.2v2.9M15.1 5.7H18" />
+      </svg>
+    );
+  }
   return (
     <svg className="settings-nav-svg" viewBox="0 0 24 24" aria-hidden="true">
       <ellipse cx="12" cy="6.5" rx="7" ry="3.2" />
@@ -8672,12 +8958,7 @@ function loadImageGenConnectionSettings(): ImageGenConnectionSettings {
   if (!raw) return DEFAULT_IMAGEGEN_CONNECTION;
   try {
     const parsed = JSON.parse(raw) as Partial<ImageGenConnectionSettings>;
-    return {
-      provider: parsed.provider === "codex" ? "codex" : "api",
-      baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : "",
-      apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : "",
-      model: typeof parsed.model === "string" && parsed.model.trim() ? parsed.model : DEFAULT_IMAGEGEN_CONNECTION.model
-    };
+    return normalizeImageGenConnection({ ...DEFAULT_IMAGEGEN_CONNECTION, ...parsed });
   } catch {
     return DEFAULT_IMAGEGEN_CONNECTION;
   }
@@ -8685,7 +8966,7 @@ function loadImageGenConnectionSettings(): ImageGenConnectionSettings {
 
 function saveImageGenConnectionSettings(connection: ImageGenConnectionSettings): void {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(IMAGEGEN_SETTINGS_STORAGE_KEY, JSON.stringify(connection));
+  window.localStorage.setItem(IMAGEGEN_SETTINGS_STORAGE_KEY, JSON.stringify(normalizeImageGenConnection(connection)));
 }
 
 function submittedTimeText(value: string): string {
