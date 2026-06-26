@@ -9,16 +9,17 @@ test("image result overlays stay inside their canvas stacking context", () => {
   assert.match(block, /isolation:\s*isolate;/);
 });
 
-test("left task rail renders task time above the task title without moving status tags", () => {
+test("left task rail renders task time above the task title and uses status lights", () => {
   const source = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
   const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
-  const batchMainBlock = source.match(/<div className="batch-row-main">[\s\S]*?<span className=\{`status-pill status-\$\{batch\.status\}`\}>/)?.[0] || "";
+  const batchMainBlock = source.match(/<div className="batch-row-main">[\s\S]*?<\/div>\s*<\/article>/)?.[0] || "";
   const taskMainBlock = source.match(/<div className="task-main">[\s\S]*?<strong>\{item\.name\}<\/strong>/)?.[0] || "";
   const batchRowMainCss = css.match(/\.batch-row-main\s*\{(?<body>[^}]*)\}/)?.groups?.body || "";
   const batchTitleCss = css.match(/\.batch-row-title\s*\{(?<body>[^}]*)\}/)?.groups?.body || "";
   const batchTimeCss = css.match(/\.batch-created-at\s*\{(?<body>[^}]*)\}/)?.groups?.body || "";
 
-  assert.match(batchMainBlock, /<div className="batch-row-title">[\s\S]*?<time className="batch-created-at" dateTime=\{batch\.created_at\}>\{submittedTimeText\(batch\.created_at\)\}<\/time>[\s\S]*?<strong>\{batch\.name\}<\/strong>[\s\S]*?<\/div>\s*<span className=\{`status-pill status-\$\{batch\.status\}`\}>/);
+  assert.match(batchMainBlock, /<div className="batch-row-title">[\s\S]*?<time className="batch-created-at" dateTime=\{batch\.created_at\}>\{submittedTimeText\(batch\.created_at\)\}<\/time>[\s\S]*?<strong>\{batch\.name\}<\/strong>[\s\S]*?<\/div>\s*<span className=\{`status-light status-\$\{batch\.status\}`\} title=\{humanize\(batch\.status\)\} aria-label=\{humanize\(batch\.status\)\}/);
+  assert.doesNotMatch(batchMainBlock, /status-pill|>\{humanize\(batch\.status\)\}<\/span>/);
   assert.doesNotMatch(taskMainBlock, /task-created-at|batch-created-at|submittedTimeText|item\.created_at/);
   assert.match(batchRowMainCss, /grid-template-columns:\s*minmax\(0,\s*1fr\) auto;/);
   assert.match(batchTitleCss, /align-content:\s*center;/);
@@ -51,6 +52,20 @@ test("case cards keep status beside the truncated title and show only the curren
   assert.match(taskMetaRowCss, /grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;/);
   assert.match(currentStageNameCss, /font-size:\s*13px;/);
   assert.equal(statusHoverBlock, null);
+});
+
+test("task batch status bar shows completion text without a status tag", () => {
+  const source = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+  const statusBarBlock = source.match(/<div className=\{`task-batch-status-bar[\s\S]*?<div className="task-batch-actions"/)?.[0] || "";
+  const overviewBlock = source.match(/<div className="task-batch-overview">[\s\S]*?<\/div>/)?.[0] || "";
+  const overviewCss = css.match(/\.task-batch-overview em\s*\{(?<body>[^}]*)\}/)?.groups?.body || "";
+
+  assert.match(statusBarBlock, /<span className="task-batch-status-dot" aria-hidden="true" \/>/);
+  assert.doesNotMatch(overviewBlock, /status-pill|humanize\(activeBatch\.batch\.status\)/);
+  assert.match(overviewBlock, /<em>\{statusSummary\}<\/em>/);
+  assert.match(source, /return `\$\{completed\}\/\$\{total\} 已完成`;/);
+  assert.match(overviewCss, /font-weight:\s*650;/);
 });
 
 test("task batch status bar is large enough for controls", () => {

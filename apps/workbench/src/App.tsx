@@ -5948,7 +5948,7 @@ function TaskSelectionWorkspace({
                     <time className="batch-created-at" dateTime={batch.created_at}>{submittedTimeText(batch.created_at)}</time>
                     <strong>{batch.name}</strong>
                   </div>
-                  <span className={`status-pill status-${batch.status}`}>{humanize(batch.status)}</span>
+                  <span className={`status-light status-${batch.status}`} title={humanize(batch.status)} aria-label={humanize(batch.status)} />
                 </div>
               </article>
             );
@@ -5967,7 +5967,6 @@ function TaskSelectionWorkspace({
                 </div>
               </div>
               <div className="task-batch-overview">
-                <span className={`status-pill status-${activeBatch.batch.status}`}>{humanize(activeBatch.batch.status)}</span>
                 <em>{statusSummary}</em>
               </div>
               <div className="task-batch-actions" onClick={(event) => event.stopPropagation()} onPointerDown={(event) => event.stopPropagation()}>
@@ -8656,14 +8655,7 @@ function batchStatusSummary(batch: BatchRecord, cases: CaseRecord[]): string {
     : batch.case_counts || {};
   const total = cases.length || caseCountTotal(counts);
   const completed = counts.completed || 0;
-  const failed = counts.failed || 0;
-  const running = (counts.analysis_running || 0) + (counts.svg_running || 0);
-  const waitingBreakpoint = cases.filter((item) => isCasePausedAtWorkflowBreakpoint(item)).length;
-  if (waitingBreakpoint > 0) return `${waitingBreakpoint} 张等待断点继续`;
-  if (failed > 0) return `${failed} 张失败 / ${total} 张`;
-  if (running > 0) return `${running} 张运行中 / ${total} 张`;
-  if (total > 0) return `${completed} / ${total} 张完成`;
-  return "暂无图片";
+  return `${completed}/${total} 已完成`;
 }
 
 function isCasePausedAtWorkflowBreakpoint(item: Pick<CaseRecord, "status" | "stage" | "workflow_breakpoint_node_id">): boolean {
