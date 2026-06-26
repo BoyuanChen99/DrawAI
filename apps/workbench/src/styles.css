@@ -119,9 +119,21 @@ button.running {
   stroke-linejoin: round;
 }
 
+.workflow-node-processor-image {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  object-fit: contain;
+}
+
 .dag-node-icon .workflow-node-type-icon {
   width: 17px;
   height: 17px;
+}
+
+.dag-node-icon .workflow-node-processor-image {
+  width: 24px;
+  height: 24px;
 }
 
 @keyframes button-spin {
@@ -8198,6 +8210,14 @@ button.asset-status-unsupported {
 .settings-model-icon .settings-nav-svg {
   width: 20px;
   height: 20px;
+}
+
+.settings-processor-icon-image {
+  width: 34px;
+  height: 34px;
+  display: block;
+  border-radius: 8px;
+  object-fit: contain;
 }
 
 .settings-card-status {

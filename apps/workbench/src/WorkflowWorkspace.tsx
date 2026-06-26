@@ -1654,7 +1654,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                 >
                   <div className="workflow-node-head">
                     <span className="workflow-node-icon">
-                      <WorkflowNodeIcon nodeType={node.node_type} />
+                      <WorkflowNodeIcon nodeType={node.node_type} processorId={String(node.config.processor_id || "")} />
                     </span>
                     <div>
                       <strong>{node.title}</strong>
@@ -1733,7 +1733,7 @@ export default function WorkflowWorkspace({ onError }: { onError: (message: stri
                           onClick={() => addNodeFromPicker(item.preset)}
                         >
                           <span className="workflow-picker-item-icon">
-                            <WorkflowNodeIcon nodeType={item.preset.node_type} />
+                            <WorkflowNodeIcon nodeType={item.preset.node_type} processorId={String(item.preset.config?.processor_id || "")} />
                           </span>
                           <div className="workflow-picker-item-copy">
                             <strong>{item.preset.title}</strong>

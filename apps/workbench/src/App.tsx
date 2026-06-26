@@ -53,6 +53,7 @@ import {
   type ApiPresetTemplate
 } from "./apiPresetTemplates";
 import { agentProviderIconForId, sortWorkbenchAgentsForDisplay } from "./agentProviderPresentation";
+import { ProcessorIcon } from "./processorIcons";
 import { selectedWorkbenchAgent, workbenchAgentPickerChoices } from "./settingsAgentSelection";
 import { buildWorkflowPreviewLayout, type WorkflowPreviewLayout } from "./workflowPreviewLayout";
 import { WorkflowNodeIcon } from "./workflowNodeIcons";
@@ -2420,7 +2421,11 @@ function WorkbenchSettingsCenter({
                           >
                             <div className="settings-model-card-head">
                               <span className="settings-model-icon" aria-hidden="true">
-                                <SettingsNavIcon icon="processor" />
+                                <ProcessorIcon
+                                  processorId={processorId}
+                                  className="settings-processor-icon-image"
+                                  fallback={<SettingsNavIcon icon="processor" />}
+                                />
                               </span>
                               <div>
                                 <strong>{definition.label}</strong>
@@ -3722,7 +3727,7 @@ function DagRunPanel({
                   onClick={() => setSelectedNodeId(view.node.node_id)}
                 >
                   <span className="dag-node-icon">
-                    <WorkflowNodeIcon nodeType={view.node.node_type} />
+                    <WorkflowNodeIcon nodeType={view.node.node_type} processorId={String(view.node.config.processor_id || "")} />
                   </span>
                   <strong>{view.node.title}</strong>
                   <em>{stateLabel(view.state)}</em>

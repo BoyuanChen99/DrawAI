@@ -1,13 +1,24 @@
+import { ProcessorIcon } from "./processorIcons";
+
 type WorkflowNodeIconProps = {
   nodeType: string;
+  processorId?: string;
 };
 
-export function WorkflowNodeIcon({ nodeType }: WorkflowNodeIconProps) {
+export function WorkflowNodeIcon({ nodeType, processorId = "" }: WorkflowNodeIconProps) {
   if (nodeType === "input") return <InputNodeIcon />;
   if (nodeType === "parser") return <ParserNodeIcon />;
   if (nodeType === "fusion") return <FusionNodeIcon />;
   if (nodeType === "agent") return <AgentNodeIcon />;
-  if (nodeType === "processor") return <ProcessorNodeIcon />;
+  if (nodeType === "processor") {
+    return (
+      <ProcessorIcon
+        processorId={processorId}
+        className="workflow-node-type-icon workflow-node-processor-image"
+        fallback={<ProcessorNodeIcon />}
+      />
+    );
+  }
   if (nodeType === "human_review") return <HumanReviewNodeIcon />;
   if (nodeType === "export") return <ExportNodeIcon />;
   if (nodeType === "output") return <OutputNodeIcon />;
