@@ -2883,15 +2883,24 @@ function SettingsOverviewPage({
   if (loading) return <div className="agent-settings-empty">加载中</div>;
   if (error) return <div className="agent-settings-error">{error}</div>;
   if (!overview) return <EmptyState label="暂无状态总览" />;
+  const agentSeverity = selectedAgent?.available ? "ok" : "warning";
+  const checkCount = overview.groups.reduce((total, group) => total + group.items.length, 0);
   return (
     <div className="settings-overview">
-      <section className={`settings-overview-summary ${overview.overall.severity}`}>
-        <div>
-          <span>当前状态</span>
-          <strong>{overview.overall.label}</strong>
-          <p>{overview.workspace}</p>
+      <section className={`settings-overview-hero ${overview.overall.severity}`}>
+        <div className="settings-overview-hero-copy">
+          <span className="settings-overview-status-mark" aria-hidden="true" />
+          <div>
+            <span>运行总览</span>
+            <strong>{overview.overall.label}</strong>
+            <p title={overview.workspace}>{overview.workspace}</p>
+          </div>
         </div>
-        <dl>
+        <dl className="settings-overview-kpis">
+          <div>
+            <dt>配置组</dt>
+            <dd>{overview.groups.length}</dd>
+          </div>
           <div>
             <dt>错误</dt>
             <dd>{overview.overall.error_count}</dd>
@@ -2902,13 +2911,13 @@ function SettingsOverviewPage({
           </div>
         </dl>
       </section>
-      <section className={`settings-overview-agent ${selectedAgent?.available ? "ok" : "warning"}`}>
-        <header>
-          <span>Agent</span>
-          <strong>当前 Agent</strong>
-        </header>
+      <section className={`settings-overview-agent ${agentSeverity}`}>
         <div className="settings-overview-agent-row">
+          <span className="settings-overview-agent-icon" aria-hidden="true">
+            <SettingsNavIcon icon="agent" />
+          </span>
           <div>
+            <span>当前 Agent</span>
             <strong>{selectedAgent?.label || selectedProviderId}</strong>
             <span>
               {selectedAgent
@@ -2929,32 +2938,40 @@ function SettingsOverviewPage({
           </button>
         </div>
       </section>
-      <div className="settings-overview-groups">
-        {overview.groups.map((group) => (
-          <article key={group.id} className={`settings-overview-group ${group.severity}`}>
-            <header>
-              <span>{group.label}</span>
-              <strong>{group.summary}</strong>
-            </header>
-            <div className="settings-overview-items">
-              {group.items.map((item) => (
-                <div key={item.id} className={`settings-overview-item ${item.severity}`}>
-                  <span>{item.label}</span>
-                  <strong>{item.value}</strong>
-                  <em title={item.detail}>{item.detail || "无补充信息"}</em>
-                </div>
-              ))}
-            </div>
-          </article>
-        ))}
-      </div>
-      <section className="settings-overview-issues">
+      <section className="settings-overview-board">
+        <header className="settings-overview-board-head">
+          <div>
+            <span>配置面板</span>
+            <strong>{overview.groups.length} 个配置域</strong>
+          </div>
+          <span className="settings-overview-check-count">{checkCount} 个检查点</span>
+        </header>
+        <div className="settings-overview-lanes">
+          {overview.groups.map((group) => (
+            <article key={group.id} className={`settings-overview-lane ${group.severity}`}>
+              <header>
+                <span>{group.label}</span>
+                <strong>{group.summary}</strong>
+              </header>
+              <div className="settings-overview-lane-items">
+                {group.items.map((item) => (
+                  <span key={item.id} className={`settings-overview-chip ${item.severity}`} title={item.detail || item.label}>
+                    <em>{item.label}</em>
+                    <strong>{item.value}</strong>
+                  </span>
+                ))}
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+      <section className={`settings-overview-issues ${overview.issues.length ? "has-issues" : "clear"}`}>
         <header>
           <span>需要处理</span>
           <strong>{overview.issues.length ? `${overview.issues.length} 项` : "无"}</strong>
         </header>
         {overview.issues.length === 0 ? (
-          <EmptyState label="当前配置已就绪" />
+          <div className="settings-overview-clear-state">当前配置已就绪</div>
         ) : (
           overview.issues.map((issue) => (
             <article key={issue.id} className={`settings-overview-issue ${issue.severity}`}>
