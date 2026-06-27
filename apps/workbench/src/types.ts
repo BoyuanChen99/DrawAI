@@ -137,7 +137,6 @@ export interface ApiPreset {
   model: string;
   api_key_env: string;
   api_key: string;
-  logo_url?: string;
 }
 
 export interface ApiPresetsResponse {

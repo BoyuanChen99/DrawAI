@@ -35,6 +35,7 @@ test("API preset templates create editable drafts without copying secrets", asyn
   assert.equal(draft.type, "llm_chat_completions");
   assert.equal(draft.api_key_env, "");
   assert.equal(draft.api_key, "");
+  assert.equal("logo_url" in draft, false);
 });
 
 test("API preset template ids are stable and deduplicated", async () => {
@@ -68,12 +69,8 @@ test("API preset templates can be searched and matched back to saved presets", a
   );
 });
 
-test("custom API preset logos are inferred from the preset domain", async () => {
-  const { apiPresetIconForPreset, apiPresetLogoUrlFromBaseUrl } = await loadTemplateModule();
-
-  assert.equal(apiPresetLogoUrlFromBaseUrl("https://api.example.com/v1"), "https://api.example.com/favicon.ico");
-  assert.equal(apiPresetLogoUrlFromBaseUrl("http://localhost:11434/v1"), "");
-
+test("custom API preset icons require a resolved logo and otherwise fall back", async () => {
+  const { apiPresetIconForPreset } = await loadTemplateModule();
   const icon = apiPresetIconForPreset({
     id: "custom_proxy",
     label: "Custom Proxy",
@@ -81,12 +78,24 @@ test("custom API preset logos are inferred from the preset domain", async () => 
     base_url: "https://models.example.com/openai/v1",
     model: "custom-model",
     api_key_env: "CUSTOM_API_KEY",
-    api_key: "",
-    logo_url: ""
-  });
+    api_key: ""
+  }, "https://models.example.com/brand/icon.svg");
 
-  assert.equal(icon?.icon_url, "https://models.example.com/favicon.ico");
+  assert.equal(icon?.icon_url, "https://models.example.com/brand/icon.svg");
   assert.equal(icon?.accent_color, "#2563eb");
+
+  assert.equal(
+    apiPresetIconForPreset({
+      id: "custom_without_logo",
+      label: "Custom Without Logo",
+      type: "llm_chat_completions",
+      base_url: "https://missing.example.com/v1",
+      model: "custom-model",
+      api_key_env: "CUSTOM_API_KEY",
+      api_key: ""
+    }),
+    null
+  );
 });
 
 let templateModulePromise;

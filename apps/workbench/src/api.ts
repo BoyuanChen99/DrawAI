@@ -180,6 +180,15 @@ export function getApiPresets(): Promise<ApiPresetsResponse> {
   return requestJson<ApiPresetsResponse>("/api/workbench/api-presets");
 }
 
+export function apiPresetLogoPath(baseUrl: string): string {
+  const params = new URLSearchParams({ base_url: baseUrl });
+  return `/api/workbench/api-preset-logo?${params.toString()}`;
+}
+
+export function resolveApiPresetLogo(baseUrl: string): Promise<{ icon_url: string }> {
+  return requestJson<{ icon_url: string }>(apiPresetLogoPath(baseUrl));
+}
+
 export function saveApiPresets(presets: ApiPreset[]): Promise<ApiPresetsResponse> {
   return requestJson<ApiPresetsResponse>("/api/workbench/api-presets", {
     method: "PUT",
