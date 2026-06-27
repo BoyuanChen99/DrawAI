@@ -15,6 +15,11 @@ export interface ApiPresetTemplate {
   suggested_models: string[];
 }
 
+export interface ApiPresetIcon {
+  icon_url: string;
+  accent_color: string;
+}
+
 // Curated from LiteLLM's MIT-licensed provider/model metadata and checked against provider docs.
 // Keep this list small: it is a template gallery, not a full model catalog.
 export const API_PRESET_TEMPLATES: ApiPresetTemplate[] = [
@@ -210,7 +215,8 @@ export function apiPresetDraftFromTemplate(template: ApiPresetTemplate, existing
     base_url: template.base_url,
     model: template.model,
     api_key_env: template.api_key_env,
-    api_key: ""
+    api_key: "",
+    logo_url: ""
   };
 }
 
@@ -243,15 +249,50 @@ export function apiPresetTemplateSearchText(template: ApiPresetTemplate): string
 }
 
 export function blankApiPresetDraft(existing: ApiPreset[]): ApiPreset {
+  const base_url = "https://api.openai.com/v1";
   return {
     id: uniqueApiPresetId(existing, "api_preset"),
     label: "新建 API 预设",
     type: "images_api",
-    base_url: "https://api.openai.com/v1",
+    base_url,
     model: "gpt-image-2",
     api_key_env: "OPENAI_API_KEY",
-    api_key: ""
+    api_key: "",
+    logo_url: apiPresetLogoUrlFromBaseUrl(base_url)
   };
+}
+
+export function apiPresetIconForPreset(preset: ApiPreset): ApiPresetIcon | null {
+  const template = apiPresetTemplateForPreset(preset);
+  if (template) return template;
+  const icon_url = (preset.logo_url || "").trim() || apiPresetLogoUrlFromBaseUrl(preset.base_url);
+  return icon_url ? { icon_url, accent_color: "#2563eb" } : null;
+}
+
+export function apiPresetLogoUrlFromBaseUrl(baseUrl: string): string {
+  const trimmed = baseUrl.trim();
+  if (!trimmed) return "";
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return "";
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return "";
+  if (isLocalLogoHost(url.hostname)) return "";
+  return `${url.origin}/favicon.ico`;
+}
+
+function isLocalLogoHost(hostname: string): boolean {
+  const normalized = hostname.toLowerCase().replace(/\.$/, "");
+  return (
+    normalized === "localhost" ||
+    normalized.endsWith(".localhost") ||
+    normalized.endsWith(".local") ||
+    normalized === "::1" ||
+    normalized === "0.0.0.0" ||
+    normalized.startsWith("127.")
+  );
 }
 
 export function uniqueApiPresetId(existing: ApiPreset[], base: string): string {

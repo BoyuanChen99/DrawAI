@@ -68,6 +68,27 @@ test("API preset templates can be searched and matched back to saved presets", a
   );
 });
 
+test("custom API preset logos are inferred from the preset domain", async () => {
+  const { apiPresetIconForPreset, apiPresetLogoUrlFromBaseUrl } = await loadTemplateModule();
+
+  assert.equal(apiPresetLogoUrlFromBaseUrl("https://api.example.com/v1"), "https://api.example.com/favicon.ico");
+  assert.equal(apiPresetLogoUrlFromBaseUrl("http://localhost:11434/v1"), "");
+
+  const icon = apiPresetIconForPreset({
+    id: "custom_proxy",
+    label: "Custom Proxy",
+    type: "llm_chat_completions",
+    base_url: "https://models.example.com/openai/v1",
+    model: "custom-model",
+    api_key_env: "CUSTOM_API_KEY",
+    api_key: "",
+    logo_url: ""
+  });
+
+  assert.equal(icon?.icon_url, "https://models.example.com/favicon.ico");
+  assert.equal(icon?.accent_color, "#2563eb");
+});
+
 let templateModulePromise;
 
 function loadTemplateModule() {

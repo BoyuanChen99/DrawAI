@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from urllib.parse import urlparse
 
 
 API_PRESETS_SCHEMA = "drawai.workbench.api_presets.v1"
@@ -19,6 +20,7 @@ class ApiPreset:
     model: str
     api_key_env: str = ""
     api_key: str = ""
+    logo_url: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -86,6 +88,7 @@ def _normalize_api_preset(item: Mapping[str, Any], index: int) -> ApiPreset:
     model = _required_string(item.get("model"), f"presets[{index}].model")
     api_key_env = str(item.get("api_key_env") or "").strip()
     api_key = str(item.get("api_key") or "").strip()
+    logo_url = str(item.get("logo_url") or "").strip() or api_preset_logo_url_from_base_url(base_url)
     return ApiPreset(
         id=preset_id,
         label=label,
@@ -94,6 +97,7 @@ def _normalize_api_preset(item: Mapping[str, Any], index: int) -> ApiPreset:
         model=model,
         api_key_env=api_key_env,
         api_key=api_key,
+        logo_url=logo_url,
     )
 
 
@@ -119,10 +123,32 @@ def _required_string(value: Any, field_name: str) -> str:
     return value.strip()
 
 
+def api_preset_logo_url_from_base_url(base_url: str) -> str:
+    parsed = urlparse(base_url.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return ""
+    hostname = parsed.hostname.lower().rstrip(".")
+    if _is_local_logo_host(hostname):
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}/favicon.ico"
+
+
+def _is_local_logo_host(hostname: str) -> bool:
+    return (
+        hostname == "localhost"
+        or hostname.endswith(".localhost")
+        or hostname.endswith(".local")
+        or hostname == "::1"
+        or hostname == "0.0.0.0"
+        or hostname.startswith("127.")
+    )
+
+
 __all__ = [
     "API_PRESETS_SCHEMA",
     "SUPPORTED_API_PRESET_TYPES",
     "ApiPreset",
+    "api_preset_logo_url_from_base_url",
     "api_preset_by_id",
     "api_presets_path",
     "normalize_workbench_api_presets",

@@ -366,6 +366,7 @@ def test_workbench_api_presets_api_saves_and_validates_presets(tmp_path: Path) -
     assert saved["id"] == "openai_images"
     assert saved["type"] == "images_api"
     assert saved["api_key"] == "sk-local"
+    assert saved["logo_url"] == "https://api.openai.com/favicon.ico"
     assert (tmp_path / "workspace" / "settings" / "api_presets.json").is_file()
 
 
@@ -394,6 +395,7 @@ def test_workbench_api_presets_api_saves_keyless_local_presets(tmp_path: Path) -
     assert saved["id"] == "ollama"
     assert saved["api_key_env"] == ""
     assert saved["api_key"] == ""
+    assert saved["logo_url"] == ""
 
 
 def test_workbench_api_presets_api_rejects_invalid_payloads(tmp_path: Path) -> None:
