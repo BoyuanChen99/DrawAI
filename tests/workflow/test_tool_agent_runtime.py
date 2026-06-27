@@ -142,7 +142,8 @@ def test_agent_execution_uses_shared_agent_prompt_and_allows_manifest_image_href
     assert "run_drawai_tool" in prompt.text
     assert "copy_file" in prompt.text
     assert "append_file" in prompt.text
-    assert "page-spec-svg-draft" not in prompt.text
+    assert "page-spec-svg-draft" in prompt.text
+    assert "do not hand-write a complete SVG" in prompt.text
     assert "Exact command prefix" not in prompt.text
     assert "Tool Runtime Contract" not in prompt.text
     assert "fake-key" not in prompt.text

@@ -958,14 +958,11 @@ def _configured_drawai_tools(config: Mapping[str, Any]) -> tuple[str, ...]:
             if not isinstance(raw_tool, str) or not raw_tool.strip():
                 raise ValueError(f"drawai_tools[{index}] must be a non-empty string")
             tool_id = raw_tool.strip()
-            if tool_id in DISABLED_DRAWAI_TOOLS:
-                continue
             tool_ids.append(tool_id)
     return _ordered_unique(tool_ids)
 
 
-DISABLED_DRAWAI_TOOLS = frozenset({"page-spec-svg-draft"})
-PAGE_SPEC_ONLY_DRAWAI_TOOLS = frozenset({"page-spec-assets", "svg-validate"})
+PAGE_SPEC_ONLY_DRAWAI_TOOLS = frozenset({"page-spec-assets", "page-spec-svg-draft", "svg-validate"})
 
 
 def _drawai_tools_for_inputs(
