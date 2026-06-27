@@ -2,8 +2,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from urllib.parse import urljoin, urlparse
+import urllib.error
+import urllib.request
 
 
 API_PRESETS_SCHEMA = "drawai.workbench.api_presets.v1"
@@ -119,10 +123,163 @@ def _required_string(value: Any, field_name: str) -> str:
     return value.strip()
 
 
+def resolve_api_preset_logo_url(base_url: str, timeout_seconds: float = 3.0) -> str:
+    for page_url in api_preset_logo_page_urls(base_url):
+        try:
+            request = urllib.request.Request(
+                page_url,
+                headers={
+                    "Accept": "text/html,application/xhtml+xml",
+                    "User-Agent": "DrawAI Workbench logo resolver",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                content = response.read(512_000)
+                encoding = response.headers.get_content_charset() or "utf-8"
+                html = content.decode(encoding, errors="replace")
+        except (OSError, UnicodeError, urllib.error.URLError):
+            continue
+        logo_url = api_preset_logo_url_from_html(response.geturl() or page_url, html)
+        if logo_url:
+            return logo_url
+    return ""
+
+
+def api_preset_logo_page_urls(base_url: str) -> tuple[str, ...]:
+    parsed = urlparse(base_url.strip())
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        return ()
+    hostname = parsed.hostname.lower().rstrip(".")
+    if _is_local_logo_host(hostname):
+        return ()
+    candidates: list[str] = [f"{parsed.scheme}://{parsed.netloc}/"]
+    brand_host = _brand_host_for_api_hostname(hostname)
+    if brand_host and brand_host != hostname:
+        candidates.append(f"{parsed.scheme}://{brand_host}/")
+        candidates.append(f"{parsed.scheme}://www.{brand_host}/")
+    return tuple(dict.fromkeys(candidates))
+
+
+def api_preset_logo_url_from_html(page_url: str, html: str) -> str:
+    parser = _ApiPresetLogoHtmlParser()
+    parser.feed(html)
+    parser.close()
+    for href in parser.icon_hrefs:
+        resolved = _resolved_http_url(page_url, href)
+        if resolved:
+            return resolved
+    for payload in parser.json_ld_payloads:
+        logo_url = _logo_url_from_json_ld_payload(page_url, payload)
+        if logo_url:
+            return logo_url
+    return ""
+
+
+def _brand_host_for_api_hostname(hostname: str) -> str:
+    if hostname.startswith("api."):
+        return hostname.removeprefix("api.")
+    parts = hostname.split(".")
+    if len(parts) >= 3 and parts[0] in {"api", "gateway", "proxy"}:
+        return ".".join(parts[1:])
+    return ""
+
+
+def _resolved_http_url(page_url: str, href: str) -> str:
+    text = href.strip()
+    if not text:
+        return ""
+    resolved = urljoin(page_url, text)
+    parsed = urlparse(resolved)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return resolved
+
+
+def _logo_url_from_json_ld_payload(page_url: str, payload: str) -> str:
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError:
+        return ""
+    logo_url = _find_logo_url(data)
+    return _resolved_http_url(page_url, logo_url) if logo_url else ""
+
+
+def _find_logo_url(value: Any) -> str:
+    if isinstance(value, Mapping):
+        logo = value.get("logo")
+        if isinstance(logo, str):
+            return logo
+        if isinstance(logo, Mapping):
+            url = logo.get("url")
+            if isinstance(url, str):
+                return url
+        if isinstance(logo, Sequence) and not isinstance(logo, str | bytes):
+            for item in logo:
+                found = _find_logo_url({"logo": item})
+                if found:
+                    return found
+        for item in value.values():
+            found = _find_logo_url(item)
+            if found:
+                return found
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes):
+        for item in value:
+            found = _find_logo_url(item)
+            if found:
+                return found
+    return ""
+
+
+class _ApiPresetLogoHtmlParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.icon_hrefs: list[str] = []
+        self.json_ld_payloads: list[str] = []
+        self._json_ld_depth = 0
+        self._json_ld_parts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = {key.lower(): value or "" for key, value in attrs}
+        if tag.lower() == "link":
+            rel_tokens = set(attributes.get("rel", "").lower().split())
+            if {"icon", "apple-touch-icon", "mask-icon", "shortcut"}.intersection(rel_tokens):
+                href = attributes.get("href", "")
+                if href:
+                    self.icon_hrefs.append(href)
+        if tag.lower() == "script" and attributes.get("type", "").lower() == "application/ld+json":
+            self._json_ld_depth += 1
+            self._json_ld_parts = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "script" and self._json_ld_depth:
+            self._json_ld_depth -= 1
+            payload = "".join(self._json_ld_parts).strip()
+            if payload:
+                self.json_ld_payloads.append(payload)
+            self._json_ld_parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._json_ld_depth:
+            self._json_ld_parts.append(data)
+
+
+def _is_local_logo_host(hostname: str) -> bool:
+    return (
+        hostname == "localhost"
+        or hostname.endswith(".localhost")
+        or hostname.endswith(".local")
+        or hostname == "::1"
+        or hostname == "0.0.0.0"
+        or hostname.startswith("127.")
+    )
+
+
 __all__ = [
     "API_PRESETS_SCHEMA",
     "SUPPORTED_API_PRESET_TYPES",
     "ApiPreset",
+    "api_preset_logo_page_urls",
+    "api_preset_logo_url_from_html",
     "api_preset_by_id",
     "api_presets_path",
     "normalize_workbench_api_presets",

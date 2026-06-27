@@ -14,6 +14,15 @@ test("Workbench agent settings URL keeps startup snapshot unless refresh is requ
   assert.equal(workbenchAgentSettingsPath(false, true), "/api/workbench/agent-settings?include_agents=false");
 });
 
+test("API preset logo resolver URL encodes the base URL", async () => {
+  const { apiPresetLogoPath } = await loadApiModule();
+
+  assert.equal(
+    apiPresetLogoPath("https://api.apimart.ai/v1/images/generations"),
+    "/api/workbench/api-preset-logo?base_url=https%3A%2F%2Fapi.apimart.ai%2Fv1%2Fimages%2Fgenerations"
+  );
+});
+
 let apiModulePromise;
 
 function loadApiModule() {

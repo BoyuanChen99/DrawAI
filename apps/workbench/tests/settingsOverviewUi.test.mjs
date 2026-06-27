@@ -13,7 +13,7 @@ test("settings overview is split into engine choices and node settings", () => {
   assert.match(source, /processorDrafts=\{processorDrafts\}/);
   assert.match(source, /onChooseLlm=\{\(\) => openLlmSettings\(selectedLlmPresetId\)\}/);
   assert.match(source, /onOpenProcessorSettings=\{\(\) => \{\s*setSelectedProcessorId\(selectedProcessorId \|\| processorIds\[0\] \|\| ""\);\s*setSettingsDetailTarget\(null\);\s*setSettingsCategory\("processor"\);\s*\}\}/);
-  assert.match(source, /const selectedLlmPresetTemplate = selectedLlmPreset \? apiPresetTemplateForPreset\(selectedLlmPreset\) : null;/);
+  assert.match(source, /const selectedLlmPresetIcon = selectedLlmPreset\s*\?\s*apiPresetIconForPreset\(selectedLlmPreset, apiPresetResolvedLogo\(apiPresetLogoUrls, selectedLlmPreset\)\)\s*:\s*null;/);
   assert.match(source, /const enabledOverviewProcessors = processorIds\.filter\(\(processorId\) => processorDrafts\[processorId\]\?\.enabled\);/);
   assert.match(source, /<section className="settings-overview-section settings-overview-engines"/);
   assert.match(source, /aria-label="选择默认 Agent"/);
@@ -35,14 +35,22 @@ test("settings overview is split into engine choices and node settings", () => {
   assert.match(css, /\.settings-overview-node-icon\s*\{[\s\S]*?width:\s*34px;/);
 });
 
-test("LLM preset cards and detail surfaces show provider logos", () => {
+test("API and LLM preset cards and detail surfaces show provider logos", () => {
   const source = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+  const apiGridBlock = source.match(/\{settingsCategory === "api" && \([\s\S]*?<div className="settings-model-grid" aria-label="API 预设">[\s\S]*?\{apiDrafts\.map\(\(preset, presetIndex\) =>[\s\S]*?\)\}\s*<button/)?.[0] || "";
   const llmGridBlock = source.match(/\{settingsCategory === "llm" && \([\s\S]*?<div className="settings-model-grid" aria-label="LLM 预设">[\s\S]*?\{llmPresets\.map\(\(preset\) =>[\s\S]*?\)\}\s*<\/div>/)?.[0] || "";
   const llmDetailBlock = source.match(/\{settingsCategory === "llm" && \([\s\S]*?<label className="settings-field">[\s\S]*?Extra Body/)?.[0] || "";
 
-  assert.match(llmGridBlock, /const presetTemplate = apiPresetTemplateForPreset\(preset\);/);
-  assert.match(llmGridBlock, /className=\{`settings-model-icon\$\{presetTemplate \? " settings-provider-logo-mini" : ""\}`\}/);
-  assert.match(llmGridBlock, /presetTemplate \? <img src=\{presetTemplate\.icon_url\} alt="" \/> : <SettingsNavIcon icon="llm" \/>/);
+  assert.match(apiGridBlock, /const presetIcon = apiPresetIconForPreset\(preset, apiPresetResolvedLogo\(apiPresetLogoUrls, preset\)\);/);
+  assert.match(apiGridBlock, /<PresetIconImage icon=\{presetIcon\} fallback=\{<SettingsNavIcon icon="api" \/>\} \/>/);
+  assert.match(llmGridBlock, /const presetIcon = apiPresetIconForPreset\(preset, apiPresetResolvedLogo\(apiPresetLogoUrls, preset\)\);/);
+  assert.match(llmGridBlock, /className=\{`settings-model-icon\$\{presetIcon \? " settings-provider-logo-mini" : ""\}`\}/);
+  assert.match(llmGridBlock, /<PresetIconImage icon=\{presetIcon\} fallback=\{<SettingsNavIcon icon="llm" \/>\} \/>/);
   assert.match(llmDetailBlock, /settings-summary-row settings-llm-summary/);
-  assert.match(llmDetailBlock, /selectedLlmPresetTemplate \? <img src=\{selectedLlmPresetTemplate\.icon_url\} alt="" \/> : <SettingsNavIcon icon="llm" \/>/);
+  assert.match(llmDetailBlock, /<PresetIconImage icon=\{selectedLlmPresetIcon\} fallback=\{<SettingsNavIcon icon="llm" \/>\} \/>/);
+  assert.match(source, /resolveApiPresetLogo/);
+  assert.match(source, /function PresetIconImage/);
+  assert.match(source, /onError=\{\(\) => setFailedIconUrl\(icon\.icon_url\)\}/);
+  assert.doesNotMatch(source, /<span>Logo URL<\/span>/);
+  assert.doesNotMatch(source, /logo_url/);
 });

@@ -15,6 +15,11 @@ export interface ApiPresetTemplate {
   suggested_models: string[];
 }
 
+export interface ApiPresetIcon {
+  icon_url: string;
+  accent_color: string;
+}
+
 // Curated from LiteLLM's MIT-licensed provider/model metadata and checked against provider docs.
 // Keep this list small: it is a template gallery, not a full model catalog.
 export const API_PRESET_TEMPLATES: ApiPresetTemplate[] = [
@@ -252,6 +257,13 @@ export function blankApiPresetDraft(existing: ApiPreset[]): ApiPreset {
     api_key_env: "OPENAI_API_KEY",
     api_key: ""
   };
+}
+
+export function apiPresetIconForPreset(preset: ApiPreset, resolvedIconUrl = ""): ApiPresetIcon | null {
+  const template = apiPresetTemplateForPreset(preset);
+  if (template) return template;
+  const icon_url = resolvedIconUrl.trim();
+  return icon_url ? { icon_url, accent_color: "#2563eb" } : null;
 }
 
 export function uniqueApiPresetId(existing: ApiPreset[], base: string): string {

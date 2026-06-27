@@ -37,6 +37,7 @@ from .api_presets import (
     ApiPreset,
     api_preset_by_id,
     read_workbench_api_presets,
+    resolve_api_preset_logo_url,
     workbench_api_presets_payload,
     write_workbench_api_presets,
 )
@@ -293,6 +294,13 @@ def create_app(
     @app.get("/api/workbench/api-presets")
     def get_workbench_api_presets_api() -> dict[str, Any]:
         return workbench_api_presets_payload(resolved_store.workspace)
+
+    @app.get("/api/workbench/api-preset-logo")
+    def get_workbench_api_preset_logo_api(base_url: str) -> dict[str, str]:
+        normalized_base_url = base_url.strip()
+        if not normalized_base_url:
+            raise HTTPException(status_code=400, detail="base_url is required")
+        return {"icon_url": resolve_api_preset_logo_url(normalized_base_url)}
 
     @app.put("/api/workbench/api-presets")
     async def save_workbench_api_presets_api(request: Request) -> dict[str, Any]:

@@ -21,6 +21,10 @@ from drawai.workflow.schema import WorkflowNode, WorkflowPort, WorkflowTemplate
 from drawai.workbench.agent_settings import WorkbenchAgentSettings
 from drawai.workbench import api as api_module
 from drawai.workbench.api import create_app
+from drawai.workbench.api_presets import (
+    api_preset_logo_page_urls,
+    api_preset_logo_url_from_html,
+)
 from drawai.workbench.models import WorkbenchSettings
 from drawai.workbench.processor_settings import require_processor_configured
 from drawai.workbench.runner import WorkbenchRunner, _workflow_template_with_agent_settings
@@ -356,6 +360,7 @@ def test_workbench_api_presets_api_saves_and_validates_presets(tmp_path: Path) -
                     "model": "gpt-image-2",
                     "api_key_env": "OPENAI_API_KEY",
                     "api_key": "sk-local",
+                    "logo_url": "https://example.invalid/icon.svg",
                 }
             ]
         },
@@ -366,6 +371,9 @@ def test_workbench_api_presets_api_saves_and_validates_presets(tmp_path: Path) -
     assert saved["id"] == "openai_images"
     assert saved["type"] == "images_api"
     assert saved["api_key"] == "sk-local"
+    assert "logo_url" not in saved
+    saved_document = json.loads((tmp_path / "workspace" / "settings" / "api_presets.json").read_text(encoding="utf-8"))
+    assert "logo_url" not in saved_document["presets"][0]
     assert (tmp_path / "workspace" / "settings" / "api_presets.json").is_file()
 
 
@@ -394,6 +402,30 @@ def test_workbench_api_presets_api_saves_keyless_local_presets(tmp_path: Path) -
     assert saved["id"] == "ollama"
     assert saved["api_key_env"] == ""
     assert saved["api_key"] == ""
+    assert "logo_url" not in saved
+
+
+def test_workbench_api_preset_logo_parser_uses_site_logo_for_api_subdomains() -> None:
+    page_urls = api_preset_logo_page_urls("https://api.apimart.ai/v1/images/generations")
+
+    assert page_urls[:3] == (
+        "https://api.apimart.ai/",
+        "https://apimart.ai/",
+        "https://www.apimart.ai/",
+    )
+
+    html = """
+    <!doctype html>
+    <html>
+      <head>
+        <script type="application/ld+json">
+          {"@context":"https://schema.org","@type":"Organization","logo":{"@type":"ImageObject","url":"https://apimart.ai/supplier/apimart.svg"}}
+        </script>
+      </head>
+    </html>
+    """
+
+    assert api_preset_logo_url_from_html("https://www.apimart.ai/", html) == "https://apimart.ai/supplier/apimart.svg"
 
 
 def test_workbench_api_presets_api_rejects_invalid_payloads(tmp_path: Path) -> None:

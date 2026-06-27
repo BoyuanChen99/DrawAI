@@ -1,5 +1,5 @@
 import { DragEvent, MouseEvent, PointerEvent, WheelEvent, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   approveAssets,
@@ -29,6 +29,7 @@ import {
   processAssetElements,
   processV2Asset,
   renameBatch,
+  resolveApiPresetLogo,
   runCaseStage,
   runBatch,
   saveAssetDraft,
@@ -53,7 +54,7 @@ import {
 import {
   API_PRESET_TEMPLATES,
   apiPresetDraftFromTemplate,
-  apiPresetTemplateForPreset,
+  apiPresetIconForPreset,
   apiPresetTemplateSearchText,
   blankApiPresetDraft,
   uniqueApiPresetId,
@@ -1855,6 +1856,7 @@ function WorkbenchSettingsCenter({
   const [processorResponse, setProcessorResponse] = useState<ProcessorSettingsResponse | null>(null);
   const [draft, setDraft] = useState<WorkbenchAgentSettings>(DEFAULT_WORKBENCH_AGENT_SETTINGS);
   const [apiDrafts, setApiDrafts] = useState<ApiPreset[]>([]);
+  const [apiPresetLogoUrls, setApiPresetLogoUrls] = useState<Record<string, string | null>>({});
   const [processorDrafts, setProcessorDrafts] = useState<ProcessorSettingsResponse["settings"]["processors"]>({});
   const [llmExtraBodyText, setLlmExtraBodyText] = useState(formatWorkbenchAgentJsonObject({}));
   const [loading, setLoading] = useState(true);
@@ -1946,13 +1948,42 @@ function WorkbenchSettingsCenter({
     }
   }, [apiDrafts.length, selectedApiPresetIndex]);
 
+  useEffect(() => {
+    const unresolvedPresets = apiDrafts.filter((preset) => {
+      const key = apiPresetLogoCacheKey(preset);
+      return key && !(key in apiPresetLogoUrls) && !apiPresetIconForPreset(preset);
+    });
+    if (unresolvedPresets.length === 0) return;
+    setApiPresetLogoUrls((current) => {
+      const next = { ...current };
+      unresolvedPresets.forEach((preset) => {
+        const key = apiPresetLogoCacheKey(preset);
+        if (key) next[key] = null;
+      });
+      return next;
+    });
+    unresolvedPresets.forEach((preset) => {
+      const key = apiPresetLogoCacheKey(preset);
+      if (!key) return;
+      void resolveApiPresetLogo(preset.base_url)
+        .then((response) => {
+          setApiPresetLogoUrls((current) => ({ ...current, [key]: response.icon_url || null }));
+        })
+        .catch(() => {
+          setApiPresetLogoUrls((current) => ({ ...current, [key]: null }));
+        });
+    });
+  }, [apiDrafts, apiPresetLogoUrls]);
+
   const agents = response?.agents || [];
   const sortedAgents = sortWorkbenchAgentsForDisplay(agents);
   const presetTypes = apiResponse?.preset_types || ["images_api", "llm_chat_completions", "llm_responses"];
   const selectedApiPreset = apiDrafts[selectedApiPresetIndex] || null;
   const llmPresets = apiDrafts.filter((preset) => preset.type === "llm_chat_completions" || preset.type === "llm_responses");
   const selectedLlmPreset = llmPresets.find((preset) => preset.id === selectedLlmPresetId) || null;
-  const selectedLlmPresetTemplate = selectedLlmPreset ? apiPresetTemplateForPreset(selectedLlmPreset) : null;
+  const selectedLlmPresetIcon = selectedLlmPreset
+    ? apiPresetIconForPreset(selectedLlmPreset, apiPresetResolvedLogo(apiPresetLogoUrls, selectedLlmPreset))
+    : null;
   const selectedLlmPresetIndex = selectedLlmPreset ? apiDrafts.findIndex((preset) => preset.id === selectedLlmPreset.id) : -1;
   const imageApiPresets = imageGenApiPresets(apiDrafts);
   const imageGenMethodCardsList = imageGenMethodCards(imageGenConnectionDraft, apiDrafts, sortedAgents);
@@ -1961,7 +1992,9 @@ function WorkbenchSettingsCenter({
     ? apiDrafts.findIndex((preset) => preset.id === imageGenConnectionDraft.apiPresetId)
     : -1;
   const selectedImageGenApiPreset = selectedImageGenApiPresetIndex >= 0 ? apiDrafts[selectedImageGenApiPresetIndex] : null;
-  const selectedImageGenApiPresetTemplate = selectedImageGenApiPreset ? apiPresetTemplateForPreset(selectedImageGenApiPreset) : null;
+  const selectedImageGenApiPresetIcon = selectedImageGenApiPreset
+    ? apiPresetIconForPreset(selectedImageGenApiPreset, apiPresetResolvedLogo(apiPresetLogoUrls, selectedImageGenApiPreset))
+    : null;
   const processorDefinitions = processorResponse?.definitions.processors || {};
   const processorDrivers = processorResponse?.definitions.drivers || {};
   const processorIds = Object.keys(processorDefinitions);
@@ -2326,6 +2359,7 @@ function WorkbenchSettingsCenter({
                       selectedAgent={currentAgent}
                       availableAgentCount={agentPickerChoices.length}
                       selectedLlmPreset={selectedLlmPreset}
+                      apiPresetLogoUrls={apiPresetLogoUrls}
                       llmPresetCount={llmPresets.length}
                       processorDefinitions={processorDefinitions}
                       processorDrafts={processorDrafts}
@@ -2343,7 +2377,7 @@ function WorkbenchSettingsCenter({
                   {settingsCategory === "api" && (
                     <div className="settings-model-grid" aria-label="API 预设">
                       {apiDrafts.map((preset, presetIndex) => {
-                        const presetTemplate = apiPresetTemplateForPreset(preset);
+                        const presetIcon = apiPresetIconForPreset(preset, apiPresetResolvedLogo(apiPresetLogoUrls, preset));
                         return (
                             <article
                               key={`${presetIndex}:${preset.id}`}
@@ -2351,11 +2385,11 @@ function WorkbenchSettingsCenter({
                             >
                               <div className="settings-model-card-head">
                                 <span
-                                  className={`settings-model-icon${presetTemplate ? " settings-provider-logo-mini" : ""}`}
-                                  style={presetTemplate ? ({ "--provider-color": presetTemplate.accent_color } as CSSProperties) : undefined}
+                                  className={`settings-model-icon${presetIcon ? " settings-provider-logo-mini" : ""}`}
+                                  style={presetIcon ? ({ "--provider-color": presetIcon.accent_color } as CSSProperties) : undefined}
                                   aria-hidden="true"
                                 >
-                                  {presetTemplate ? <img src={presetTemplate.icon_url} alt="" /> : <SettingsNavIcon icon="api" />}
+                                  <PresetIconImage icon={presetIcon} fallback={<SettingsNavIcon icon="api" />} />
                                 </span>
                                 <div>
                                   <strong>{preset.label || preset.id}</strong>
@@ -2444,7 +2478,7 @@ function WorkbenchSettingsCenter({
                     <div className="settings-model-grid" aria-label="LLM 预设">
                       {llmPresets.length === 0 && <div className="agent-settings-empty">未发现 LLM API 预设</div>}
                       {llmPresets.map((preset) => {
-                        const presetTemplate = apiPresetTemplateForPreset(preset);
+                        const presetIcon = apiPresetIconForPreset(preset, apiPresetResolvedLogo(apiPresetLogoUrls, preset));
                         return (
                           <article
                             key={preset.id}
@@ -2452,11 +2486,11 @@ function WorkbenchSettingsCenter({
                           >
                             <div className="settings-model-card-head">
                               <span
-                                className={`settings-model-icon${presetTemplate ? " settings-provider-logo-mini" : ""}`}
-                                style={presetTemplate ? ({ "--provider-color": presetTemplate.accent_color } as CSSProperties) : undefined}
+                                className={`settings-model-icon${presetIcon ? " settings-provider-logo-mini" : ""}`}
+                                style={presetIcon ? ({ "--provider-color": presetIcon.accent_color } as CSSProperties) : undefined}
                                 aria-hidden="true"
                               >
-                                {presetTemplate ? <img src={presetTemplate.icon_url} alt="" /> : <SettingsNavIcon icon="llm" />}
+                                <PresetIconImage icon={presetIcon} fallback={<SettingsNavIcon icon="llm" />} />
                               </span>
                               <div>
                                 <strong>{preset.label || preset.id}</strong>
@@ -2485,9 +2519,9 @@ function WorkbenchSettingsCenter({
                     <div className="settings-model-grid" aria-label="图像生成方式">
                       {imageGenMethodCardsList.map((method) => {
                         const preset = method.apiPresetId ? apiDrafts.find((item) => item.id === method.apiPresetId) || null : null;
-                        const presetTemplate = preset ? apiPresetTemplateForPreset(preset) : null;
+                        const presetIcon = preset ? apiPresetIconForPreset(preset, apiPresetResolvedLogo(apiPresetLogoUrls, preset)) : null;
                         const codexIcon = method.kind === "codex_builtin" ? agentProviderIconForId("codex_sdk") : null;
-                        const methodIcon = presetTemplate || codexIcon;
+                        const methodIcon = presetIcon || codexIcon;
                         return (
                           <article
                             key={method.id}
@@ -2499,7 +2533,7 @@ function WorkbenchSettingsCenter({
                                 style={methodIcon ? ({ "--provider-color": methodIcon.accent_color } as CSSProperties) : undefined}
                                 aria-hidden="true"
                               >
-                                {methodIcon ? <img src={methodIcon.icon_url} alt="" /> : <SettingsNavIcon icon="imagegen" />}
+                                <PresetIconImage icon={methodIcon} fallback={<SettingsNavIcon icon="imagegen" />} />
                               </span>
                               <div>
                                 <strong>{method.label}</strong>
@@ -2895,11 +2929,11 @@ function WorkbenchSettingsCenter({
                       {selectedLlmPreset && (
                         <div className="settings-summary-row settings-llm-summary">
                           <span
-                            className={`settings-summary-logo${selectedLlmPresetTemplate ? " settings-provider-logo-mini" : ""}`}
-                            style={selectedLlmPresetTemplate ? ({ "--provider-color": selectedLlmPresetTemplate.accent_color } as CSSProperties) : undefined}
+                            className={`settings-summary-logo${selectedLlmPresetIcon ? " settings-provider-logo-mini" : ""}`}
+                            style={selectedLlmPresetIcon ? ({ "--provider-color": selectedLlmPresetIcon.accent_color } as CSSProperties) : undefined}
                             aria-hidden="true"
                           >
-                            {selectedLlmPresetTemplate ? <img src={selectedLlmPresetTemplate.icon_url} alt="" /> : <SettingsNavIcon icon="llm" />}
+                            <PresetIconImage icon={selectedLlmPresetIcon} fallback={<SettingsNavIcon icon="llm" />} />
                           </span>
                           <div>
                             <span>{selectedLlmPreset.type === "llm_responses" ? "Responses" : "Chat Completions"}</span>
@@ -3007,11 +3041,11 @@ function WorkbenchSettingsCenter({
                   {selectedLlmPreset && (
                     <div className="settings-summary-row settings-llm-summary">
                       <span
-                        className={`settings-summary-logo${selectedLlmPresetTemplate ? " settings-provider-logo-mini" : ""}`}
-                        style={selectedLlmPresetTemplate ? ({ "--provider-color": selectedLlmPresetTemplate.accent_color } as CSSProperties) : undefined}
+                        className={`settings-summary-logo${selectedLlmPresetIcon ? " settings-provider-logo-mini" : ""}`}
+                        style={selectedLlmPresetIcon ? ({ "--provider-color": selectedLlmPresetIcon.accent_color } as CSSProperties) : undefined}
                         aria-hidden="true"
                       >
-                        {selectedLlmPresetTemplate ? <img src={selectedLlmPresetTemplate.icon_url} alt="" /> : <SettingsNavIcon icon="llm" />}
+                        <PresetIconImage icon={selectedLlmPresetIcon} fallback={<SettingsNavIcon icon="llm" />} />
                       </span>
                       <div>
                         <span>{selectedLlmPreset.type}</span>
@@ -3054,9 +3088,9 @@ function WorkbenchSettingsCenter({
                     <div className="settings-provider-option-grid choose">
                       {imageGenMethodPickerOptions(imageApiPresets, sortedAgents).map((option) => {
                         const preset = option.apiPresetId ? imageApiPresets.find((item) => item.id === option.apiPresetId) || null : null;
-                        const presetTemplate = preset ? apiPresetTemplateForPreset(preset) : null;
+                        const presetIcon = preset ? apiPresetIconForPreset(preset, apiPresetResolvedLogo(apiPresetLogoUrls, preset)) : null;
                         const codexIcon = option.kind === "codex_builtin" ? agentProviderIconForId("codex_sdk") : null;
-                        const optionIcon = presetTemplate || codexIcon;
+                        const optionIcon = presetIcon || codexIcon;
                         return (
                           <button
                             type="button"
@@ -3079,7 +3113,7 @@ function WorkbenchSettingsCenter({
                               style={optionIcon ? ({ "--provider-color": optionIcon.accent_color } as CSSProperties) : undefined}
                               aria-hidden="true"
                             >
-                              {optionIcon ? <img src={optionIcon.icon_url} alt="" /> : <PlusIcon />}
+                              <PresetIconImage icon={optionIcon} fallback={<PlusIcon />} />
                             </span>
                             <span className="settings-provider-option-copy">
                               <strong>{option.label}</strong>
@@ -3104,22 +3138,21 @@ function WorkbenchSettingsCenter({
                     <div className="settings-summary-row settings-imagegen-summary">
                       <span
                         className={`settings-summary-logo${
-                          selectedImageGenMethod?.kind === "api_preset" && selectedImageGenApiPresetTemplate
+                          selectedImageGenMethod?.kind === "api_preset" && selectedImageGenApiPresetIcon
                             ? " settings-provider-logo-mini"
                             : ""
                         }`}
                         style={
-                          selectedImageGenMethod?.kind === "api_preset" && selectedImageGenApiPresetTemplate
-                            ? ({ "--provider-color": selectedImageGenApiPresetTemplate.accent_color } as CSSProperties)
+                          selectedImageGenMethod?.kind === "api_preset" && selectedImageGenApiPresetIcon
+                            ? ({ "--provider-color": selectedImageGenApiPresetIcon.accent_color } as CSSProperties)
                             : undefined
                         }
                         aria-hidden="true"
                       >
-                        {selectedImageGenMethod?.kind === "api_preset" && selectedImageGenApiPresetTemplate ? (
-                          <img src={selectedImageGenApiPresetTemplate.icon_url} alt="" />
-                        ) : (
-                          <SettingsNavIcon icon="imagegen" />
-                        )}
+                        <PresetIconImage
+                          icon={selectedImageGenMethod?.kind === "api_preset" ? selectedImageGenApiPresetIcon : null}
+                          fallback={<SettingsNavIcon icon="imagegen" />}
+                        />
                       </span>
                       <div>
                         <span>{imageGenConnectionDraft.provider === "codex" ? "Codex SDK" : selectedImageGenApiPreset ? "Images API 预设" : "自定义 API"}</span>
@@ -3341,6 +3374,7 @@ function SettingsOverviewPage({
   selectedAgent,
   availableAgentCount,
   selectedLlmPreset,
+  apiPresetLogoUrls,
   llmPresetCount,
   processorDefinitions,
   processorDrafts,
@@ -3357,6 +3391,7 @@ function SettingsOverviewPage({
   selectedAgent: WorkbenchAgentDiscovery | null;
   availableAgentCount: number;
   selectedLlmPreset: ApiPreset | null;
+  apiPresetLogoUrls: Record<string, string | null>;
   llmPresetCount: number;
   processorDefinitions: ProcessorSettingsResponse["definitions"]["processors"];
   processorDrafts: ProcessorSettingsResponse["settings"]["processors"];
@@ -3369,7 +3404,9 @@ function SettingsOverviewPage({
   if (loading) return <div className="agent-settings-empty">加载中</div>;
   const agentSeverity = selectedAgent?.available ? "ok" : "warning";
   const selectedAgentIcon = selectedAgent ? agentProviderIconForId(selectedAgent.provider_id) : null;
-  const selectedLlmPresetTemplate = selectedLlmPreset ? apiPresetTemplateForPreset(selectedLlmPreset) : null;
+  const selectedLlmPresetIcon = selectedLlmPreset
+    ? apiPresetIconForPreset(selectedLlmPreset, apiPresetResolvedLogo(apiPresetLogoUrls, selectedLlmPreset))
+    : null;
   const llmSeverity = selectedLlmPreset ? "ok" : "warning";
   const statusSeverity = error ? "warning" : overview?.overall.severity || "ok";
   const statusLabel = error || overview?.overall.label || "状态已读取";
@@ -3420,11 +3457,11 @@ function SettingsOverviewPage({
             disabled={saving}
           >
             <span
-              className={`settings-overview-engine-icon${selectedLlmPresetTemplate ? " settings-provider-logo-mini" : ""}`}
-              style={selectedLlmPresetTemplate ? ({ "--provider-color": selectedLlmPresetTemplate.accent_color } as CSSProperties) : undefined}
+              className={`settings-overview-engine-icon${selectedLlmPresetIcon ? " settings-provider-logo-mini" : ""}`}
+              style={selectedLlmPresetIcon ? ({ "--provider-color": selectedLlmPresetIcon.accent_color } as CSSProperties) : undefined}
               aria-hidden="true"
             >
-              {selectedLlmPresetTemplate ? <img src={selectedLlmPresetTemplate.icon_url} alt="" /> : <SettingsNavIcon icon="llm" />}
+              <PresetIconImage icon={selectedLlmPresetIcon} fallback={<SettingsNavIcon icon="llm" />} />
             </span>
             <span className="settings-overview-engine-copy">
               <span>默认 LLM 配置</span>
@@ -3479,17 +3516,36 @@ function SettingsOverviewPage({
   );
 }
 
+function PresetIconImage({ icon, fallback }: { icon: { icon_url: string } | null; fallback: ReactNode }) {
+  const [failedIconUrl, setFailedIconUrl] = useState("");
+  useEffect(() => {
+    if (!failedIconUrl || failedIconUrl === icon?.icon_url) return;
+    setFailedIconUrl("");
+  }, [failedIconUrl, icon?.icon_url]);
+  if (!icon || icon.icon_url === failedIconUrl) return <>{fallback}</>;
+  return <img src={icon.icon_url} alt="" onError={() => setFailedIconUrl(icon.icon_url)} />;
+}
+
+function apiPresetLogoCacheKey(preset: ApiPreset): string {
+  return preset.base_url.trim().replace(/\/+$/, "");
+}
+
+function apiPresetResolvedLogo(logoUrls: Record<string, string | null>, preset: ApiPreset): string {
+  return logoUrls[apiPresetLogoCacheKey(preset)] || "";
+}
+
 function apiPresetsWithImageGenMigration(presets: ApiPreset[], connection: ImageGenConnectionSettings): ApiPreset[] {
   if (connection.provider !== "api") return presets;
   if (!connection.baseUrl.trim() || !connection.model.trim()) return presets;
   if (presets.some((preset) => preset.type === "images_api")) return presets;
+  const base_url = connection.baseUrl.trim().replace(/\/+$/, "");
   return [
     ...presets,
     {
       id: uniqueApiPresetId(presets, "imagegen_api"),
       label: "ImageGen API",
       type: "images_api",
-      base_url: connection.baseUrl.trim().replace(/\/+$/, ""),
+      base_url,
       model: connection.model.trim(),
       api_key_env: connection.apiKey.trim() ? "" : "OPENAI_API_KEY",
       api_key: connection.apiKey.trim()
@@ -7293,7 +7349,7 @@ function NewBatchForm({
                     />
                     <div className="upload-provider-grid" aria-label="选择 LLM 配置">
                       {filteredLlmPresets.map((preset) => {
-                        const presetTemplate = apiPresetTemplateForPreset(preset);
+                        const presetIcon = apiPresetIconForPreset(preset);
                         const selected = selectedLlmPreset?.id === preset.id;
                         return (
                           <button
@@ -7305,11 +7361,11 @@ function NewBatchForm({
                             onClick={() => chooseLlmPreset(preset)}
                           >
                             <span
-                              className={`upload-engine-logo settings-provider-logo${presetTemplate ? "" : " settings-provider-logo-custom"}`}
-                              style={presetTemplate ? ({ "--provider-color": presetTemplate.accent_color } as CSSProperties) : undefined}
+                              className={`upload-engine-logo settings-provider-logo${presetIcon ? "" : " settings-provider-logo-custom"}`}
+                              style={presetIcon ? ({ "--provider-color": presetIcon.accent_color } as CSSProperties) : undefined}
                               aria-hidden="true"
                             >
-                              {presetTemplate ? <img src={presetTemplate.icon_url} alt="" /> : <SettingsNavIcon icon="llm" />}
+                              <PresetIconImage icon={presetIcon} fallback={<SettingsNavIcon icon="llm" />} />
                             </span>
                             <span className="upload-provider-copy">
                               <strong>{preset.label || preset.id}</strong>
