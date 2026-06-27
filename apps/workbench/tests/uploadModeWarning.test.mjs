@@ -15,6 +15,7 @@ test("upload LLM mode card shows a yellow warning tooltip", () => {
   assert.match(llmCardBlock, /aria-label="LLM使用单次调用，效果会显著弱于Agent模式"/);
   assert.match(llmCardBlock, /<svg viewBox="0 0 24 24" aria-hidden="true">/);
   assert.match(llmCardCss, /grid-template-columns:\s*38px minmax\(0,\s*1fr\) 24px;/);
+  assert.match(warningBlock, /align-self:\s*center;/);
   assert.match(warningBlock, /background:\s*#fffbeb;/);
   assert.match(warningBlock, /color:\s*#b45309;/);
   assert.match(css, /\.upload-mode-warning\[data-tooltip\]::after\s*\{[\s\S]*?content:\s*attr\(data-tooltip\);/);

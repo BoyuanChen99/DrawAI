@@ -5378,7 +5378,7 @@ button.asset-status-unsupported {
   display: inline-grid;
   place-items: center;
   justify-self: end;
-  align-self: start;
+  align-self: center;
   border: 1px solid rgba(245, 158, 11, 0.46);
   border-radius: 999px;
   background: #fffbeb;
