@@ -7244,7 +7244,7 @@ function NewBatchForm({
                     </button>
                     <button
                       type="button"
-                      className={selectedExecutionMode === "llm" ? "upload-mode-card active" : "upload-mode-card"}
+                      className={selectedExecutionMode === "llm" ? "upload-mode-card upload-mode-card-llm active" : "upload-mode-card upload-mode-card-llm"}
                       disabled={submitting}
                       role="tab"
                       aria-selected={selectedExecutionMode === "llm"}
@@ -7256,6 +7256,19 @@ function NewBatchForm({
                       <span className="upload-engine-copy">
                         <strong>LLM 模式</strong>
                         <em>{selectedLlmPreset?.label || agentSettingsDraft.llm_model || "选择 LLM"}</em>
+                      </span>
+                      <span
+                        className="upload-mode-warning"
+                        data-tooltip="LLM使用单次调用，效果会显著弱于Agent模式"
+                        title="LLM使用单次调用，效果会显著弱于Agent模式"
+                        role="img"
+                        aria-label="LLM使用单次调用，效果会显著弱于Agent模式"
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="M12 3.25 22 20.5H2L12 3.25Z" />
+                          <path d="M12 8.5v5.25" />
+                          <path d="M12 17.25h.01" />
+                        </svg>
                       </span>
                     </button>
                   </div>
