@@ -614,6 +614,11 @@ export default function App() {
     clearAssetEditingState();
   }
 
+  function clearActiveBatchSelection() {
+    setActiveBatch(null);
+    closeCaseDetailPanel();
+  }
+
   useEffect(() => {
     refreshHealth();
     refreshBatches().catch((err) => setError(err.message));
@@ -647,6 +652,10 @@ export default function App() {
           }
         }
       } catch (err) {
+        if (isDrawAiApiStatus(err, 404)) {
+          clearActiveBatchSelection();
+          return;
+        }
         setError(err instanceof Error ? err.message : String(err));
       }
     }, 2500);
@@ -954,17 +963,19 @@ export default function App() {
   }
 
   async function deleteTaskBatch(batchId: string) {
+    const deletingActiveBatch = activeBatch?.batch.batch_id === batchId;
     await deleteBatch(batchId);
-    const nextBatches = await refreshBatches();
     setTaskDeleteTarget(null);
-    if (activeBatch?.batch.batch_id !== batchId) return;
+    if (deletingActiveBatch) {
+      clearActiveBatchSelection();
+    }
+    const nextBatches = await refreshBatches();
+    if (!deletingActiveBatch) return;
     const nextBatch = nextBatches.find((batch) => caseCountTotal(batch.case_counts) > 0) || nextBatches[0];
     if (nextBatch) {
       await selectBatch(nextBatch.batch_id);
       return;
     }
-    setActiveBatch(null);
-    closeCaseDetailPanel();
   }
 
   async function runTaskBatch(batchId: string) {
