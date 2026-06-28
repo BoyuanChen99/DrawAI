@@ -30,6 +30,40 @@ def test_default_drawai_workflow_template_validates() -> None:
     assert result.errors == ()
 
 
+def test_builtin_image_to_pptx_zh_template_reuses_default_flow_with_chinese_agent_tasks() -> None:
+    default_template = load_workflow_template_by_id(".", "default_drawai_dag")
+    zh_template = load_workflow_template_by_id(".", "image_to_pptx_zh")
+
+    assert zh_template.name == "Image-to-PPTX-zh"
+    assert [node.node_id for node in zh_template.nodes] == [
+        node.node_id for node in default_template.nodes
+    ]
+    assert [
+        (edge.source_node_id, edge.source_port_id, edge.target_node_id, edge.target_port_id)
+        for edge in zh_template.edges
+    ] == [
+        (edge.source_node_id, edge.source_port_id, edge.target_node_id, edge.target_port_id)
+        for edge in default_template.edges
+    ]
+
+    default_nodes = {node.node_id: node for node in default_template.nodes}
+    zh_nodes = {node.node_id: node for node in zh_template.nodes}
+    for node_id in zh_nodes:
+        if node_id in {"page_spec_refine", "svg_compose"}:
+            continue
+        assert zh_nodes[node_id].to_dict() == default_nodes[node_id].to_dict()
+
+    page_refine_task = zh_nodes["page_spec_refine"].config["task"]
+    svg_compose_task = zh_nodes["svg_compose"].config["task"]
+
+    assert "DrawAI PageSpec 精修任务" in page_refine_task
+    assert "## Available Processing Operations" in page_refine_task
+    assert "DrawAI PageSpec refinement task" not in page_refine_task
+    assert "图像向量化任务" in svg_compose_task
+    assert "IMAGE VECTORIZATION TASK" not in svg_compose_task
+    assert validate_workflow_template(zh_template).ok
+
+
 def test_default_template_contains_pagespec_dag_nodes() -> None:
     template = default_drawai_workflow_template()
     node_ids = {node.node_id for node in template.nodes}

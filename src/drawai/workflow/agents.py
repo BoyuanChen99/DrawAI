@@ -19,12 +19,14 @@ from .agent_prompt_defaults import (
     DEFAULT_PAGE_SPEC_REFINE_PROCESSING_TYPES,
     PAGE_SPEC_REFINE_CONSTRAINTS,
     PAGE_SPEC_REFINE_TASK,
+    PAGE_SPEC_REFINE_TASK_ZH,
     RUN0_ELEMENT_REFINE_CONSTRAINTS,
     RUN0_ELEMENT_REFINE_TASK,
     SVG_GENERATION_CONSTRAINTS,
     SVG_GENERATION_TASK,
     normalize_page_spec_processing_types,
     render_page_spec_refine_task,
+    render_page_spec_refine_task_zh,
 )
 from drawai.tooling import render_drawai_tool_prompt_section
 
@@ -1004,18 +1006,32 @@ def _agent_task(preset: AgentPreset, config: Mapping[str, Any]) -> str:
     if (
         preset.preset_id == "page_spec_refine"
         and config.get("page_spec_task_customized") is not True
-        and _is_default_page_spec_refine_task(task)
     ):
-        return render_page_spec_refine_task(
-            _page_spec_processing_types(config),
-            operation_catalog=_page_spec_processing_operations(config),
-        )
+        if _is_default_page_spec_refine_task(task):
+            return render_page_spec_refine_task(
+                _page_spec_processing_types(config),
+                operation_catalog=_page_spec_processing_operations(config),
+            )
+        if _is_default_page_spec_refine_task_zh(task):
+            return render_page_spec_refine_task_zh(
+                _page_spec_processing_types(config),
+                operation_catalog=_page_spec_processing_operations(config),
+            )
     return task
 
 
 def _is_default_page_spec_refine_task(task: str) -> bool:
     return task == PAGE_SPEC_REFINE_TASK or (
         task.startswith("DrawAI PageSpec refinement task.")
+        and "## Available Processing Operations" in task
+        and "build.processing_type" in task
+        and "drawai.page_spec.v1" in task
+    )
+
+
+def _is_default_page_spec_refine_task_zh(task: str) -> bool:
+    return task == PAGE_SPEC_REFINE_TASK_ZH or (
+        task.startswith("DrawAI PageSpec 精修任务。")
         and "## Available Processing Operations" in task
         and "build.processing_type" in task
         and "drawai.page_spec.v1" in task

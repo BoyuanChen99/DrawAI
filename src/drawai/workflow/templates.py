@@ -13,10 +13,12 @@ from .agent_prompt_defaults import (
     DEFAULT_PAGE_SPEC_REFINE_PROCESSING_TYPES,
     PAGE_SPEC_REFINE_CONSTRAINTS,
     PAGE_SPEC_REFINE_TASK,
+    PAGE_SPEC_REFINE_TASK_ZH,
     RUN0_ELEMENT_REFINE_CONSTRAINTS,
     RUN0_ELEMENT_REFINE_TASK,
     SVG_GENERATION_CONSTRAINTS,
     SVG_GENERATION_TASK,
+    SVG_GENERATION_TASK_ZH,
     normalize_page_spec_processing_types,
 )
 from .schema import (
@@ -29,6 +31,7 @@ from .schema import (
 from .validation import validate_workflow_template
 
 DEFAULT_WORKFLOW_TEMPLATE_ID = "default_drawai_dag"
+IMAGE_TO_PPTX_ZH_WORKFLOW_TEMPLATE_ID = "image_to_pptx_zh"
 PROCESSOR_TEST_WORKFLOW_TEMPLATE_ID = "processor_test_page_spec_assets"
 PROCESSOR_TEST_PAGE_SPEC_PROCESSING_TYPES = (
     "no_process",
@@ -39,6 +42,7 @@ PROCESSOR_TEST_PAGE_SPEC_PROCESSING_TYPES = (
 )
 _BUILTIN_TEMPLATE_IDS = (
     DEFAULT_WORKFLOW_TEMPLATE_ID,
+    IMAGE_TO_PPTX_ZH_WORKFLOW_TEMPLATE_ID,
     PROCESSOR_TEST_WORKFLOW_TEMPLATE_ID,
 )
 
@@ -453,6 +457,46 @@ def processor_test_page_spec_assets_workflow_template() -> WorkflowTemplate:
     )
 
 
+def image_to_pptx_zh_workflow_template() -> WorkflowTemplate:
+    base = default_drawai_workflow_template()
+    nodes: list[WorkflowNode] = []
+    for node in base.nodes:
+        if node.node_id == "page_spec_refine":
+            nodes.append(
+                replace(
+                    node,
+                    config={
+                        **dict(node.config),
+                        "task": PAGE_SPEC_REFINE_TASK_ZH,
+                    },
+                )
+            )
+            continue
+        if node.node_id == "svg_compose":
+            nodes.append(
+                replace(
+                    node,
+                    config={
+                        **dict(node.config),
+                        "task": SVG_GENERATION_TASK_ZH,
+                    },
+                )
+            )
+            continue
+        nodes.append(node)
+
+    return replace(
+        base,
+        template_id=IMAGE_TO_PPTX_ZH_WORKFLOW_TEMPLATE_ID,
+        name="Image-to-PPTX-zh",
+        description=(
+            "Built-in PageSpec-first Image-to-PPTX workflow with Chinese task prompts "
+            "for the PageSpec Refine and SVG Compose Agent nodes."
+        ),
+        nodes=tuple(nodes),
+    )
+
+
 def workflow_templates_dir(workspace: str | Path) -> Path:
     return Path(workspace).expanduser().resolve(strict=False) / ".drawai" / "workflows"
 
@@ -464,6 +508,7 @@ def user_workflow_template_path(workspace: str | Path, template_id: str) -> Path
 def builtin_workflow_templates() -> tuple[WorkflowTemplate, ...]:
     return (
         default_drawai_workflow_template(),
+        image_to_pptx_zh_workflow_template(),
         processor_test_page_spec_assets_workflow_template(),
     )
 
@@ -569,6 +614,8 @@ def workflow_template_from_dict(payload: Mapping[str, Any]) -> WorkflowTemplate:
 def _builtin_workflow_template(template_id: str) -> WorkflowTemplate:
     if template_id == DEFAULT_WORKFLOW_TEMPLATE_ID:
         return default_drawai_workflow_template()
+    if template_id == IMAGE_TO_PPTX_ZH_WORKFLOW_TEMPLATE_ID:
+        return image_to_pptx_zh_workflow_template()
     if template_id == PROCESSOR_TEST_WORKFLOW_TEMPLATE_ID:
         return processor_test_page_spec_assets_workflow_template()
     raise ValueError(f"unknown built-in workflow template: {template_id}")

@@ -10,6 +10,7 @@ from drawai.workflow.agents import (
     run0_agent_preset,
     svg_agent_preset,
 )
+from drawai.workflow.agent_prompt_defaults import PAGE_SPEC_REFINE_TASK_ZH
 
 
 def test_default_agent_provider_registry_keeps_provider_resource_limits_separate() -> None:
@@ -253,6 +254,24 @@ def test_page_spec_refine_prompt_uses_configured_processing_types() -> None:
     assert "### crop_nobg" not in prompt.text
     assert "### chart_rebuild_reserved" not in prompt.text
     assert "### svg_self_draw" not in prompt.text
+
+
+def test_page_spec_refine_zh_prompt_uses_configured_processing_types() -> None:
+    prompt = render_agent_prompt(
+        agent_preset_by_id("page_spec_refine"),
+        inputs=(),
+        node_config={
+            "node_id": "page_spec_refine",
+            "task": PAGE_SPEC_REFINE_TASK_ZH,
+            "page_spec_processing_types": ["no_process", "crop"],
+        },
+    )
+
+    assert "DrawAI PageSpec 精修任务" in prompt.text
+    assert "### no_process" in prompt.text
+    assert "### crop" in prompt.text
+    assert "### crop_nobg" not in prompt.text
+    assert "### image_edit" not in prompt.text
 
 
 def test_page_spec_refine_prompt_uses_configured_operation_catalog() -> None:
