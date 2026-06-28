@@ -1,5 +1,5 @@
 .workflow-workspace {
-  grid-row: 2;
+  grid-row: 1;
   min-height: 0;
   display: grid;
   grid-template-columns: 250px minmax(0, 1fr) 360px;
@@ -934,7 +934,7 @@
 
 .workflow-workspace {
   position: relative;
-  grid-row: 2;
+  grid-row: 1;
   min-height: 0;
   display: grid;
   grid-template-columns: 1fr;
@@ -2018,8 +2018,18 @@
 }
 
 .workflow-template-list {
+  display: grid;
   grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
-  padding-bottom: 14px;
+  align-content: start;
+  align-items: stretch;
+  padding: 24px;
+}
+
+.workflow-template-row {
+  width: 100%;
+  max-width: none;
+  flex: none;
+  align-self: stretch;
 }
 
 .workflow-template-row.readonly {
