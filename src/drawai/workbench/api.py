@@ -903,9 +903,9 @@ def create_app(
     @app.post("/api/cases/{case_id}/run-stage")
     async def run_stage(case_id: str, request: Request) -> dict[str, Any]:
         case = _get_case_or_404(resolved_store, case_id)
-        _reject_legacy_case_mutation(case)
         payload = await request.json()
         stage = str(payload.get("stage") or "")
+        node_id = str(payload.get("node_id") or "").strip()
         accepted_stages = {
             "analysis",
             "asset_analyze",
@@ -925,8 +925,12 @@ def create_app(
         if stage not in accepted_stages:
             raise HTTPException(status_code=400, detail="stage is not supported")
         try:
-            resolved_runner.submit_rerun(case_id, stage)  # type: ignore[arg-type]
-        except RuntimeError as exc:
+            if node_id and _case_has_workflow_node_runs(case):
+                resolved_runner.submit_workflow_rerun(case_id, node_id)
+            else:
+                _reject_legacy_case_mutation(case)
+                resolved_runner.submit_rerun(case_id, stage)  # type: ignore[arg-type]
+        except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return {"case": resolved_store.get_case(case_id).to_api()}
 
@@ -1149,6 +1153,10 @@ async def _optional_json(request: Request) -> dict[str, Any]:
 def _reject_legacy_case_mutation(case: CaseRecord) -> None:
     if classify_run_root(case.run_root).mode == "legacy_readonly":
         raise HTTPException(status_code=409, detail="legacy_readonly_case")
+
+
+def _case_has_workflow_node_runs(case: CaseRecord) -> bool:
+    return any((Path(case.run_root) / "nodes").glob("*/runs/*/node_run.json"))
 
 
 def _mark_asset_outputs_stale(store: WorkbenchStore, case_id: str) -> None:
@@ -3168,21 +3176,8 @@ def _workflow_node_artifacts(
             )
         )
 
-    for file_record in _json_list(agent_logs.get("files")):
-        relative_path = str(file_record.get("relative_path") or "")
-        if not relative_path or relative_path in seen_paths or not file_record.get("exists"):
-            continue
-        seen_paths.add(relative_path)
-        kind = _workflow_artifact_kind(relative_path, "", "", str(file_record.get("media_type") or ""))
-        artifacts.append(
-            _workflow_node_artifact_record(
-                file_record,
-                kind="agent_log" if kind in {"json", "jsonl", "text", "sqlite", "file"} else kind,
-                role="log",
-                source="agent_log",
-                priority=90,
-            )
-        )
+    if _workflow_agent_logs_available(agent_logs):
+        artifacts.append(_workflow_node_agent_log_artifact(agent_logs))
 
     return sorted(
         artifacts,
@@ -3230,6 +3225,42 @@ def _workflow_node_artifact_record(
     }
 
 
+def _workflow_node_agent_log_artifact(agent_logs: Mapping[str, Any]) -> dict[str, Any]:
+    event_count = len(_json_list(agent_logs.get("session_events"))) or len(_json_list(agent_logs.get("trace_events"))) or len(
+        _json_list(agent_logs.get("runtime_log_tail"))
+    )
+    file_count = len([file for file in _json_list(agent_logs.get("files")) if file.get("exists")])
+    return {
+        "artifact_id": "agent_log:timeline",
+        "kind": "agent_log",
+        "role": "log",
+        "source": "agent_log",
+        "priority": 90,
+        "label": "Agent log",
+        "relative_path": "",
+        "exists": True,
+        "media_type": "application/vnd.drawai.agent-log+json",
+        "size_bytes": 0,
+        "updated_at": None,
+        "url": "",
+        "event_count": event_count,
+        "file_count": file_count,
+    }
+
+
+def _workflow_agent_logs_available(agent_logs: Mapping[str, Any]) -> bool:
+    if any(file.get("exists") for file in _json_list(agent_logs.get("files"))):
+        return True
+    if _json_list(agent_logs.get("session_events")):
+        return True
+    if _json_list(agent_logs.get("trace_events")):
+        return True
+    if _json_list(agent_logs.get("runtime_log_tail")):
+        return True
+    summary = agent_logs.get("session_summary")
+    return isinstance(summary, Mapping) and bool(summary.get("final_response"))
+
+
 def _workflow_node_primary_artifact_id(artifacts: list[dict[str, Any]]) -> str:
     for role in ("primary", "accepted", "preview", "validation", "output", "script"):
         for artifact in artifacts:
@@ -3237,6 +3268,9 @@ def _workflow_node_primary_artifact_id(artifacts: list[dict[str, Any]]) -> str:
                 return str(artifact.get("artifact_id") or "")
     for artifact in artifacts:
         if artifact.get("exists") and artifact.get("role") != "log":
+            return str(artifact.get("artifact_id") or "")
+    for artifact in artifacts:
+        if artifact.get("exists"):
             return str(artifact.get("artifact_id") or "")
     return ""
 

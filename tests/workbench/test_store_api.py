@@ -2074,6 +2074,7 @@ def test_legacy_case_mutation_is_rejected_but_can_fork_from_source(tmp_path: Pat
     assert fork_response.status_code == 200
     forked_case = fork_response.json()["case"]
     assert forked_case["case_id"] != case.case_id
+    assert Path(forked_case["config_path"]).parent == Path(forked_case["run_root"])
     runner.wait_for_idle(timeout=5)
     assert (Path(forked_case["run_root"]) / "drawai_package.json").exists()
 
@@ -2669,6 +2670,67 @@ def test_api_run_stage_accepts_v2_boundary_stage_names(tmp_path: Path) -> None:
     assert package_response.status_code == 200
     assert store.list_stage_runs(case.case_id)[0].stage_name == "prepare"
     assert any(stage.stage_name == "export" for stage in store.list_stage_runs(case.case_id))
+
+
+def test_api_run_stage_allows_failed_workflow_node_rerun_before_v2_package_exists(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    batch = store.create_batch(
+        name="failed workflow",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=True,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    root = Path(case.run_root)
+    (root / "inputs").mkdir(parents=True)
+    shutil.copy2(source, root / "inputs" / "figure.png")
+    (root / "page_spec.json").write_text("{}", encoding="utf-8")
+    _write_json(root / "reports" / "pipeline_summary.json", {"status": "failed"})
+    _write_json(
+        root / "nodes" / "asset_prepare" / "runs" / "001" / "node_run.json",
+        {
+            "schema": "drawai.workflow_node_run.v1",
+            "node_id": "asset_prepare",
+            "node_type": "processor",
+            "attempt_id": "001",
+            "status": "failed",
+            "workdir": "nodes/asset_prepare/runs/001",
+            "inputs": [],
+            "outputs": [],
+            "started_at": "2026-06-30T08:00:00Z",
+            "ended_at": "2026-06-30T08:01:00Z",
+            "duration_ms": 60000,
+            "exit_code": None,
+            "error": "HTTPException: image generation timed out",
+        },
+    )
+    calls: list[tuple[str, str]] = []
+
+    class RecordingRunner:
+        def submit_workflow_rerun(self, case_id: str, node_id: str) -> None:
+            calls.append((case_id, node_id))
+            store.update_case_status(case_id, status="analysis_running", phase="workflow", stage=node_id)
+
+    app = create_app(_settings(tmp_path, base_config), store=store, runner=RecordingRunner())
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/cases/{case.case_id}/run-stage",
+        json={"stage": "process_assets", "node_id": "asset_prepare"},
+    )
+
+    assert response.status_code == 200
+    assert calls == [(case.case_id, "asset_prepare")]
+    assert response.json()["case"]["stage"] == "asset_prepare"
 
 
 def test_api_case_list_uses_source_image_preview_before_artifacts(tmp_path: Path) -> None:

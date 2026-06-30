@@ -95,7 +95,7 @@ import {
   latestWorkflowNodeRunForNode,
   workflowNodeExtraInfoRows
 } from "./workflowNodeDisplay";
-import { defaultWorkflowNodeArtifactViewMode } from "./nodeArtifactViewMode";
+import { defaultWorkflowNodeArtifactId, selectableWorkflowNodeArtifacts } from "./nodeArtifactSelection";
 import {
   buildUploadConfirmation,
   isSupportedUpload,
@@ -146,7 +146,6 @@ type AppView = "board" | "editor" | "svg" | "nodeArtifact";
 type BoardMode = "generate" | "process" | "workflow";
 type CanvasMode = "select" | "add" | "polygon";
 type AssetEditorView = "extraction" | "processing";
-type NodeArtifactViewMode = "artifact" | "agent_log";
 type WorkbenchSettingsCategory = "overview" | "api" | "agent" | "llm" | "imagegen" | "processor";
 type WorkbenchSettingsDetailCategory = Exclude<WorkbenchSettingsCategory, "overview">;
 type ApiPresetDialogMode = "choose_provider" | "edit";
@@ -1103,7 +1102,7 @@ export default function App() {
     }
   }
 
-  async function rerunStageForCase(item: Pick<CaseRecord, "case_id" | "batch_id">, stage: WorkbenchRerunStage) {
+  async function rerunStageForCase(item: Pick<CaseRecord, "case_id" | "batch_id">, stage: WorkbenchRerunStage, nodeId = "") {
     if (!item || assetsRunPendingCaseId) return;
     setAssetsRunPendingCaseId(item.case_id);
     const optimisticCase = currentCaseForOptimisticUpdate(item);
@@ -1111,7 +1110,7 @@ export default function App() {
       mergeCaseStatus(optimisticRunCaseStatus(optimisticCase, stage));
     }
     try {
-      const response = await runCaseStage(item.case_id, stage);
+      const response = await runCaseStage(item.case_id, stage, { nodeId });
       mergeCaseStatus(response.case);
       await selectBatch(item.batch_id);
       await selectCase(item.case_id);
@@ -1373,7 +1372,7 @@ export default function App() {
               onRetryCase={(item) => retryFailedCase(item).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
               onRerunAnalysis={(item) => rerunAnalysisForCase(item).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
               onRerunCases={(items) => rerunAnalysisForCases(items).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
-              onRerunStage={(item, stage) => rerunStageForCase(item, stage).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
+              onRerunStage={(item, stage, nodeId) => rerunStageForCase(item, stage, nodeId).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
               onSetWorkflowBreakpoint={(item, nodeId) => setBreakpointForCase(item, nodeId).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
               onClearWorkflowBreakpoint={(item) => clearBreakpointForCase(item).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
               onContinueWorkflow={(item) => continueWorkflowForCase(item).catch((err) => setError(err instanceof Error ? err.message : String(err)))}
@@ -1585,7 +1584,7 @@ function BoardWorkspace({
   onRetryCase: (item: CaseRecord) => void;
   onRerunAnalysis: (item: CaseRecord) => void;
   onRerunCases: (items: CaseRecord[]) => void;
-  onRerunStage: (item: Pick<CaseRecord, "case_id" | "batch_id">, stage: WorkbenchRerunStage) => void;
+  onRerunStage: (item: Pick<CaseRecord, "case_id" | "batch_id">, stage: WorkbenchRerunStage, nodeId?: string) => void;
   onSetWorkflowBreakpoint: (item: Pick<CaseRecord, "case_id" | "batch_id">, nodeId: string) => void;
   onClearWorkflowBreakpoint: (item: Pick<CaseRecord, "case_id" | "batch_id">) => void;
   onContinueWorkflow: (item: Pick<CaseRecord, "case_id" | "batch_id">) => void;
@@ -3928,7 +3927,7 @@ function TaskDetailPanel({
   caseActionPendingId: string;
   caseCancelPendingIds: string[];
   onRunFromAssets: () => void;
-  onRerunStage: (item: Pick<CaseRecord, "case_id" | "batch_id">, stage: WorkbenchRerunStage) => void | Promise<void>;
+  onRerunStage: (item: Pick<CaseRecord, "case_id" | "batch_id">, stage: WorkbenchRerunStage, nodeId?: string) => void | Promise<void>;
   onSetWorkflowBreakpoint: (item: Pick<CaseRecord, "case_id" | "batch_id">, nodeId: string) => void | Promise<void>;
   onClearWorkflowBreakpoint: (item: Pick<CaseRecord, "case_id" | "batch_id">) => void | Promise<void>;
   onContinueWorkflow: (item: Pick<CaseRecord, "case_id" | "batch_id">) => void | Promise<void>;
@@ -4012,7 +4011,7 @@ function DagRunPanel({
   caseActionPendingId: string;
   caseCancelPendingIds: string[];
   onContinueFromReview: () => void;
-  onRerunStage: (item: Pick<CaseRecord, "case_id" | "batch_id">, stage: WorkbenchRerunStage) => void | Promise<void>;
+  onRerunStage: (item: Pick<CaseRecord, "case_id" | "batch_id">, stage: WorkbenchRerunStage, nodeId?: string) => void | Promise<void>;
   onSetWorkflowBreakpoint: (item: Pick<CaseRecord, "case_id" | "batch_id">, nodeId: string) => void | Promise<void>;
   onClearWorkflowBreakpoint: (item: Pick<CaseRecord, "case_id" | "batch_id">) => void | Promise<void>;
   onContinueWorkflow: (item: Pick<CaseRecord, "case_id" | "batch_id">) => void | Promise<void>;
@@ -4089,7 +4088,7 @@ function DagRunPanel({
 
   function rerunSelectedStage() {
     if (!selectedRerunStage || actionPending) return;
-    void onRerunStage(currentCase, selectedRerunStage);
+    void onRerunStage(currentCase, selectedRerunStage, selectedView?.node.node_id || "");
   }
 
   function toggleBreakpoint() {
@@ -4350,10 +4349,11 @@ function nodeArtifactRoleLabel(role: string): string {
 }
 
 function nodeViewerPrimaryArtifact(viewer: WorkflowNodeViewer): WorkflowNodeArtifact | null {
-  const artifacts = viewer.artifacts || [];
+  const artifacts = selectableWorkflowNodeArtifacts(viewer.artifacts || []);
   return (
     artifacts.find((artifact) => artifact.artifact_id === viewer.primary_artifact_id && artifact.exists && artifact.url) ||
     artifacts.find((artifact) => artifact.exists && artifact.url && artifact.role !== "log" && artifact.kind !== "agent_log") ||
+    artifacts.find((artifact) => artifact.kind === "agent_log") ||
     null
   );
 }
@@ -4375,10 +4375,9 @@ function WorkflowNodeArtifactWorkspace({
   const [zoom, setZoom] = useState(0.72);
   const [selectedElementId, setSelectedElementId] = useState(viewer.elements[0]?.element_id || "");
   const [elementFilter, setElementFilter] = useState<V2ElementFilter>(EMPTY_V2_ELEMENT_FILTER);
-  const [viewMode, setViewMode] = useState<NodeArtifactViewMode>(() => defaultWorkflowNodeArtifactViewMode(viewer));
-  const [selectedArtifactId, setSelectedArtifactId] = useState(() => nodeViewerPrimaryArtifact(viewer)?.artifact_id || "");
+  const [selectedArtifactId, setSelectedArtifactId] = useState(() => defaultWorkflowNodeArtifactId(viewer));
   const isAssetPackageViewer = viewer.kind === "asset_packages";
-  const artifactItems = (viewer.artifacts || []).filter((artifact) => artifact.exists && artifact.url && artifact.role !== "log");
+  const artifactItems = selectableWorkflowNodeArtifacts(viewer.artifacts || []);
   const primaryArtifact = nodeViewerPrimaryArtifact(viewer);
   const selectedArtifact =
     artifactItems.find((artifact) => artifact.artifact_id === selectedArtifactId) ||
@@ -4451,8 +4450,7 @@ function WorkflowNodeArtifactWorkspace({
     setZoom(0.72);
     setSelectedElementId(viewer.elements[0]?.element_id || "");
     setElementFilter(EMPTY_V2_ELEMENT_FILTER);
-    setViewMode(defaultWorkflowNodeArtifactViewMode(viewer));
-    setSelectedArtifactId(nodeViewerPrimaryArtifact(viewer)?.artifact_id || "");
+    setSelectedArtifactId(defaultWorkflowNodeArtifactId(viewer));
   }, [viewer.case_id, viewer.node_id, viewer.attempt_id, viewer.source_path, viewer.primary_artifact_id]);
 
   useEffect(() => {
@@ -4493,29 +4491,30 @@ function WorkflowNodeArtifactWorkspace({
               </span>
             </div>
           </div>
-          <div className={`asset-type-switch node-artifact-view-switch is-${viewMode}`} role="tablist" aria-label="节点产物查看模式">
-            <span className="asset-type-switch__thumb" aria-hidden="true" />
-            <button
-              type="button"
-              role="tab"
-              aria-selected={viewMode === "artifact"}
-              className={viewMode === "artifact" ? "active" : ""}
-              onClick={() => setViewMode("artifact")}
-            >
-              产物
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={viewMode === "agent_log"}
-              className={viewMode === "agent_log" ? "active" : ""}
-              onClick={() => setViewMode("agent_log")}
-            >
-              Agent log
-            </button>
-          </div>
+          {artifactItems.length > 0 ? (
+            <div className="node-artifact-output-switch" role="tablist" aria-label="节点产物">
+              {artifactItems.map((artifact) => (
+                <button
+                  key={artifact.artifact_id}
+                  type="button"
+                  role="tab"
+                  aria-selected={selectedArtifact?.artifact_id === artifact.artifact_id}
+                  className={selectedArtifact?.artifact_id === artifact.artifact_id ? "active" : ""}
+                  title={`${nodeArtifactKindLabel(artifact.kind)} · ${artifact.label}`}
+                  onClick={() => setSelectedArtifactId(artifact.artifact_id)}
+                >
+                  <span>{nodeArtifactKindLabel(artifact.kind)}</span>
+                  <strong>{artifact.label}</strong>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="artifact-kind-pill">暂无产物</div>
+          )}
           <div className="editor-toolbar">
-            {viewMode === "artifact" && usesOverlayArtifact ? (
+            {selectedArtifact?.kind === "agent_log" ? (
+              <div className="toolbar-note">{agentLogCount} 条事件 · {agentLogLinks.length} 个日志文件</div>
+            ) : usesOverlayArtifact ? (
               <V2ElementFilterControls
                 elements={viewer.elements}
                 filter={elementFilter}
@@ -4524,16 +4523,14 @@ function WorkflowNodeArtifactWorkspace({
                 statusFallback={statusFallback}
                 showStatus={isAssetPackageViewer}
               />
-            ) : viewMode === "artifact" ? (
+            ) : (
               <div className="toolbar-note">
                 {artifactItems.length} 个产物{selectedArtifact ? ` · ${nodeArtifactKindLabel(selectedArtifact.kind)} · ${selectedArtifact.label}` : ""}
               </div>
-            ) : (
-              <div className="toolbar-note">{agentLogCount} 条事件 · {agentLogLinks.length} 个日志文件</div>
             )}
           </div>
           <div className="editor-actions">
-            {viewMode === "artifact" && usesOverlayArtifact && !isAssetPackageViewer && (
+            {usesOverlayArtifact && !isAssetPackageViewer && (
               <div className="tool-group">
                 <button className="icon-button" title="缩小" onClick={() => changeZoom(-0.1)}>−</button>
                 <span className="zoom-readout">{Math.round(zoom * 100)}%</span>
@@ -4549,13 +4546,18 @@ function WorkflowNodeArtifactWorkspace({
   return (
     <>
       {topbarPortal}
-      <main ref={editorRef} className={`editor-workspace v2-assets-workspace node-artifact-workspace is-${viewMode}`}>
-        {viewMode === "artifact" ? (
+      <main ref={editorRef} className={`editor-workspace v2-assets-workspace node-artifact-workspace is-${selectedArtifact?.kind || "empty"}`}>
+        {selectedArtifact?.kind === "agent_log" ? (
+          <NodeAgentLogWorkspace
+            agentLogItems={agentLogItems}
+            agentLogLinks={agentLogLinks}
+            viewer={viewer}
+          />
+        ) : (
           <>
             <div className="asset-stage v2-assets-stage" data-asset-view="extraction">
               <NodeArtifactOutputWorkspace
                 activeCase={activeCase}
-                artifactItems={artifactItems}
                 filteredElements={filteredElements}
                 selectedArtifact={selectedArtifact}
                 selectedElementId={selectedElementId}
@@ -4564,14 +4566,13 @@ function WorkflowNodeArtifactWorkspace({
                 zoom={zoom}
                 elementFilter={elementFilter}
                 statusFallback={statusFallback}
-                onSelectArtifact={setSelectedArtifactId}
                 onSelectElement={setSelectedElementId}
               />
             </div>
             <div className="node-artifact-file-strip" aria-label="节点产物文件">
               <span>来源：{viewer.source_path || viewer.source_image.relative_path || "-"}</span>
               <span>工作目录：{viewer.workdir || "-"}</span>
-              {artifactItems.slice(0, 8).map((artifact) => (
+              {artifactItems.filter((artifact) => artifact.url).slice(0, 8).map((artifact) => (
                 <a key={artifact.artifact_id} href={artifact.url} target="_blank" rel="noreferrer">
                   {artifact.label}
                 </a>
@@ -4583,12 +4584,6 @@ function WorkflowNodeArtifactWorkspace({
               ))}
             </div>
           </>
-        ) : (
-          <NodeAgentLogWorkspace
-            agentLogItems={agentLogItems}
-            agentLogLinks={agentLogLinks}
-            viewer={viewer}
-          />
         )}
       </main>
     </>
@@ -4597,7 +4592,6 @@ function WorkflowNodeArtifactWorkspace({
 
 function NodeArtifactOutputWorkspace({
   activeCase,
-  artifactItems,
   filteredElements,
   selectedArtifact,
   selectedElementId,
@@ -4606,11 +4600,9 @@ function NodeArtifactOutputWorkspace({
   zoom,
   elementFilter,
   statusFallback,
-  onSelectArtifact,
   onSelectElement
 }: {
   activeCase: CaseDetail | null;
-  artifactItems: WorkflowNodeArtifact[];
   filteredElements: V2ElementPlan[];
   selectedArtifact: WorkflowNodeArtifact | null;
   selectedElementId: string;
@@ -4619,32 +4611,13 @@ function NodeArtifactOutputWorkspace({
   zoom: number;
   elementFilter: V2ElementFilter;
   statusFallback: string;
-  onSelectArtifact: (artifactId: string) => void;
   onSelectElement: (elementId: string) => void;
 }) {
   const isAssetPackageArtifact = selectedArtifact?.kind === "asset_packages" || viewer.kind === "asset_packages";
   const isOverlayArtifact = selectedArtifact?.kind === "bbox_overlay" || (!selectedArtifact && viewer.available);
 
   return (
-    <div className={`node-artifact-browser ${artifactItems.length > 1 ? "has-list" : ""}`}>
-      {artifactItems.length > 1 && (
-        <aside className="node-artifact-list" aria-label="节点产物列表">
-          {artifactItems.map((artifact) => (
-            <button
-              key={artifact.artifact_id}
-              type="button"
-              className={selectedArtifact?.artifact_id === artifact.artifact_id ? "active" : ""}
-              onClick={() => onSelectArtifact(artifact.artifact_id)}
-            >
-              <span>{nodeArtifactKindLabel(artifact.kind)}</span>
-              <strong>{artifact.label}</strong>
-              <em>
-                {nodeArtifactRoleLabel(artifact.role)} · {formatBytes(artifact.size_bytes)}
-              </em>
-            </button>
-          ))}
-        </aside>
-      )}
+    <div className="node-artifact-browser">
       <section className="node-artifact-preview" aria-label="节点产物预览">
         {isAssetPackageArtifact ? (
           <section className="v2-assets-processing-stage node-artifact-asset-packages">

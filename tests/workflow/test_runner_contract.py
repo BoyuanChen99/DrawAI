@@ -228,6 +228,78 @@ def test_workflow_runner_marks_downstream_nodes_blocked(tmp_path: Path) -> None:
     assert output_manifest["error"] == "blocked by upstream node failure"
 
 
+def test_workflow_runner_reruns_from_node_using_previous_upstream_outputs(tmp_path: Path) -> None:
+    first_events: list[str] = []
+
+    def input_handler(
+        context: NodeRunContext,
+        _inputs: tuple[Mapping[str, Any], ...],
+    ) -> tuple[Mapping[str, Any], ...]:
+        first_events.append(context.node.node_id)
+        source_path = context.output_dir / "source.txt"
+        source_path.write_text("source", encoding="utf-8")
+        return ({"port_id": "source", "path": context.relative_path(source_path), "type": "source"},)
+
+    def failing_agent_handler(
+        context: NodeRunContext,
+        _inputs: tuple[Mapping[str, Any], ...],
+    ) -> tuple[Mapping[str, Any], ...]:
+        first_events.append(context.node.node_id)
+        raise RuntimeError("agent failed")
+
+    first_runner = WorkflowRunner(
+        _tiny_template(),
+        handlers={"input": input_handler, "agent": failing_agent_handler},
+    )
+    first_result = first_runner.run(tmp_path)
+    assert not first_result.ok
+    assert first_events == ["input", "agent"]
+
+    second_events: list[str] = []
+
+    def unexpected_input_handler(
+        context: NodeRunContext,
+        _inputs: tuple[Mapping[str, Any], ...],
+    ) -> tuple[Mapping[str, Any], ...]:
+        second_events.append(context.node.node_id)
+        raise AssertionError("input should be reused from the previous successful node run")
+
+    def fixed_agent_handler(
+        context: NodeRunContext,
+        inputs: tuple[Mapping[str, Any], ...],
+    ) -> tuple[Mapping[str, Any], ...]:
+        second_events.append(context.node.node_id)
+        assert inputs[0]["source_node_id"] == "input"
+        svg_path = context.output_dir / "semantic.svg"
+        svg_path.write_text("<svg xmlns='http://www.w3.org/2000/svg'/>", encoding="utf-8")
+        return (
+            {
+                "port_id": "semantic_svg",
+                "path": context.relative_path(svg_path),
+                "format_id": "drawai.semantic_svg.v1",
+                "type": "semantic_svg",
+                "deliverable": True,
+            },
+        )
+
+    second_runner = WorkflowRunner(
+        _tiny_template(),
+        handlers={"input": unexpected_input_handler, "agent": fixed_agent_handler},
+    )
+
+    second_result = second_runner.run(tmp_path, rerun_from_node_id="agent")
+
+    assert second_result.ok
+    assert second_events == ["agent"]
+    assert (tmp_path / "nodes" / "input" / "runs" / "001" / "node_run.json").exists()
+    assert not (tmp_path / "nodes" / "input" / "runs" / "002" / "node_run.json").exists()
+    agent_manifest = _read_json(tmp_path / "nodes" / "agent" / "runs" / "002" / "node_run.json")
+    output_manifest = _read_json(tmp_path / "nodes" / "output" / "runs" / "002" / "node_run.json")
+    assert agent_manifest["status"] == "ok"
+    assert output_manifest["status"] == "ok"
+    assert (tmp_path / "svg" / "semantic.svg").read_text(encoding="utf-8").startswith("<svg")
+
+
 def test_workflow_runner_pauses_after_breakpoint_node(tmp_path: Path) -> None:
     events: list[str] = []
 

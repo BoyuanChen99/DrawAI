@@ -241,6 +241,13 @@ class WorkbenchRunner:
     def submit_rerun(self, case_id: str, stage: RerunStage) -> None:
         self._submit_case(self._rerun_case, case_id, stage)
 
+    def submit_workflow_rerun(self, case_id: str, node_id: str) -> None:
+        clean_node_id = str(node_id or "").strip()
+        if not clean_node_id:
+            raise ValueError("workflow node_id cannot be empty")
+        self.store.update_case_status(case_id, status="analysis_running", phase="workflow", stage=clean_node_id)
+        self._submit_case(self._run_workflow_case, case_id, clean_node_id)
+
     def cancel_case(self, case_id: str) -> CaseRecord:
         case = self.store.get_case(case_id)
         self._request_case_cancel(case_id)
@@ -449,7 +456,7 @@ class WorkbenchRunner:
         self.store.update_case_config_path(case.case_id, config_path)
         return self.store.get_case(case.case_id)
 
-    def _run_workflow_case(self, case_id: str) -> None:
+    def _run_workflow_case(self, case_id: str, rerun_from_node_id: str = "") -> None:
         case = self.store.get_case(case_id)
         try:
             self._raise_if_case_canceled(case_id)
@@ -532,7 +539,11 @@ class WorkbenchRunner:
                     ),
                 },
             )
-            result = runner.run(case.run_root, should_pause_after_node=lambda node_id: _workflow_breakpoint_node_id(case.run_root) == node_id)
+            result = runner.run(
+                case.run_root,
+                should_pause_after_node=lambda node_id: _workflow_breakpoint_node_id(case.run_root) == node_id,
+                rerun_from_node_id=rerun_from_node_id,
+            )
             self._raise_if_case_canceled(case_id)
             if not result.ok:
                 failed = ", ".join(result.failed_node_ids or result.blocked_node_ids)

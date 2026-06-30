@@ -118,6 +118,7 @@ class WorkflowRunner:
         *,
         break_after_node_ids: Sequence[str] = (),
         should_pause_after_node: Callable[[str], bool] | None = None,
+        rerun_from_node_id: str = "",
     ) -> WorkflowRunResult:
         validation = validate_workflow_template(self.template)
         if not validation.ok:
@@ -131,21 +132,43 @@ class WorkflowRunner:
         node_order = {node.node_id: index for index, node in enumerate(order)}
         incoming_edges = _incoming_edges_by_node(self.template)
         outgoing_edges = _outgoing_edges_by_node(self.template)
+        rerun_node_ids = _rerun_node_ids(
+            self.template,
+            rerun_from_node_id,
+            outgoing_edges,
+        )
         remaining_dependencies = {
             node.node_id: len(incoming_edges.get(node.node_id, ()))
             for node in order
         }
-        ready = deque(
-            node
-            for node in order
-            if remaining_dependencies[node.node_id] == 0
-        )
         node_status: dict[str, str] = {}
         outputs_by_port: dict[tuple[str, str], tuple[Mapping[str, Any], ...]] = {}
         summaries_by_node: dict[str, NodeRunSummary] = {}
         final_outputs: tuple[Mapping[str, Any], ...] = ()
         paused_node_ids: set[str] = set()
         static_breakpoints = frozenset(str(node_id) for node_id in break_after_node_ids if str(node_id))
+
+        if rerun_node_ids:
+            _seed_previous_node_outputs(
+                root,
+                order,
+                rerun_node_ids,
+                outgoing_edges,
+                node_status,
+                outputs_by_port,
+                summaries_by_node,
+                remaining_dependencies,
+            )
+
+        ready = deque(
+            node
+            for node in order
+            if node.node_id in rerun_node_ids and remaining_dependencies[node.node_id] == 0
+        ) if rerun_node_ids else deque(
+            node
+            for node in order
+            if remaining_dependencies[node.node_id] == 0
+        )
 
         with ThreadPoolExecutor(
             max_workers=_runner_worker_count(order, self.max_workers)
@@ -489,6 +512,73 @@ def _outgoing_edges_by_node(template: WorkflowTemplate) -> dict[str, tuple[Workf
     for edge in template.edges:
         grouped[edge.source_node_id].append(edge)
     return {node_id: tuple(edges) for node_id, edges in grouped.items()}
+
+
+def _rerun_node_ids(
+    template: WorkflowTemplate,
+    node_id: str,
+    outgoing_edges: Mapping[str, tuple[WorkflowEdge, ...]],
+) -> frozenset[str]:
+    clean_node_id = str(node_id or "").strip()
+    if not clean_node_id:
+        return frozenset(node.node_id for node in template.nodes)
+    node_ids = {node.node_id for node in template.nodes}
+    if clean_node_id not in node_ids:
+        raise ValueError(f"unknown workflow node_id: {clean_node_id}")
+    selected: set[str] = set()
+    queue: deque[str] = deque([clean_node_id])
+    while queue:
+        current = queue.popleft()
+        if current in selected:
+            continue
+        selected.add(current)
+        for edge in outgoing_edges.get(current, ()):
+            queue.append(edge.target_node_id)
+    return frozenset(selected)
+
+
+def _seed_previous_node_outputs(
+    root: Path,
+    order: tuple[WorkflowNode, ...],
+    rerun_node_ids: frozenset[str],
+    outgoing_edges: Mapping[str, tuple[WorkflowEdge, ...]],
+    node_status: dict[str, str],
+    outputs_by_port: dict[tuple[str, str], tuple[Mapping[str, Any], ...]],
+    summaries_by_node: dict[str, NodeRunSummary],
+    remaining_dependencies: dict[str, int],
+) -> None:
+    for node in order:
+        if node.node_id in rerun_node_ids:
+            continue
+        if not any(edge.target_node_id in rerun_node_ids for edge in outgoing_edges.get(node.node_id, ())):
+            continue
+        payload = _latest_ok_node_run_payload(root, node.node_id)
+        if payload is None:
+            raise ValueError(f"cannot rerun from selected node because upstream node has no ok run: {node.node_id}")
+        outputs = tuple(item for item in payload.get("outputs", ()) if isinstance(item, Mapping))
+        node_status[node.node_id] = "ok"
+        summaries_by_node[node.node_id] = NodeRunSummary(
+            node_id=node.node_id,
+            status="ok",
+            workdir=str(payload.get("workdir") or ""),
+            outputs=outputs,
+        )
+        for port_id, port_outputs in _outputs_by_port(outputs).items():
+            outputs_by_port[(node.node_id, port_id)] = port_outputs
+        for edge in outgoing_edges.get(node.node_id, ()):
+            remaining_dependencies[edge.target_node_id] -= 1
+
+
+def _latest_ok_node_run_payload(root: Path, node_id: str) -> Mapping[str, Any] | None:
+    runs_root = root / "nodes" / node_id / "runs"
+    if not runs_root.is_dir():
+        return None
+    ok_runs: list[Mapping[str, Any]] = []
+    for node_run_path in sorted(runs_root.glob("*/node_run.json")):
+        payload = json.loads(node_run_path.read_text(encoding="utf-8"))
+        if isinstance(payload, Mapping) and payload.get("status") == "ok":
+            ok_runs.append(payload)
+    return ok_runs[-1] if ok_runs else None
 
 
 def _runner_worker_count(

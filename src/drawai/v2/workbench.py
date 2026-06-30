@@ -138,6 +138,8 @@ def fork_v2_case_from_source(store: WorkbenchStore, runner: Any, case: CaseRecor
         source_image_path=source_image or case.source_image_path,
         config_path=case.config_path,
     )
+    store.update_case_config_path(new_case.case_id, Path(new_case.run_root) / "drawai.config.yaml")
+    new_case = store.get_case(new_case.case_id)
     runner.submit_rerun(new_case.case_id, "analysis")
     return store.get_case(new_case.case_id)
 

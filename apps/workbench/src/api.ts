@@ -249,10 +249,10 @@ export function runBatch(batchId: string): Promise<BatchDetail> {
   });
 }
 
-export function runCaseStage(caseId: string, stage: WorkbenchRerunStage): Promise<{ case: CaseDetail["case"] }> {
+export function runCaseStage(caseId: string, stage: WorkbenchRerunStage, options: { nodeId?: string } = {}): Promise<{ case: CaseDetail["case"] }> {
   return requestJson<{ case: CaseDetail["case"] }>(`/api/cases/${caseId}/run-stage`, {
     method: "POST",
-    body: JSON.stringify({ stage })
+    body: JSON.stringify({ stage, node_id: options.nodeId || "" })
   });
 }
 
