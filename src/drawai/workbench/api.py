@@ -2967,6 +2967,8 @@ def _workflow_node_viewer_payload(case: CaseRecord, node_id: str) -> dict[str, A
         "node_run": None,
         "input_manifest": None,
         "files": [],
+        "artifacts": [],
+        "primary_artifact_id": "",
         "agent_logs": {
             "files": [],
             "trace_events": [],
@@ -2999,8 +3001,18 @@ def _workflow_node_viewer_payload(case: CaseRecord, node_id: str) -> dict[str, A
     )
 
     overlay_source = _workflow_node_overlay_source(root, run_dir, node_run)
+    artifacts = _workflow_node_artifacts(case, root, output_files, agent_logs, node_run, overlay_source)
+    base_payload.update(
+        {
+            "artifacts": artifacts,
+            "primary_artifact_id": _workflow_node_primary_artifact_id(artifacts),
+        }
+    )
     if overlay_source is None:
-        base_payload["message"] = "这个节点的输出文件暂时没有可绘制的 bbox。"
+        if artifacts:
+            base_payload["message"] = "这个节点没有 bbox 叠加产物，已显示节点输出文件。"
+        else:
+            base_payload["message"] = "这个节点的输出文件暂时没有可绘制的 bbox。"
         return base_payload
 
     kind, relative_path, payload = overlay_source
@@ -3104,8 +3116,218 @@ def _workflow_node_output_files(
         if relative_path in seen:
             continue
         seen.add(relative_path)
+        if _resolve_case_path(root, relative_path).is_dir():
+            continue
         records.append(_case_file_record(case.case_id, root, Path(relative_path).name, relative_path))
     return records
+
+
+def _workflow_node_artifacts(
+    case: CaseRecord,
+    root: Path,
+    output_files: list[dict[str, Any]],
+    agent_logs: Mapping[str, Any],
+    node_run: Mapping[str, Any] | None,
+    overlay_source: tuple[str, str, Mapping[str, Any] | list[Any]] | None,
+) -> list[dict[str, Any]]:
+    output_meta_by_path = _workflow_node_output_meta_by_path(node_run)
+    artifacts: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+
+    if overlay_source is not None:
+        overlay_kind, relative_path, _ = overlay_source
+        file_record = _case_file_record(case.case_id, root, _workflow_artifact_overlay_label(overlay_kind), relative_path)
+        artifacts.append(
+            _workflow_node_artifact_record(
+                file_record,
+                kind=_workflow_artifact_overlay_kind(overlay_kind),
+                role="primary",
+                source="overlay",
+                priority=0,
+            )
+        )
+        seen_paths.add(relative_path)
+
+    for file_record in output_files:
+        relative_path = str(file_record.get("relative_path") or "")
+        if not relative_path or relative_path in seen_paths or not file_record.get("exists"):
+            continue
+        seen_paths.add(relative_path)
+        meta = output_meta_by_path.get(relative_path, {})
+        output_type = str(meta.get("type") or "")
+        format_id = str(meta.get("format_id") or "")
+        kind = _workflow_artifact_kind(relative_path, output_type, format_id, str(file_record.get("media_type") or ""))
+        role = _workflow_artifact_role(relative_path, kind, output_type, format_id, source="output")
+        artifacts.append(
+            _workflow_node_artifact_record(
+                file_record,
+                kind=kind,
+                role=role,
+                source="output",
+                priority=_workflow_artifact_priority(relative_path, kind, role),
+            )
+        )
+
+    for file_record in _json_list(agent_logs.get("files")):
+        relative_path = str(file_record.get("relative_path") or "")
+        if not relative_path or relative_path in seen_paths or not file_record.get("exists"):
+            continue
+        seen_paths.add(relative_path)
+        kind = _workflow_artifact_kind(relative_path, "", "", str(file_record.get("media_type") or ""))
+        artifacts.append(
+            _workflow_node_artifact_record(
+                file_record,
+                kind="agent_log" if kind in {"json", "jsonl", "text", "sqlite", "file"} else kind,
+                role="log",
+                source="agent_log",
+                priority=90,
+            )
+        )
+
+    return sorted(
+        artifacts,
+        key=lambda item: (
+            int(item.get("priority") or 100),
+            str(item.get("relative_path") or ""),
+        ),
+    )
+
+
+def _workflow_node_output_meta_by_path(node_run: Mapping[str, Any] | None) -> dict[str, Mapping[str, Any]]:
+    if not node_run:
+        return {}
+    output_meta: dict[str, Mapping[str, Any]] = {}
+    for item in _json_list(node_run.get("outputs")):
+        path = item.get("path")
+        if isinstance(path, str) and path:
+            output_meta[path] = item
+    return output_meta
+
+
+def _workflow_node_artifact_record(
+    file_record: Mapping[str, Any],
+    *,
+    kind: str,
+    role: str,
+    source: str,
+    priority: int,
+) -> dict[str, Any]:
+    relative_path = str(file_record.get("relative_path") or "")
+    label = str(file_record.get("label") or Path(relative_path).name)
+    return {
+        "artifact_id": f"{source}:{relative_path}",
+        "kind": kind,
+        "role": role,
+        "source": source,
+        "priority": priority,
+        "label": label,
+        "relative_path": relative_path,
+        "exists": bool(file_record.get("exists")),
+        "media_type": str(file_record.get("media_type") or ""),
+        "size_bytes": int(file_record.get("size_bytes") or 0),
+        "updated_at": file_record.get("updated_at"),
+        "url": str(file_record.get("url") or ""),
+    }
+
+
+def _workflow_node_primary_artifact_id(artifacts: list[dict[str, Any]]) -> str:
+    for role in ("primary", "accepted", "preview", "validation", "output", "script"):
+        for artifact in artifacts:
+            if artifact.get("role") == role and artifact.get("exists"):
+                return str(artifact.get("artifact_id") or "")
+    for artifact in artifacts:
+        if artifact.get("exists") and artifact.get("role") != "log":
+            return str(artifact.get("artifact_id") or "")
+    return ""
+
+
+def _workflow_artifact_overlay_kind(overlay_kind: str) -> str:
+    if overlay_kind == "asset_packages":
+        return "asset_packages"
+    return "bbox_overlay"
+
+
+def _workflow_artifact_overlay_label(overlay_kind: str) -> str:
+    return {
+        "page_spec": "PageSpec overlay",
+        "element_plans": "Element plans overlay",
+        "element_candidates": "Candidate overlay",
+        "element_analysis": "Element analysis overlay",
+        "asset_packages": "Asset packages",
+    }.get(overlay_kind, "Overlay")
+
+
+def _workflow_artifact_kind(relative_path: str, output_type: str, format_id: str, media_type: str) -> str:
+    path = Path(relative_path)
+    name = path.name.lower()
+    suffix = path.suffix.lower()
+    probe = f"{output_type} {format_id} {relative_path} {media_type}".lower()
+    if "validation_report" in name:
+        return "validation_report"
+    if "semantic_svg" in probe or "drawai.semantic_svg" in probe or suffix == ".svg":
+        return "svg"
+    if "drawai.pptx" in probe or output_type == "pptx" or suffix == ".pptx":
+        return "pptx"
+    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+        return "image"
+    if suffix == ".json":
+        return "json"
+    if suffix == ".jsonl":
+        return "jsonl"
+    if suffix in {".md", ".markdown"}:
+        return "markdown"
+    if suffix == ".py":
+        return "script"
+    if suffix in {".txt", ".log"}:
+        return "text"
+    if suffix in {".sqlite", ".db"}:
+        return "sqlite"
+    return "file"
+
+
+def _workflow_artifact_role(relative_path: str, kind: str, output_type: str, format_id: str, *, source: str) -> str:
+    if source == "agent_log":
+        return "log"
+    name = Path(relative_path).name.lower()
+    probe = f"{output_type} {format_id}".lower()
+    if "drawai.semantic_svg" in probe or "drawai.pptx" in probe or output_type in {"semantic_svg", "pptx"}:
+        return "accepted"
+    if name in {"semantic.svg", "semantic_svg.svg", "slide_deck.pptx"}:
+        return "accepted"
+    if name.startswith("semantic_") and name.endswith(".svg"):
+        return "intermediate"
+    if name.startswith("rendered") and kind == "image":
+        return "preview"
+    if kind == "validation_report":
+        return "validation"
+    if kind == "script":
+        return "script"
+    if kind in {"jsonl", "sqlite"} or name.endswith(("_trace.jsonl", "_events.jsonl", "_stderr.txt", "_error.txt")):
+        return "log"
+    return "output"
+
+
+def _workflow_artifact_priority(relative_path: str, kind: str, role: str) -> int:
+    name = Path(relative_path).name.lower()
+    role_priority = {
+        "primary": 0,
+        "accepted": 10,
+        "preview": 20,
+        "validation": 30,
+        "intermediate": 35,
+        "output": 40,
+        "script": 50,
+        "log": 90,
+    }.get(role, 80)
+    if name in {"semantic.svg", "semantic_svg.svg"}:
+        return 5
+    if kind == "pptx" and role == "accepted":
+        return 8
+    if name == "rendered.png":
+        return 18
+    if name == "validation_report_final.json":
+        return 28
+    return role_priority
 
 
 AGENT_LOG_FILE_CANDIDATES = (

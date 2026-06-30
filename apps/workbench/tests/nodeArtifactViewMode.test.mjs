@@ -24,6 +24,33 @@ test("node artifact viewer opens Agent log when no artifact is available but log
   );
 });
 
+test("node artifact viewer opens artifact mode when non-bbox artifacts exist", async () => {
+  const { defaultWorkflowNodeArtifactViewMode } = await loadViewModeModule();
+
+  assert.equal(
+    defaultWorkflowNodeArtifactViewMode({
+      available: false,
+      artifacts: [
+        {
+          artifact_id: "output:nodes/svg_compose/runs/001/output/semantic.svg",
+          kind: "svg",
+          role: "accepted",
+          exists: true,
+          url: "/api/cases/case/files/nodes/svg_compose/runs/001/output/semantic.svg"
+        }
+      ],
+      agent_logs: {
+        files: [],
+        trace_events: [],
+        session_summary: null,
+        session_events: [{ type: "message", summary: "done" }],
+        runtime_log_tail: []
+      }
+    }),
+    "artifact"
+  );
+});
+
 test("node artifact viewer keeps artifact mode for drawable output", async () => {
   const { defaultWorkflowNodeArtifactViewMode } = await loadViewModeModule();
 

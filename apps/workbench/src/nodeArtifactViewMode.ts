@@ -3,15 +3,28 @@ import type { WorkflowNodeViewer } from "./types";
 export type WorkflowNodeArtifactViewMode = "artifact" | "agent_log";
 
 type AgentLogsLike = Partial<WorkflowNodeViewer["agent_logs"]> | null | undefined;
+type ArtifactsLike = Partial<WorkflowNodeViewer["artifacts"][number]>[] | null | undefined;
 
 export function defaultWorkflowNodeArtifactViewMode(viewer: {
   available: boolean;
+  artifacts?: ArtifactsLike;
   agent_logs?: AgentLogsLike;
 }): WorkflowNodeArtifactViewMode {
+  if (workflowNodeViewerHasOutputArtifacts(viewer)) {
+    return "artifact";
+  }
   if (!viewer.available && workflowNodeViewerHasAgentLogs(viewer)) {
     return "agent_log";
   }
   return "artifact";
+}
+
+export function workflowNodeViewerHasOutputArtifacts(viewer: {
+  artifacts?: ArtifactsLike;
+}): boolean {
+  return (viewer.artifacts || []).some(
+    (artifact) => Boolean(artifact.exists && artifact.url) && artifact.role !== "log" && artifact.kind !== "agent_log"
+  );
 }
 
 export function workflowNodeViewerHasAgentLogs(viewer: {

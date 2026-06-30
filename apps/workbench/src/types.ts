@@ -379,6 +379,14 @@ export interface CaseProgressFile {
   url: string;
 }
 
+export interface WorkflowNodeArtifact extends CaseProgressFile {
+  artifact_id: string;
+  kind: "bbox_overlay" | "asset_packages" | "svg" | "image" | "json" | "jsonl" | "markdown" | "text" | "pptx" | "validation_report" | "script" | "sqlite" | "agent_log" | "file" | string;
+  role: "primary" | "accepted" | "preview" | "validation" | "intermediate" | "output" | "script" | "log" | string;
+  source: "overlay" | "output" | "agent_log" | string;
+  priority: number;
+}
+
 export interface WorkflowNodeViewer {
   case_id: string;
   node_id: string;
@@ -396,6 +404,8 @@ export interface WorkflowNodeViewer {
   node_run: Record<string, unknown> | null;
   input_manifest: Record<string, unknown> | null;
   files: CaseProgressFile[];
+  artifacts: WorkflowNodeArtifact[];
+  primary_artifact_id: string;
   agent_logs: {
     files: CaseProgressFile[];
     trace_events: Array<Record<string, unknown>>;

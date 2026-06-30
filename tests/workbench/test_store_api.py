@@ -1604,6 +1604,81 @@ def test_api_workflow_node_viewer_summarizes_agent_logs_without_runtime_deltas(t
     assert logs["runtime_log_tail"][0]["event"]["type"] == "response.output_item.done"
 
 
+def test_api_workflow_node_viewer_exposes_non_bbox_artifacts_for_svg_compose(tmp_path: Path) -> None:
+    store = WorkbenchStore(tmp_path / "workspace")
+    base_config = _base_config(tmp_path)
+    source = tmp_path / "source.png"
+    Image.new("RGB", (24, 24), "white").save(source)
+    settings = _settings(tmp_path, base_config)
+    app = create_app(settings, store=store, runner=WorkbenchRunner(store, settings))
+    client = TestClient(app)
+    batch = store.create_batch(
+        name="svg compose artifacts",
+        input_mode="upload",
+        max_concurrent_cases=1,
+        auto_run_svg_after_analysis=False,
+        config_path=base_config,
+    )
+    case = store.create_case(
+        batch_id=batch.batch_id,
+        name="source.png",
+        source_image_path=source,
+        config_path=base_config,
+    )
+    root = Path(case.run_root)
+    run_dir = root / "nodes" / "svg_compose" / "runs" / "001"
+    semantic_rel = Path("nodes/svg_compose/runs/001/output/semantic.svg")
+    rendered_rel = Path("nodes/svg_compose/runs/001/output/rendered.png")
+    validation_rel = Path("nodes/svg_compose/runs/001/output/validation_report_final.json")
+    session_rel = Path("nodes/svg_compose/runs/001/codex_session_log")
+    (root / semantic_rel).parent.mkdir(parents=True, exist_ok=True)
+    (root / semantic_rel).write_text('<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"></svg>\n', encoding="utf-8")
+    Image.new("RGB", (24, 24), "white").save(root / rendered_rel)
+    _write_json(root / validation_rel, {"ok": True})
+    _write_json(root / session_rel / "manifest.json", {"schema": "drawai.codex_session_log.v1"})
+    _write_json(
+        run_dir / "node_run.json",
+        {
+            "schema": "drawai.workflow_node_run.v1",
+            "node_id": "svg_compose",
+            "node_type": "agent",
+            "attempt_id": "001",
+            "status": "ok",
+            "workdir": "nodes/svg_compose/runs/001",
+            "outputs": [
+                {
+                    "port_id": "semantic_svg",
+                    "path": semantic_rel.as_posix(),
+                    "format_id": "drawai.semantic_svg.v1",
+                    "type": "semantic_svg",
+                }
+            ],
+            "session_log_path": session_rel.as_posix(),
+            "started_at": "2026-06-18T00:00:00Z",
+            "ended_at": "2026-06-18T00:00:01Z",
+        },
+    )
+    _write_json(run_dir / "input_manifest.json", {"schema": "drawai.workflow_input_manifest.v1", "inputs": []})
+
+    response = client.get(f"/api/cases/{case.case_id}/workflow/nodes/svg_compose/viewer")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["available"] is False
+    assert "已显示节点输出文件" in payload["message"]
+    artifacts = payload["artifacts"]
+    assert payload["primary_artifact_id"] == artifacts[0]["artifact_id"]
+    assert artifacts[0]["kind"] == "svg"
+    assert artifacts[0]["role"] == "accepted"
+    assert artifacts[0]["relative_path"] == semantic_rel.as_posix()
+    assert {artifact["kind"] for artifact in artifacts} >= {"svg", "image", "validation_report", "agent_log"}
+    assert all(file["relative_path"] != session_rel.as_posix() for file in payload["files"])
+    assert any(
+        file["relative_path"] == f"{session_rel.as_posix()}/manifest.json" and file["exists"]
+        for file in payload["agent_logs"]["files"]
+    )
+
+
 def test_api_workflow_node_viewer_reads_kimi_cli_trace_events(tmp_path: Path) -> None:
     store = WorkbenchStore(tmp_path / "workspace")
     base_config = _base_config(tmp_path)

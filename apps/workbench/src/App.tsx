@@ -137,6 +137,7 @@ import type {
   WorkbenchStatusOverviewResponse,
   WorkflowNodeRunRecord,
   WorkflowNodeMetadata,
+  WorkflowNodeArtifact,
   WorkflowNodeViewer
 } from "./types";
 import type { WorkflowTemplate } from "./workflowTypes";
@@ -4307,7 +4308,58 @@ function nodeViewerKindLabel(kind: string): string {
   if (kind === "element_plans") return "元素计划";
   if (kind === "element_analysis") return "Agent 分析";
   if (kind === "asset_packages") return "Assets 表格";
+  if (kind === "svg") return "SVG";
+  if (kind === "image") return "图片";
+  if (kind === "pptx") return "PPTX";
+  if (kind === "validation_report") return "校验报告";
   return "文件";
+}
+
+function nodeArtifactKindLabel(kind: string): string {
+  const labels: Record<string, string> = {
+    bbox_overlay: "Overlay",
+    asset_packages: "Assets",
+    svg: "SVG",
+    image: "Image",
+    json: "JSON",
+    jsonl: "JSONL",
+    markdown: "Markdown",
+    text: "Text",
+    pptx: "PPTX",
+    validation_report: "Validation",
+    script: "Script",
+    sqlite: "SQLite",
+    agent_log: "Agent log",
+    file: "File"
+  };
+  return labels[kind] || kind || "File";
+}
+
+function nodeArtifactRoleLabel(role: string): string {
+  const labels: Record<string, string> = {
+    primary: "主产物",
+    accepted: "Accepted",
+    preview: "预览",
+    validation: "校验",
+    intermediate: "中间",
+    output: "输出",
+    script: "脚本",
+    log: "日志"
+  };
+  return labels[role] || role || "输出";
+}
+
+function nodeViewerPrimaryArtifact(viewer: WorkflowNodeViewer): WorkflowNodeArtifact | null {
+  const artifacts = viewer.artifacts || [];
+  return (
+    artifacts.find((artifact) => artifact.artifact_id === viewer.primary_artifact_id && artifact.exists && artifact.url) ||
+    artifacts.find((artifact) => artifact.exists && artifact.url && artifact.role !== "log" && artifact.kind !== "agent_log") ||
+    null
+  );
+}
+
+function nodeArtifactCanInlinePreview(artifact: WorkflowNodeArtifact): boolean {
+  return ["svg", "image", "json", "jsonl", "markdown", "text", "validation_report", "script"].includes(artifact.kind);
 }
 
 function WorkflowNodeArtifactWorkspace({
@@ -4324,7 +4376,17 @@ function WorkflowNodeArtifactWorkspace({
   const [selectedElementId, setSelectedElementId] = useState(viewer.elements[0]?.element_id || "");
   const [elementFilter, setElementFilter] = useState<V2ElementFilter>(EMPTY_V2_ELEMENT_FILTER);
   const [viewMode, setViewMode] = useState<NodeArtifactViewMode>(() => defaultWorkflowNodeArtifactViewMode(viewer));
+  const [selectedArtifactId, setSelectedArtifactId] = useState(() => nodeViewerPrimaryArtifact(viewer)?.artifact_id || "");
   const isAssetPackageViewer = viewer.kind === "asset_packages";
+  const artifactItems = (viewer.artifacts || []).filter((artifact) => artifact.exists && artifact.url && artifact.role !== "log");
+  const primaryArtifact = nodeViewerPrimaryArtifact(viewer);
+  const selectedArtifact =
+    artifactItems.find((artifact) => artifact.artifact_id === selectedArtifactId) ||
+    primaryArtifact ||
+    artifactItems[0] ||
+    null;
+  const selectedArtifactKind = selectedArtifact?.kind || (isAssetPackageViewer ? "asset_packages" : viewer.available ? "bbox_overlay" : "");
+  const usesOverlayArtifact = selectedArtifactKind === "bbox_overlay" || selectedArtifactKind === "asset_packages";
   const assetPackageByElementId = useMemo(() => {
     const items = new Map<string, V2AssetPackage>();
     (viewer.asset_packages || []).forEach((assetPackage) => {
@@ -4390,7 +4452,8 @@ function WorkflowNodeArtifactWorkspace({
     setSelectedElementId(viewer.elements[0]?.element_id || "");
     setElementFilter(EMPTY_V2_ELEMENT_FILTER);
     setViewMode(defaultWorkflowNodeArtifactViewMode(viewer));
-  }, [viewer.case_id, viewer.node_id, viewer.attempt_id, viewer.source_path]);
+    setSelectedArtifactId(nodeViewerPrimaryArtifact(viewer)?.artifact_id || "");
+  }, [viewer.case_id, viewer.node_id, viewer.attempt_id, viewer.source_path, viewer.primary_artifact_id]);
 
   useEffect(() => {
     if (!filteredElements.length) return;
@@ -4452,7 +4515,7 @@ function WorkflowNodeArtifactWorkspace({
             </button>
           </div>
           <div className="editor-toolbar">
-            {viewMode === "artifact" ? (
+            {viewMode === "artifact" && usesOverlayArtifact ? (
               <V2ElementFilterControls
                 elements={viewer.elements}
                 filter={elementFilter}
@@ -4461,12 +4524,16 @@ function WorkflowNodeArtifactWorkspace({
                 statusFallback={statusFallback}
                 showStatus={isAssetPackageViewer}
               />
+            ) : viewMode === "artifact" ? (
+              <div className="toolbar-note">
+                {artifactItems.length} 个产物{selectedArtifact ? ` · ${nodeArtifactKindLabel(selectedArtifact.kind)} · ${selectedArtifact.label}` : ""}
+              </div>
             ) : (
               <div className="toolbar-note">{agentLogCount} 条事件 · {agentLogLinks.length} 个日志文件</div>
             )}
           </div>
           <div className="editor-actions">
-            {viewMode === "artifact" && !isAssetPackageViewer && (
+            {viewMode === "artifact" && usesOverlayArtifact && !isAssetPackageViewer && (
               <div className="tool-group">
                 <button className="icon-button" title="缩小" onClick={() => changeZoom(-0.1)}>−</button>
                 <span className="zoom-readout">{Math.round(zoom * 100)}%</span>
@@ -4486,49 +4553,30 @@ function WorkflowNodeArtifactWorkspace({
         {viewMode === "artifact" ? (
           <>
             <div className="asset-stage v2-assets-stage" data-asset-view="extraction">
-              {isAssetPackageViewer ? (
-                <section className="v2-assets-processing-stage node-artifact-asset-packages">
-                  <V2AssetPackagePanel
-                    activeCase={activeCase}
-                    runPackage={viewerRunPackage}
-                    elements={filteredElements}
-                    totalElementCount={viewer.elements.length}
-                    selectedElementId={selectedElementId}
-                    selectedAssetPackage={null}
-                    loadingElementId=""
-                    packageError=""
-                    actionPending=""
-                    readOnly
-                    onSelectElement={setSelectedElementId}
-                    onProcessAsset={() => undefined}
-                    onSetActiveResult={() => undefined}
-                  />
-                </section>
-              ) : viewer.available && viewer.source_image.url ? (
-                <V2AssetCanvas
-                  activeCase={activeCase}
-                  runPackage={null}
-                  elements={viewer.elements}
-                  selectedElementId={selectedElementId}
-                  selectedAssetPackage={null}
-                  figureUrl={viewer.source_image.url}
-                  zoom={zoom}
-                  filter={elementFilter}
-                  statusFallback={statusFallback}
-                  onSelectElement={setSelectedElementId}
-                />
-              ) : (
-                <section className="canvas-layout v2-assets-layout node-artifact-empty">
-                  <div className="canvas-stage v2-assets-canvas">
-                    <EmptyState label={viewer.message || "这个节点没有可视化产物"} />
-                  </div>
-                </section>
-              )}
+              <NodeArtifactOutputWorkspace
+                activeCase={activeCase}
+                artifactItems={artifactItems}
+                filteredElements={filteredElements}
+                selectedArtifact={selectedArtifact}
+                selectedElementId={selectedElementId}
+                viewer={viewer}
+                viewerRunPackage={viewerRunPackage}
+                zoom={zoom}
+                elementFilter={elementFilter}
+                statusFallback={statusFallback}
+                onSelectArtifact={setSelectedArtifactId}
+                onSelectElement={setSelectedElementId}
+              />
             </div>
             <div className="node-artifact-file-strip" aria-label="节点产物文件">
               <span>来源：{viewer.source_path || viewer.source_image.relative_path || "-"}</span>
               <span>工作目录：{viewer.workdir || "-"}</span>
-              {fileLinks.slice(0, 5).map((file) => (
+              {artifactItems.slice(0, 8).map((artifact) => (
+                <a key={artifact.artifact_id} href={artifact.url} target="_blank" rel="noreferrer">
+                  {artifact.label}
+                </a>
+              ))}
+              {artifactItems.length === 0 && fileLinks.slice(0, 5).map((file) => (
                 <a key={file.relative_path} href={file.url} target="_blank" rel="noreferrer">
                   {file.label}
                 </a>
@@ -4544,6 +4592,140 @@ function WorkflowNodeArtifactWorkspace({
         )}
       </main>
     </>
+  );
+}
+
+function NodeArtifactOutputWorkspace({
+  activeCase,
+  artifactItems,
+  filteredElements,
+  selectedArtifact,
+  selectedElementId,
+  viewer,
+  viewerRunPackage,
+  zoom,
+  elementFilter,
+  statusFallback,
+  onSelectArtifact,
+  onSelectElement
+}: {
+  activeCase: CaseDetail | null;
+  artifactItems: WorkflowNodeArtifact[];
+  filteredElements: V2ElementPlan[];
+  selectedArtifact: WorkflowNodeArtifact | null;
+  selectedElementId: string;
+  viewer: WorkflowNodeViewer;
+  viewerRunPackage: V2RunPackage | null;
+  zoom: number;
+  elementFilter: V2ElementFilter;
+  statusFallback: string;
+  onSelectArtifact: (artifactId: string) => void;
+  onSelectElement: (elementId: string) => void;
+}) {
+  const isAssetPackageArtifact = selectedArtifact?.kind === "asset_packages" || viewer.kind === "asset_packages";
+  const isOverlayArtifact = selectedArtifact?.kind === "bbox_overlay" || (!selectedArtifact && viewer.available);
+
+  return (
+    <div className={`node-artifact-browser ${artifactItems.length > 1 ? "has-list" : ""}`}>
+      {artifactItems.length > 1 && (
+        <aside className="node-artifact-list" aria-label="节点产物列表">
+          {artifactItems.map((artifact) => (
+            <button
+              key={artifact.artifact_id}
+              type="button"
+              className={selectedArtifact?.artifact_id === artifact.artifact_id ? "active" : ""}
+              onClick={() => onSelectArtifact(artifact.artifact_id)}
+            >
+              <span>{nodeArtifactKindLabel(artifact.kind)}</span>
+              <strong>{artifact.label}</strong>
+              <em>
+                {nodeArtifactRoleLabel(artifact.role)} · {formatBytes(artifact.size_bytes)}
+              </em>
+            </button>
+          ))}
+        </aside>
+      )}
+      <section className="node-artifact-preview" aria-label="节点产物预览">
+        {isAssetPackageArtifact ? (
+          <section className="v2-assets-processing-stage node-artifact-asset-packages">
+            <V2AssetPackagePanel
+              activeCase={activeCase}
+              runPackage={viewerRunPackage}
+              elements={filteredElements}
+              totalElementCount={viewer.elements.length}
+              selectedElementId={selectedElementId}
+              selectedAssetPackage={null}
+              loadingElementId=""
+              packageError=""
+              actionPending=""
+              readOnly
+              onSelectElement={onSelectElement}
+              onProcessAsset={() => undefined}
+              onSetActiveResult={() => undefined}
+            />
+          </section>
+        ) : isOverlayArtifact && viewer.available && viewer.source_image.url ? (
+          <V2AssetCanvas
+            activeCase={activeCase}
+            runPackage={null}
+            elements={viewer.elements}
+            selectedElementId={selectedElementId}
+            selectedAssetPackage={null}
+            figureUrl={viewer.source_image.url}
+            zoom={zoom}
+            filter={elementFilter}
+            statusFallback={statusFallback}
+            onSelectElement={onSelectElement}
+          />
+        ) : selectedArtifact ? (
+          <NodeArtifactFilePreview artifact={selectedArtifact} />
+        ) : (
+          <section className="canvas-layout v2-assets-layout node-artifact-empty">
+            <div className="canvas-stage v2-assets-canvas">
+              <EmptyState label={viewer.message || "这个节点没有可视化产物"} />
+            </div>
+          </section>
+        )}
+      </section>
+    </div>
+  );
+}
+
+function NodeArtifactFilePreview({ artifact }: { artifact: WorkflowNodeArtifact }) {
+  if (artifact.kind === "image") {
+    return (
+      <div className="node-artifact-file-preview is-image">
+        <img src={artifact.url} alt={artifact.label} />
+      </div>
+    );
+  }
+
+  if (artifact.kind === "svg") {
+    return (
+      <div className="node-artifact-file-preview is-svg">
+        <iframe title={artifact.label} src={artifact.url} sandbox="allow-same-origin" />
+      </div>
+    );
+  }
+
+  if (nodeArtifactCanInlinePreview(artifact)) {
+    return (
+      <div className="node-artifact-file-preview is-document">
+        <iframe title={artifact.label} src={artifact.url} sandbox="allow-same-origin" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="node-artifact-download-panel">
+      <strong>{artifact.label}</strong>
+      <span>
+        {nodeArtifactKindLabel(artifact.kind)} · {nodeArtifactRoleLabel(artifact.role)} · {formatBytes(artifact.size_bytes)}
+      </span>
+      <a href={artifact.url} target="_blank" rel="noreferrer">
+        打开文件
+      </a>
+    </div>
   );
 }
 
